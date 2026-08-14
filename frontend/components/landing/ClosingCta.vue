@@ -6,17 +6,41 @@
  * docblock) — bukan ditulis ulang di sini. Section ini jadi tempat "kontak"
  * dipakai di landing page, karena `layouts/default.vue` sengaja tidak diubah
  * strukturnya (hanya boleh tambah link nav & JSON-LD).
+ *
+ * Brand moment (deliverable §4 brief): `logo-mark.webp` (kepala raja bermahkota)
+ * ditampilkan halus di atas headline penutup — satu-satunya tempat mascot muncul
+ * di landing selain hero, sesuai batas §26.8 (bukan di navbar/checkout).
+ * Reveal fade+y sekali saat masuk viewport, bukan bagian dari momen orkestrasi
+ * utama (hero) — tenang & singkat.
  */
 import { ArrowRight, Clock, MapPin, Phone, Search } from '@lucide/vue'
+import { motion } from 'motion-v'
 import { business } from '~/utils/business'
+
+const prefersReduced = usePrefersReducedMotion()
 </script>
 
 <template>
   <section class="mx-auto max-w-6xl px-4 py-16 md:py-24">
-    <div class="rounded-lg border border-hairline bg-ink-950 p-8 md:p-12">
+    <motion.div
+      class="rounded-lg border border-hairline bg-ink-950 p-8 md:p-12"
+      :initial="{ opacity: 0, y: prefersReduced ? 0 : 16 }"
+      :while-in-view="{ opacity: 1, y: 0 }"
+      :in-view-options="{ once: true, margin: '-100px' }"
+      :transition="{ duration: prefersReduced ? 0 : 0.5, ease: [0.22, 1, 0.36, 1] }"
+    >
       <div class="grid gap-10 md:grid-cols-[1.3fr_1fr] md:items-center">
         <div class="text-center md:text-left">
-          <h2 class="text-2xl md:text-3xl font-serif font-semibold tracking-tight text-canvas">
+          <img
+            src="/brand/logo-mark.webp"
+            alt=""
+            aria-hidden="true"
+            width="512"
+            height="512"
+            loading="lazy"
+            class="mx-auto h-12 w-12 opacity-90 md:mx-0"
+          />
+          <h2 class="mt-5 text-2xl md:text-3xl font-serif font-semibold tracking-tight text-canvas">
             Siap cetak banner Anda?
           </h2>
           <p class="mt-3 max-w-md text-sm leading-relaxed text-canvas/70 mx-auto md:mx-0">
@@ -62,6 +86,6 @@ import { business } from '~/utils/business'
           </div>
         </dl>
       </div>
-    </div>
+    </motion.div>
   </section>
 </template>

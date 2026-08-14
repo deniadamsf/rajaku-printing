@@ -154,9 +154,16 @@ function isActive(prefix: string) {
 
     <footer class="border-t border-hairline py-8 mt-16">
       <div class="mx-auto max-w-6xl px-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-ink-500">
-        <p class="font-serif text-sm text-ink-700">
-          Rajaku <span class="text-gold-500">Printing</span>
-        </p>
+        <div class="flex items-center gap-2">
+          <img
+            src="/brand/logo-full-sm.webp"
+            alt="Rajaku Printing"
+            width="480"
+            height="461"
+            loading="lazy"
+            class="h-8 w-auto"
+          />
+        </div>
         <nav class="flex flex-wrap items-center justify-center gap-5">
           <NuxtLink to="/katalog" :class="['hover:text-ink-900 transition-colors', focusRing]">Katalog</NuxtLink>
           <NuxtLink to="/showcase" :class="['hover:text-ink-900 transition-colors', focusRing]">Showcase</NuxtLink>

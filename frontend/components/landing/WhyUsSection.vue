@@ -1,8 +1,12 @@
 <script setup lang="ts">
 /**
  * WhyUsSection — poin keunggulan singkat. Ikon Lucide monoline, tanpa emoji.
+ * Reveal stagger disiplin (`once: true`) — poin ini tenang, bukan momen utama.
  */
 import { BadgeCheck, Gauge, ShieldCheck, Sparkles } from '@lucide/vue'
+import { motion } from 'motion-v'
+
+const { container, item } = useRevealVariants()
 
 const points = [
   {
@@ -37,8 +41,14 @@ const points = [
       </h2>
     </div>
 
-    <ul class="mt-10 grid gap-6 sm:grid-cols-2">
-      <li v-for="p in points" :key="p.title" class="flex gap-4">
+    <motion.ul
+      class="mt-10 grid gap-6 sm:grid-cols-2"
+      :variants="container"
+      initial="hidden"
+      while-in-view="show"
+      :in-view-options="{ once: true, margin: '-100px' }"
+    >
+      <motion.li v-for="p in points" :key="p.title" :variants="item" class="flex gap-4">
         <span
           class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-hairline text-brand-500"
         >
@@ -48,7 +58,7 @@ const points = [
           <h3 class="text-sm font-sans font-semibold text-ink-950">{{ p.title }}</h3>
           <p class="mt-1 text-sm leading-relaxed text-ink-500">{{ p.desc }}</p>
         </div>
-      </li>
-    </ul>
+      </motion.li>
+    </motion.ul>
   </section>
 </template>

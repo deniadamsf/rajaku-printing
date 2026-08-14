@@ -7,11 +7,16 @@
  * `CatalogProductDetail` (per-slug) punya `pricings`. Supaya tidak menampilkan
  * data yang direkayasa, section ini menampilkan tipe kalkulasi harga (per m² /
  * paket) sebagai badge, bukan angka harga yang tidak tersedia di tipe list.
+ *
+ * Motion: reveal stagger disiplin via `useRevealVariants()` (`once: true`), kartu
+ * hover lift halus (translateY -2px + border/shadow naik tipis) — bukan scale.
  */
 import { ArrowRight, Layers, PackageSearch } from '@lucide/vue'
+import { motion } from 'motion-v'
 import type { CatalogProduct } from '~/types/catalog'
 
 const catalog = useCatalog()
+const { container, item } = useRevealVariants()
 
 const { data, pending, error, refresh } = await useAsyncData('landing-catalog-products', () =>
   catalog.listProducts(),
@@ -88,23 +93,36 @@ function pricingLabel(p: CatalogProduct): string {
     </div>
 
     <!-- Products -->
-    <ul v-else class="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-      <li
-        v-for="p in products"
-        :key="p.id"
-        class="rounded-lg border border-hairline bg-canvas p-6 md:p-8 transition-colors hover:border-ink-300"
-      >
-        <Layers class="h-6 w-6 text-brand-500" :stroke-width="1.5" />
-        <h3 class="mt-4 text-sm font-sans font-semibold text-ink-950">{{ p.name }}</h3>
-        <p v-if="p.description" class="mt-2 text-sm leading-relaxed text-ink-500 line-clamp-2">
-          {{ p.description }}
-        </p>
-        <span
-          class="mt-4 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-gold-700 bg-gold-50 ring-1 ring-inset ring-gold-500/30"
+    <motion.ul
+      v-else
+      class="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3"
+      :variants="container"
+      initial="hidden"
+      while-in-view="show"
+      :in-view-options="{ once: true, margin: '-100px' }"
+    >
+      <!--
+        Motion-v (`variants`) mengontrol entrance di <motion.li> (opacity/y) —
+        efek hover (transform translateY + shadow) sengaja ditaruh di <div> anak,
+        BUKAN elemen yang sama, supaya inline style transform dari motion-v tidak
+        bentrok/menang atas class Tailwind hover:-translate-y (brief motion §4).
+      -->
+      <motion.li v-for="p in products" :key="p.id" :variants="item">
+        <div
+          class="h-full rounded-lg border border-hairline bg-canvas p-6 transition-[border-color,box-shadow,transform] duration-200 ease-out hover:-translate-y-0.5 hover:border-ink-300 hover:shadow-sm md:p-8"
         >
-          {{ pricingLabel(p) }}
-        </span>
-      </li>
-    </ul>
+          <Layers class="h-6 w-6 text-brand-500" :stroke-width="1.5" />
+          <h3 class="mt-4 text-sm font-sans font-semibold text-ink-950">{{ p.name }}</h3>
+          <p v-if="p.description" class="mt-2 text-sm leading-relaxed text-ink-500 line-clamp-2">
+            {{ p.description }}
+          </p>
+          <span
+            class="mt-4 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-gold-700 bg-gold-50 ring-1 ring-inset ring-gold-500/30"
+          >
+            {{ pricingLabel(p) }}
+          </span>
+        </div>
+      </motion.li>
+    </motion.ul>
   </section>
 </template>

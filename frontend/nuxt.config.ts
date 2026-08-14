@@ -58,7 +58,15 @@ export default defineNuxtConfig({
         { name: 'viewport', content: 'width=device-width, initial-scale=1' },
         { name: 'theme-color', content: '#8B1A1A' },
       ],
-      link: [{ rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
+      // Favicon dari maskot logo (kepala raja bermahkota). Sengaja dipotong ke
+      // kepala saja: logo penuh beserta wordmark tidak terbaca di 16-32px.
+      // PNG didahulukan daripada favicon.svg (monogram R) supaya brand asli
+      // yang tampil di tab. favicon.svg tetap ada, dipakai sebagai aksen di UI.
+      link: [
+        { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/favicon-32.png' },
+        { rel: 'icon', type: 'image/png', sizes: '192x192', href: '/favicon-192.png' },
+        { rel: 'apple-touch-icon', sizes: '180x180', href: '/apple-touch-icon.png' },
+      ],
     },
   },
 

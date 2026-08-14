@@ -18,7 +18,7 @@
  */
 import { ArrowRight } from '@lucide/vue'
 
-const { isDesktop } = useDevice()
+const { isDesktop, isMobile } = useDevice()
 const config = useRuntimeConfig()
 
 const canonical = config.public.appBaseUrl.replace(/\/$/, '')
@@ -102,8 +102,17 @@ useHead({
     </ClientOnly>
 
     <LandingServicesSection />
+    <LandingProcessGallery />
     <LandingHowItWorksSection />
+    <LandingPriceTeaser />
     <LandingWhyUsSection />
     <LandingClosingCta />
+
+    <!-- Reserve ruang footer supaya tidak ketutup sticky bottom CTA mobile (§17). -->
+    <div class="h-20 md:hidden" aria-hidden="true" />
+
+    <ClientOnly>
+      <LandingMobileStickyCta v-if="isMobile" />
+    </ClientOnly>
   </div>
 </template>

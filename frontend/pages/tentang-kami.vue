@@ -8,11 +8,28 @@
  * sudah dipasang global di `layouts/default.vue` — tidak duplikasi @id.
  *
  * Mascot/logo (§26.8) hanya boleh muncul di halaman ini/footer, bukan di
- * admin/checkout. LOGO.png (8.7MB) sengaja tidak dipakai — cukup
- * favicon.svg (447B) sebagai aksen monogram kecil.
+ * admin/checkout — di sini dipakai `logo-full-sm.webp` (480px) sebagai
+ * elemen brand utama section cerita. LOGO.png (8.7MB) sengaja tidak dipakai.
+ * favicon.svg tetap dipakai sebagai monogram kecil di header.
+ *
+ * Foto proses (2 dari 6 aset showcase) dipakai untuk memecah dinding teks di
+ * section cerita — bukan klaim/statistik, murni gambar proses cetak asli.
+ *
+ * Momen orkestrasi utama halaman ini: blok cerita (emblem logo + foto
+ * proses) reveal bersamaan sekali saat masuk viewport. Section lain hanya
+ * fade tunggal tanpa stagger — halaman ini harus tetap terasa tenang.
  */
 import { Clock, Mail, MapPin, Phone, ShieldCheck, Sparkles, Truck, Users } from '@lucide/vue'
+import { motion } from 'motion-v'
 import { business } from '~/utils/business'
+
+const prefersReducedMotion = usePrefersReducedMotion()
+const fadeTransition = computed(() =>
+  prefersReducedMotion.value ? { duration: 0 } : { duration: 0.5, ease: [0.22, 1, 0.36, 1] as const },
+)
+function storyDelay(step: number) {
+  return prefersReducedMotion.value ? 0 : step * 0.1
+}
 
 definePageMeta({ layout: 'default' })
 
@@ -103,22 +120,97 @@ function waLink(): string {
       </p>
     </section>
 
-    <!-- Cerita singkat -->
+    <!-- Cerita singkat — logo emblem + foto proses memecah dinding teks -->
     <section class="mx-auto max-w-6xl px-4 pb-16 md:pb-24">
       <div class="rounded-lg border border-hairline bg-canvas p-6 md:p-10">
-        <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Cerita kami</p>
-        <h2 class="mt-3 max-w-2xl text-lg md:text-xl font-serif font-medium leading-relaxed text-ink-950">
-          Dibangun dari kebutuhan sederhana: banner yang tepat waktu, warnanya presisi, dan
-          prosesnya tidak bikin bingung.
-        </h2>
-        <p class="mt-4 max-w-2xl text-sm leading-relaxed text-ink-600">
-          Rajaku Printing berangkat dari pengalaman melayani kebutuhan cetak sehari-hari di
-          {{ business.addressLocality }} dan sekitarnya — mulai dari banner toko, spanduk acara,
-          sampai kebutuhan cetak mendadak yang tidak bisa menunggu lama. Setiap order kami
-          perlakukan dengan proses yang sama: jelas di awal soal harga dan bahan, transparan soal
-          status pengerjaan, dan konsisten soal kualitas hasil cetak.
-        </p>
+        <div class="grid gap-8 md:grid-cols-[220px_1fr] md:items-center">
+          <motion.div
+            class="mx-auto flex h-40 w-40 items-center justify-center rounded-lg border border-hairline bg-ink-950 p-6 md:mx-0 md:h-full md:w-full"
+            :initial="{ opacity: 0, scale: 0.96 }"
+            :while-in-view="{ opacity: 1, scale: 1 }"
+            :in-view-options="{ once: true, margin: '-80px' }"
+            :transition="{ ...fadeTransition, delay: storyDelay(0) }"
+          >
+            <img
+              src="/brand/logo-full-sm.webp"
+              alt="Logo Rajaku Printing"
+              width="480"
+              height="461"
+              loading="lazy"
+              class="h-full w-full object-contain"
+            >
+          </motion.div>
+
+          <motion.div
+            :initial="{ opacity: 0, y: 12 }"
+            :while-in-view="{ opacity: 1, y: 0 }"
+            :in-view-options="{ once: true, margin: '-80px' }"
+            :transition="{ ...fadeTransition, delay: storyDelay(1) }"
+          >
+            <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Cerita kami</p>
+            <h2 class="mt-3 max-w-2xl text-lg md:text-xl font-serif font-medium leading-relaxed text-ink-950">
+              Dibangun dari kebutuhan sederhana: banner yang tepat waktu, warnanya presisi, dan
+              prosesnya tidak bikin bingung.
+            </h2>
+            <p class="mt-4 max-w-2xl text-sm leading-relaxed text-ink-600">
+              Rajaku Printing berangkat dari pengalaman melayani kebutuhan cetak sehari-hari di
+              {{ business.addressLocality }} dan sekitarnya — mulai dari banner toko, spanduk acara,
+              sampai kebutuhan cetak mendadak yang tidak bisa menunggu lama. Setiap order kami
+              perlakukan dengan proses yang sama: jelas di awal soal harga dan bahan, transparan soal
+              status pengerjaan, dan konsisten soal kualitas hasil cetak.
+            </p>
+          </motion.div>
+        </div>
+
+        <motion.div
+          class="mt-8 overflow-hidden rounded-lg border border-hairline"
+          :initial="{ opacity: 0, y: 16 }"
+          :while-in-view="{ opacity: 1, y: 0 }"
+          :in-view-options="{ once: true, margin: '-80px' }"
+          :transition="{ ...fadeTransition, delay: storyDelay(2) }"
+        >
+          <img
+            src="/proses/proses-04.webp"
+            alt="Mesin cetak large-format Rajaku Printing"
+            width="1000"
+            height="562"
+            loading="lazy"
+            class="h-full w-full object-cover"
+          >
+        </motion.div>
       </div>
+    </section>
+
+    <!-- Jeda visual: dua foto proses memecah transisi cerita → nilai -->
+    <section class="mx-auto max-w-6xl px-4 pb-16 md:pb-24">
+      <motion.div
+        class="grid gap-4 sm:grid-cols-2"
+        :initial="{ opacity: 0, y: 16 }"
+        :while-in-view="{ opacity: 1, y: 0 }"
+        :in-view-options="{ once: true, margin: '-100px' }"
+        :transition="fadeTransition"
+      >
+        <div class="overflow-hidden rounded-lg border border-hairline">
+          <img
+            src="/proses/proses-01.webp"
+            alt="Panel kontrol mesin cetak dan tabung tinta"
+            width="1000"
+            height="562"
+            loading="lazy"
+            class="h-full w-full object-cover"
+          >
+        </div>
+        <div class="overflow-hidden rounded-lg border border-hairline">
+          <img
+            src="/proses/proses-06.webp"
+            alt="Hasil cetak banner yang sudah selesai"
+            width="1000"
+            height="562"
+            loading="lazy"
+            class="h-full w-full object-cover"
+          >
+        </div>
+      </motion.div>
     </section>
 
     <!-- Keunggulan / values -->

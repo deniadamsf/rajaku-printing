@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -38,6 +39,12 @@ type Config struct {
 	Invoice      InvoiceConfig
 	CMS          CMSConfig
 	Retention    RetentionConfig
+	// TrustedProxies — IP/CIDR entries gin.Engine.SetTrustedProxies() should
+	// trust when reading X-Forwarded-For to compute Context.ClientIP() (used
+	// by rate limiting). nil/empty means "trust nothing" — ClientIP() falls
+	// back to the raw TCP RemoteAddr, which is the safe default when there's
+	// no reverse proxy in front (mis. local dev). See router.go.
+	TrustedProxies []string
 }
 
 // RetentionConfig — parameter job pembersihan file desain (§19).
@@ -98,7 +105,7 @@ type InvoiceConfig struct {
 }
 
 type AppConfig struct {
-	Env Environment
+	Env  Environment
 	Port int
 	// BaseURL — API/backend URL. Dipakai untuk build download link resource
 	// yang ditangani backend (mis. invoice PDF). Di produksi biasanya sama
@@ -137,12 +144,23 @@ type CORSConfig struct {
 type RateLimitConfig struct {
 	PublicRPS   float64
 	PublicBurst int
+	// GuestVerifyRPS/GuestVerifyBurst — dedicated (stricter) limiter for
+	// POST /lacak/:resi/verify. This endpoint lets a caller guess a WhatsApp
+	// number against a known resi, so it MUST be throttled harder than the
+	// regular public group (spec: brute-force vector).
+	GuestVerifyRPS   float64
+	GuestVerifyBurst int
 }
 
 type JWTConfig struct {
 	Secret    string
 	AccessTTL time.Duration
 	Issuer    string
+	// GuestOrderTTL — lifetime of the scope-limited token issued by
+	// POST /lacak/:resi/verify. Deliberately short (default 30m, NOT
+	// AccessTTL's 24h) — this token only needs to live long enough for a
+	// guest to upload/approve a design file in one sitting.
+	GuestOrderTTL time.Duration
 }
 
 type GoogleOAuthConfig struct {
@@ -224,6 +242,48 @@ func Load() (*Config, error) {
 
 	origins := splitCSV(getenvDefault("CORS_ALLOWED_ORIGINS", "http://localhost:3000"))
 
+	// TRUSTED_PROXIES (security review finding) — comma-separated IP/CIDR
+	// list. Default EMPTY → gin.Engine.SetTrustedProxies(nil) → ClientIP()
+	// ignores X-Forwarded-For entirely and uses the raw TCP RemoteAddr. This
+	// is the correct default: gin's OWN default is to trust every proxy,
+	// which lets any client set X-Forwarded-For to whatever it wants and
+	// rotate it to get a fresh rate-limit bucket per request (mis. against
+	// the guest-checkout verify endpoint above). Only set this when the API
+	// genuinely sits behind a known reverse proxy (mis. "127.0.0.1" for a
+	// single-VPS nginx setup) — setting it to something internet-reachable
+	// defeats the whole point.
+	//
+	// Di PRODUCTION nilai ini WAJIB diisi eksplisit — kosong tidak boleh
+	// diterima diam-diam. Kalau API berjalan di belakang nginx satu VPS
+	// (topologi §19/§25) dan TRUSTED_PROXIES kosong, ClientIP() mengembalikan
+	// 127.0.0.1 untuk SETIAP request, sehingga seluruh pengunjung berbagi satu
+	// token bucket: endpoint verify yang 0.2 rps jadi 0.2 rps GLOBAL, dan satu
+	// penyerang cukup untuk mematikan semua endpoint publik. Gagalnya senyap —
+	// persis yang §22 "config fail-fast" larang. Yang benar-benar tidak punya
+	// proxy di depan menyatakannya eksplisit dengan TRUSTED_PROXIES=none.
+	rawTrustedProxies := strings.TrimSpace(getenvDefault("TRUSTED_PROXIES", ""))
+	var trustedProxies []string
+	switch {
+	case strings.EqualFold(rawTrustedProxies, "none"):
+		// Pernyataan eksplisit "tidak ada proxy di depan" → abaikan header proxy.
+		trustedProxies = nil
+	case rawTrustedProxies == "":
+		if env == EnvProduction {
+			errs = append(errs, "TRUSTED_PROXIES wajib diisi di production: "+
+				"daftar IP/CIDR reverse proxy (mis. \"127.0.0.1\" untuk nginx satu VPS), "+
+				"atau \"none\" kalau API benar-benar terekspos langsung tanpa proxy. "+
+				"Dibiarkan kosong, rate limit runtuh jadi satu bucket global")
+		}
+		trustedProxies = nil
+	default:
+		trustedProxies = splitCSV(rawTrustedProxies)
+		for _, tp := range trustedProxies {
+			if !isValidIPOrCIDR(tp) {
+				errs = append(errs, fmt.Sprintf("TRUSTED_PROXIES entry %q is not a valid IP or CIDR", tp))
+			}
+		}
+	}
+
 	rlRPS, err := getenvFloat("RATE_LIMIT_PUBLIC_RPS", 5)
 	if err != nil {
 		errs = append(errs, err.Error())
@@ -231,6 +291,23 @@ func Load() (*Config, error) {
 	rlBurst, err := getenvInt("RATE_LIMIT_PUBLIC_BURST", 10)
 	if err != nil {
 		errs = append(errs, err.Error())
+	}
+
+	// Dedicated (stricter) limiter for POST /lacak/:resi/verify — brute-force
+	// vector on WhatsApp number, must be tighter than the general public group.
+	guestVerifyRPS, err := getenvFloat("RATE_LIMIT_GUEST_VERIFY_RPS", 0.2)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+	if guestVerifyRPS <= 0 {
+		errs = append(errs, fmt.Sprintf("RATE_LIMIT_GUEST_VERIFY_RPS must be > 0, got %v", guestVerifyRPS))
+	}
+	guestVerifyBurst, err := getenvInt("RATE_LIMIT_GUEST_VERIFY_BURST", 3)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+	if guestVerifyBurst <= 0 {
+		errs = append(errs, fmt.Sprintf("RATE_LIMIT_GUEST_VERIFY_BURST must be > 0, got %d", guestVerifyBurst))
 	}
 
 	notifURL := getenvDefault("NOTIFICATION_WORKER_URL", "http://localhost:9090")
@@ -347,6 +424,14 @@ func Load() (*Config, error) {
 	}
 	jwtIssuer := getenvDefault("JWT_ISSUER", "rajaku-printing")
 
+	jwtGuestTTLRaw := getenvDefault("JWT_GUEST_ORDER_TTL", "30m")
+	jwtGuestTTL, err := time.ParseDuration(jwtGuestTTLRaw)
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("JWT_GUEST_ORDER_TTL invalid duration %q", jwtGuestTTLRaw))
+	} else if jwtGuestTTL <= 0 {
+		errs = append(errs, "JWT_GUEST_ORDER_TTL must be > 0")
+	}
+
 	if len(errs) > 0 {
 		return nil, errors.New("config invalid:\n  - " + strings.Join(errs, "\n  - "))
 	}
@@ -371,13 +456,16 @@ func Load() (*Config, error) {
 		},
 		CORS: CORSConfig{AllowedOrigins: origins},
 		RateLimit: RateLimitConfig{
-			PublicRPS:   rlRPS,
-			PublicBurst: rlBurst,
+			PublicRPS:        rlRPS,
+			PublicBurst:      rlBurst,
+			GuestVerifyRPS:   guestVerifyRPS,
+			GuestVerifyBurst: guestVerifyBurst,
 		},
 		JWT: JWTConfig{
-			Secret:    jwtSecret,
-			AccessTTL: jwtTTL,
-			Issuer:    jwtIssuer,
+			Secret:        jwtSecret,
+			AccessTTL:     jwtTTL,
+			Issuer:        jwtIssuer,
+			GuestOrderTTL: jwtGuestTTL,
 		},
 		GoogleOAuth: GoogleOAuthConfig{
 			ClientID:     os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
@@ -401,10 +489,11 @@ func Load() (*Config, error) {
 			BatchLimit:   retentionBatch,
 			JobTimeout:   retentionTimeout,
 		},
-		Storage: StorageConfig{LocalRoot: storageRoot},
-		Payment: PaymentConfig{MaxUploadMB: paymentMaxMB},
-		Design:  DesignConfig{MaxUploadMB: designMaxMB},
-		CMS:     CMSConfig{MaxImageUploadMB: cmsImgMaxMB},
+		TrustedProxies: trustedProxies,
+		Storage:        StorageConfig{LocalRoot: storageRoot},
+		Payment:        PaymentConfig{MaxUploadMB: paymentMaxMB},
+		Design:         DesignConfig{MaxUploadMB: designMaxMB},
+		CMS:            CMSConfig{MaxImageUploadMB: cmsImgMaxMB},
 		Invoice: InvoiceConfig{
 			CompanyName:    getenvDefault("INVOICE_COMPANY_NAME", "Rajaku Printing"),
 			CompanyAddress: os.Getenv("INVOICE_COMPANY_ADDRESS"),
@@ -488,6 +577,19 @@ func getenvFloat(key string, def float64) (float64, error) {
 		return 0, fmt.Errorf("%s must be number, got %q", key, raw)
 	}
 	return f, nil
+}
+
+// isValidIPOrCIDR reports whether s parses as a bare IP address or a CIDR
+// block — mirrors the shape gin.Engine.prepareTrustedCIDRs() itself accepts
+// (bare IP gets an implicit /32 or /128), so a value that fails here would
+// also fail at SetTrustedProxies() time — we just want that failure at
+// startup (fail-fast §22), not silently swallowed inside gin.
+func isValidIPOrCIDR(s string) bool {
+	if strings.Contains(s, "/") {
+		_, _, err := net.ParseCIDR(s)
+		return err == nil
+	}
+	return net.ParseIP(s) != nil
 }
 
 func splitCSV(s string) []string {

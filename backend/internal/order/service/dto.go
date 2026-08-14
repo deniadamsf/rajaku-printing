@@ -40,15 +40,21 @@ type CreateOnlineOrderInput struct {
 // PublicTrackingResult — data yg boleh dilihat siapa saja (sensor field
 // sensitif per spec section 5).
 type PublicTrackingResult struct {
-	Resi                  string                           `json:"resi"`
-	Status                string                           `json:"status"`
-	Channel               string                           `json:"channel"`
-	MetodeAmbil           string                           `json:"metode_ambil"`
+	Resi        string `json:"resi"`
+	Status      string `json:"status"`
+	Channel     string `json:"channel"`
+	MetodeAmbil string `json:"metode_ambil"`
+	// DesignSource dibuka di payload publik karena halaman lacak perlu tahu
+	// pelanggan membawa desain sendiri ('upload') atau minta dibuatkan
+	// ('request') untuk menentukan aksi unggah mana yang boleh ditawarkan ke
+	// guest terverifikasi. Bukan data sensitif: tidak memuat identitas,
+	// alamat, maupun nominal.
+	DesignSource          string                           `json:"design_source"`
 	ProductName           string                           `json:"product_name"`
 	MaterialName          string                           `json:"material_name"`
-	ShippingRecipient     string                           `json:"shipping_recipient,omitempty"`     // "Ani T***" (masked)
-	ShippingPhoneMasked   string                           `json:"shipping_phone,omitempty"`         // "0812****678"
-	ShippingAddressMasked string                           `json:"shipping_address,omitempty"`       // "Jl. Merdek**"
+	ShippingRecipient     string                           `json:"shipping_recipient,omitempty"` // "Ani T***" (masked)
+	ShippingPhoneMasked   string                           `json:"shipping_phone,omitempty"`     // "0812****678"
+	ShippingAddressMasked string                           `json:"shipping_address,omitempty"`   // "Jl. Merdek**"
 	CreatedAt             string                           `json:"created_at"`
 	History               []PublicTrackingResultHistoryRow `json:"history"`
 }

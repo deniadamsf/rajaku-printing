@@ -13,8 +13,26 @@ import (
 // Authorization header, verifies it via Service, and attaches the resulting
 // Identity to both the gin context and the request context.
 //
+// Deny-by-default: tokens carrying a non-empty Scope (mis. ScopeGuestOrder)
+// are REJECTED here (401) — a scoped/limited token must never work on a
+// generic "requires session" endpoint. Endpoints that intentionally accept a
+// scoped token must opt in explicitly via RequireAuthAllowScope.
+//
 // Downstream handlers retrieve it via IdentityFromContext(c.Request.Context()).
 func RequireAuth(svc Service) gin.HandlerFunc {
+	return requireAuth(svc, nil)
+}
+
+// RequireAuthAllowScope behaves like RequireAuth but additionally accepts
+// tokens whose Scope matches one of `allowed` (on top of full sessions, i.e.
+// Scope == ""). Use this ONLY on endpoints that were deliberately designed to
+// accept a limited-purpose token (mis. desain routes accepting
+// ScopeGuestOrder) — never as a blanket replacement for RequireAuth.
+func RequireAuthAllowScope(svc Service, allowed ...string) gin.HandlerFunc {
+	return requireAuth(svc, allowed)
+}
+
+func requireAuth(svc Service, allowedScopes []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := extractBearer(c.GetHeader("Authorization"))
 		if raw == "" {
@@ -34,10 +52,24 @@ func RequireAuth(svc Service) gin.HandlerFunc {
 			return
 		}
 
+		if id.Scope != "" && !scopeAllowed(id.Scope, allowedScopes) {
+			httpx.Error(c, 401, httpx.CodeUnauthorized, "token scope not allowed for this endpoint")
+			return
+		}
+
 		ctx := WithIdentity(c.Request.Context(), id)
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
+}
+
+func scopeAllowed(scope string, allowed []string) bool {
+	for _, a := range allowed {
+		if a == scope {
+			return true
+		}
+	}
+	return false
 }
 
 // OptionalAuth extracts the Bearer token if present + valid and attaches
@@ -45,6 +77,14 @@ func RequireAuth(svc Service) gin.HandlerFunc {
 // lolos (tanpa identity). Dipakai endpoint publik yang bisa berbeda perilaku
 // untuk logged-in vs guest, mis. POST /orders (customer login → tied to
 // customer_id, guest → resolved via nomor WA di body).
+//
+// Deny-by-default sama seperti RequireAuth: token BER-SCOPE (mis.
+// ScopeGuestOrder) diperlakukan sebagai anonim di sini — TIDAK ditolak
+// (endpoint ini memang boleh diakses tanpa auth), tapi Identity-nya juga
+// TIDAK di-attach. Tanpa ini, token guest_order yang sempit (dibuat untuk
+// upload/approve desain SATU order) akan diam-diam berfungsi sebagai sesi
+// penuh di endpoint manapun yang memakai OptionalAuth — melanggar batas
+// scope yang sama yang ditegakkan RequireAuth.
 func OptionalAuth(svc Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := extractBearer(c.GetHeader("Authorization"))
@@ -53,9 +93,10 @@ func OptionalAuth(svc Service) gin.HandlerFunc {
 			return
 		}
 		id, err := svc.VerifyToken(c.Request.Context(), raw)
-		if err != nil {
-			// Token invalid → treat as anonymous (best-effort). Handler yg
-			// benar-benar butuh auth pakai RequireAuth, bukan ini.
+		if err != nil || id.Scope != "" {
+			// Token invalid, OR valid-but-scoped → treat as anonymous
+			// (best-effort). Handler yg benar-benar butuh auth pakai
+			// RequireAuth/RequireAuthAllowScope, bukan ini.
 			c.Next()
 			return
 		}

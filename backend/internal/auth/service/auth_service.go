@@ -174,6 +174,14 @@ func (s *Service) VerifyToken(ctx context.Context, raw string) (*authapi.Identit
 	if err != nil {
 		return nil, authapi.ErrInvalidToken
 	}
+	var orderID *uuid.UUID
+	if claims.OrderID != "" {
+		oid, err := uuid.Parse(claims.OrderID)
+		if err != nil {
+			return nil, authapi.ErrInvalidToken
+		}
+		orderID = &oid
+	}
 	return &authapi.Identity{
 		UserID:      uid,
 		UserType:    authapi.UserType(claims.UserType),
@@ -181,6 +189,8 @@ func (s *Service) VerifyToken(ctx context.Context, raw string) (*authapi.Identit
 		Phone:       claims.Phone,
 		Roles:       claims.Roles,
 		Permissions: claims.Permissions,
+		Scope:       claims.Scope,
+		OrderID:     orderID,
 	}, nil
 }
 

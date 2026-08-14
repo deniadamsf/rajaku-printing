@@ -80,14 +80,15 @@ func (h *Handler) UploadCustomerFile(c *gin.Context) {
 	defer f.Close()
 
 	saved, err := h.svc.UploadCustomerFile(c.Request.Context(), service.UploadInput{
-		Resi:         resi,
-		CallerID:     id.UserID,
-		IsStaff:      id.UserType == authapi.UserTypeStaff,
-		FileReader:   f,
-		FileSize:     fh.Size,
-		MimeType:     fh.Header.Get("Content-Type"),
-		OriginalName: fh.Filename,
-		Notes:        c.PostForm("notes"),
+		Resi:          resi,
+		CallerID:      id.UserID,
+		IsStaff:       id.UserType == authapi.UserTypeStaff,
+		ScopedOrderID: id.OrderID,
+		FileReader:    f,
+		FileSize:      fh.Size,
+		MimeType:      fh.Header.Get("Content-Type"),
+		OriginalName:  fh.Filename,
+		Notes:         c.PostForm("notes"),
 	})
 	if err != nil {
 		mapDomainErr(c, err)
@@ -117,14 +118,15 @@ func (h *Handler) StaffUploadDraft(c *gin.Context) {
 	defer f.Close()
 
 	saved, err := h.svc.StaffUploadDraft(c.Request.Context(), service.UploadInput{
-		Resi:         c.Param("resi"),
-		CallerID:     id.UserID,
-		IsStaff:      true,
-		FileReader:   f,
-		FileSize:     fh.Size,
-		MimeType:     fh.Header.Get("Content-Type"),
-		OriginalName: fh.Filename,
-		Notes:        c.PostForm("notes"),
+		Resi:          c.Param("resi"),
+		CallerID:      id.UserID,
+		IsStaff:       true,
+		ScopedOrderID: id.OrderID,
+		FileReader:    f,
+		FileSize:      fh.Size,
+		MimeType:      fh.Header.Get("Content-Type"),
+		OriginalName:  fh.Filename,
+		Notes:         c.PostForm("notes"),
 	})
 	if err != nil {
 		mapDomainErr(c, err)
@@ -191,9 +193,10 @@ func (h *Handler) ApproveDraft(c *gin.Context) {
 		return
 	}
 	out, err := h.svc.ApproveDraft(c.Request.Context(), service.ApproveInput{
-		DraftID:  draftID,
-		CallerID: id.UserID,
-		IsStaff:  id.UserType == authapi.UserTypeStaff,
+		DraftID:       draftID,
+		CallerID:      id.UserID,
+		IsStaff:       id.UserType == authapi.UserTypeStaff,
+		ScopedOrderID: id.OrderID,
 	})
 	if err != nil {
 		mapDomainErr(c, err)
@@ -223,10 +226,11 @@ func (h *Handler) RequestRevision(c *gin.Context) {
 		return
 	}
 	out, err := h.svc.RequestRevision(c.Request.Context(), service.RevisionInput{
-		DraftID:  draftID,
-		CallerID: id.UserID,
-		IsStaff:  id.UserType == authapi.UserTypeStaff,
-		Notes:    body.Notes,
+		DraftID:       draftID,
+		CallerID:      id.UserID,
+		IsStaff:       id.UserType == authapi.UserTypeStaff,
+		Notes:         body.Notes,
+		ScopedOrderID: id.OrderID,
 	})
 	if err != nil {
 		mapDomainErr(c, err)
@@ -243,7 +247,7 @@ func (h *Handler) List(c *gin.Context) {
 		return
 	}
 	items, err := h.svc.ListForOrder(c.Request.Context(), c.Param("resi"),
-		id.UserID, id.UserType == authapi.UserTypeStaff)
+		id.UserID, id.UserType == authapi.UserTypeStaff, id.OrderID)
 	if err != nil {
 		mapDomainErr(c, err)
 		return
@@ -264,7 +268,7 @@ func (h *Handler) GetFile(c *gin.Context) {
 		return
 	}
 	handle, err := h.svc.GetFile(c.Request.Context(), fileID,
-		id.UserID, id.UserType == authapi.UserTypeStaff)
+		id.UserID, id.UserType == authapi.UserTypeStaff, id.OrderID)
 	if err != nil {
 		mapDomainErr(c, err)
 		return

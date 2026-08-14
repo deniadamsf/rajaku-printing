@@ -4,6 +4,9 @@
  *
  * Actions yang tersedia untuk customer:
  *   - Upload bukti transfer (state menunggu_pembayaran / ditolak)
+ *   - Upload desain siap cetak, design_source 'upload' (state dibayar) — §6
+ *   - Upload aset desain (logo/foto) untuk request desain, design_source
+ *     'request' (state dibayar / desain_dikerjakan / menunggu_approval_desain) — §6
  *   - Approve staff design draft (state menunggu_approval_desain)
  *   - Request revisi design draft (state menunggu_approval_desain)
  *
@@ -11,6 +14,7 @@
  *   - Timeline status
  *   - Ringkasan produk + nominal
  *   - Payment proofs status
+ *   - Daftar file desain yang sudah diupload customer
  *
  * Design: patuh CLAUDE.md §26.
  */
@@ -28,6 +32,7 @@ import {
   CircleDot,
   Circle,
   FileText,
+  FileWarning,
   AlertTriangle,
 } from '@lucide/vue'
 import type { Order } from '~/types/order'
@@ -130,6 +135,29 @@ const canReviewDraft = computed(
   () => order.value?.status === 'menunggu_approval_desain' && !!pendingDraft.value,
 )
 
+// -------------------- customer design upload (§6) --------------------
+// Batas ukuran mengikuti env backend DESIGN_MAX_UPLOAD_MB (default 25MB).
+const DESIGN_MAX_UPLOAD_MB = 25
+const DESIGN_ALLOWED_EXT = ['jpg', 'jpeg', 'png', 'webp', 'pdf', 'cdr', 'ai']
+
+// null = tidak ada aksi upload yang relevan untuk status order saat ini.
+const customerUploadKind = computed<'upload' | 'request' | null>(() => {
+  const o = order.value
+  if (!o) return null
+  if (o.design_source === 'upload' && o.status === 'dibayar') return 'upload'
+  if (
+    o.design_source === 'request' &&
+    ['dibayar', 'desain_dikerjakan', 'menunggu_approval_desain'].includes(o.status)
+  ) {
+    return 'request'
+  }
+  return null
+})
+
+const customerUploadedFiles = computed(() =>
+  designFiles.value.filter((f) => f.role === 'customer_upload' || f.role === 'customer_asset'),
+)
+
 // -------------------- upload proof form --------------------
 const proofFile = ref<File | null>(null)
 const proofMetode = ref<'transfer' | 'qris'>('transfer')
@@ -164,6 +192,62 @@ async function submitProof() {
     errorMsg.value = toApiError(e, 'Gagal upload bukti transfer')
   } finally {
     proofUploading.value = false
+  }
+}
+
+// -------------------- customer design upload form --------------------
+const customerDesignFile = ref<File | null>(null)
+const customerDesignNotes = ref('')
+const customerDesignUploading = ref(false)
+const customerDesignFileInput = ref<HTMLInputElement | null>(null)
+
+function onCustomerDesignFilePick(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  customerDesignFile.value = input.files?.[0] ?? null
+}
+
+function validateCustomerDesignFile(file: File): string | null {
+  if (file.size === 0) return 'File kosong, pilih file yang valid.'
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  if (!DESIGN_ALLOWED_EXT.includes(ext)) {
+    return `Format .${ext || '?'} tidak didukung. Format yang diterima: ${DESIGN_ALLOWED_EXT.map((e) => `.${e}`).join(', ')}.`
+  }
+  const maxBytes = DESIGN_MAX_UPLOAD_MB * 1024 * 1024
+  if (file.size > maxBytes) {
+    return `Ukuran file ${formatBytes(file.size)} melebihi batas ${DESIGN_MAX_UPLOAD_MB} MB.`
+  }
+  return null
+}
+
+async function submitCustomerDesign() {
+  if (!customerDesignFile.value) {
+    errorMsg.value = 'Pilih file desain dulu.'
+    return
+  }
+  const validationError = validateCustomerDesignFile(customerDesignFile.value)
+  if (validationError) {
+    errorMsg.value = validationError
+    return
+  }
+  customerDesignUploading.value = true
+  errorMsg.value = null
+  try {
+    await designApi.uploadCustomerFile(
+      resi.value,
+      customerDesignFile.value,
+      customerDesignNotes.value.trim() || undefined,
+    )
+    showSuccess('File desain terupload. Tim kami akan memeriksanya.')
+    customerDesignFile.value = null
+    customerDesignNotes.value = ''
+    if (customerDesignFileInput.value) customerDesignFileInput.value.value = ''
+    // Upload aset pertama (design_source 'request') bisa meng-advance status
+    // order jadi 'desain_dikerjakan' di backend — reload supaya UI sinkron.
+    await loadAll()
+  } catch (e) {
+    errorMsg.value = toApiError(e, 'Gagal upload file desain')
+  } finally {
+    customerDesignUploading.value = false
   }
 }
 
@@ -475,6 +559,100 @@ const bankInfo = {
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- ============ ACTION AREA: Upload customer design ============ -->
+      <div
+        v-if="customerUploadKind"
+        class="rounded-lg border-2 border-gold-400 bg-gold-50/50 p-6"
+      >
+        <div class="flex items-start gap-3">
+          <Upload class="h-5 w-5 text-gold-700 flex-none mt-0.5" :stroke-width="1.75" />
+          <div class="flex-1">
+            <h2 class="font-serif text-lg font-semibold text-ink-950">
+              {{ customerUploadKind === 'upload' ? 'Upload desain siap cetak' : 'Upload aset desain (logo / foto)' }}
+            </h2>
+            <p class="mt-1 text-sm text-ink-700 leading-relaxed">
+              <template v-if="customerUploadKind === 'upload'">
+                Upload file desain final Anda. Format yang diterima: JPG, PNG, WebP, PDF, CDR, AI — maksimal
+                {{ DESIGN_MAX_UPLOAD_MB }} MB. Tim kami akan memverifikasi file sebelum masuk proses cetak.
+              </template>
+              <template v-else>
+                Upload logo/foto yang ingin dipakai desainer untuk mengerjakan draft Anda. Boleh upload lebih
+                dari satu file — cukup ulangi proses ini satu per satu. Maksimal {{ DESIGN_MAX_UPLOAD_MB }} MB per file.
+              </template>
+            </p>
+
+            <form class="mt-4 space-y-3" @submit.prevent="submitCustomerDesign">
+              <div>
+                <label class="text-sm font-medium text-ink-900">File desain <span class="text-brand-500">*</span></label>
+                <input
+                  ref="customerDesignFileInput"
+                  type="file"
+                  accept=".jpg,.jpeg,.png,.webp,.pdf,.cdr,.ai"
+                  required
+                  class="mt-1 block w-full rounded-md text-sm text-ink-700 file:mr-3 file:rounded-md file:border-0 file:bg-ink-950 file:px-3 file:py-1.5 file:text-canvas file:font-medium hover:file:bg-ink-900 file:transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+                  @change="onCustomerDesignFilePick"
+                >
+                <p class="mt-1 text-xs text-ink-500">Format: JPG / PNG / WebP / PDF / CDR / AI. Max {{ DESIGN_MAX_UPLOAD_MB }} MB.</p>
+              </div>
+
+              <div>
+                <label class="text-sm font-medium text-ink-900">Catatan untuk tim (opsional)</label>
+                <textarea
+                  v-model="customerDesignNotes"
+                  rows="2"
+                  maxlength="500"
+                  placeholder="Contoh: ini logo terbaru, tolong pakai versi ini."
+                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                />
+              </div>
+
+              <button
+                type="button"
+                :disabled="customerDesignUploading || !customerDesignFile"
+                class="inline-flex items-center gap-2 rounded-md bg-brand-500 px-4 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                @click="submitCustomerDesign"
+              >
+                <Loader2 v-if="customerDesignUploading" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
+                <Upload v-else class="h-4 w-4" :stroke-width="1.75" />
+                {{ customerDesignUploading ? 'Mengupload…' : 'Upload file' }}
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ VIEW: Customer's uploaded design files ============ -->
+      <div v-if="customerUploadedFiles.length" class="rounded-lg border border-hairline bg-canvas p-6">
+        <div class="flex items-center gap-2 mb-3">
+          <FileText class="h-4 w-4 text-ink-500" :stroke-width="1.75" />
+          <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">File desain yang Anda upload</p>
+        </div>
+        <ul class="space-y-3">
+          <li
+            v-for="f in customerUploadedFiles"
+            :key="f.id"
+            class="rounded-md border border-hairline bg-canvas-alt/40 p-3"
+          >
+            <div class="flex items-start gap-2">
+              <FileWarning v-if="f.is_purged" class="h-3.5 w-3.5 text-ink-400 flex-none mt-0.5" :stroke-width="1.75" />
+              <FileText v-else class="h-3.5 w-3.5 text-ink-500 flex-none mt-0.5" :stroke-width="1.75" />
+              <div class="min-w-0 flex-1">
+                <p class="text-xs text-ink-900 truncate font-mono">{{ f.file_original_name }}</p>
+                <p class="mt-1 text-[10px] text-ink-500">
+                  {{ formatBytes(f.file_size_bytes) }} · {{ fmtDate(f.uploaded_at) }}
+                </p>
+                <p v-if="f.notes" class="mt-1.5 text-xs text-ink-700 italic border-l-2 border-gold-300 pl-2">
+                  "{{ f.notes }}"
+                </p>
+                <p v-if="f.is_purged" class="mt-1.5 text-[10px] text-ink-500">
+                  File sudah dihapus dari server sesuai kebijakan retensi 30 hari dan tidak bisa didownload lagi.
+                </p>
+              </div>
+            </div>
+          </li>
+        </ul>
       </div>
 
       <!-- Ringkasan produk -->

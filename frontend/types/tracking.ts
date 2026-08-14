@@ -10,6 +10,13 @@ export interface PublicTracking {
   status: string
   channel: string
   metode_ambil: string
+  /**
+   * 'upload' = pelanggan bawa desain sendiri, 'request' = minta dibuatkan tim.
+   * Dipakai halaman lacak untuk menentukan aksi unggah mana yang ditawarkan
+   * ke guest terverifikasi. Backend membukanya di payload publik karena bukan
+   * data sensitif (lihat PublicTrackingResult di order/service/dto.go).
+   */
+  design_source: string
   product_name: string
   material_name: string
   shipping_recipient?: string

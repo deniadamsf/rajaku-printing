@@ -24,11 +24,23 @@ var (
 // Claims adalah payload JWT — semua field diserialisasi ke JSON.
 type Claims struct {
 	UserID      string   `json:"uid"`
-	UserType    string   `json:"typ"`  // 'customer' | 'staff'
+	UserType    string   `json:"typ"` // 'customer' | 'staff'
 	Email       string   `json:"em,omitempty"`
 	Phone       string   `json:"ph,omitempty"`
-	Roles       []string `json:"roles,omitempty"`       // role names
-	Permissions []string `json:"perms,omitempty"`       // permission codes (flatten dari roles)
+	Roles       []string `json:"roles,omitempty"` // role names
+	Permissions []string `json:"perms,omitempty"` // permission codes (flatten dari roles)
+	// Scope — kosong berarti sesi penuh biasa. Nilai non-kosong (mis.
+	// "guest_order") menandai token TERBATAS yang hanya boleh dipakai untuk
+	// endpoint yang secara eksplisit mengizinkan scope tersebut
+	// (authapi.RequireAuthAllowScope). authapi.RequireAuth WAJIB menolak token
+	// ber-scope — deny-by-default.
+	Scope string `json:"scp,omitempty"`
+	// OrderID — hanya diisi untuk token ber-scope yang terikat ke SATU order
+	// (mis. guest_order dari POST /lacak/:resi/verify). Tanpa ini, token guest
+	// dari satu resi bisa dipakai untuk order LAIN milik nomor WA yang sama —
+	// service yang mengonsumsi scope ini (mis. modul design) WAJIB menolak
+	// akses ke order selain yang tertera di sini. Kosong untuk sesi penuh.
+	OrderID string `json:"oid,omitempty"`
 	jwt.RegisteredClaims
 }
 

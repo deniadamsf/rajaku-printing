@@ -26,16 +26,31 @@ const (
 	UserTypeStaff    UserType = "staff"
 )
 
+// ScopeGuestOrder marks a token issued via POST /lacak/:resi/verify — a guest
+// customer proving ownership of an order with resi + nomor WA (no password).
+// Session tokens (login/register) have an empty Scope. Endpoints that accept
+// this scope MUST opt in explicitly via authapi.RequireAuthAllowScope — never
+// compare the raw string literal outside this package.
+const ScopeGuestOrder = "guest_order"
+
 // Identity adalah proyeksi user aktif untuk cross-module — hanya field yang
 // dibutuhkan modul lain untuk otorisasi & auditing.
 type Identity struct {
 	UserID      uuid.UUID
 	UserType    UserType
-	Email       string   // "" untuk guest
+	Email       string // "" untuk guest
 	Phone       string
 	Name        string
 	Roles       []string // role names
 	Permissions []string // permission codes (flatten)
+	// Scope — "" untuk sesi penuh (login/register). Non-kosong (mis.
+	// ScopeGuestOrder) menandai token terbatas — lihat token.Claims.Scope.
+	Scope string
+	// OrderID — non-nil hanya untuk token ber-scope yang terikat ke SATU order
+	// (mis. ScopeGuestOrder). nil untuk sesi penuh. Modul yang menerima scope
+	// terbatas ini (mis. design) WAJIB menolak akses ke order lain kalau field
+	// ini terisi — lihat token.Claims.OrderID.
+	OrderID *uuid.UUID
 }
 
 // HasPermission returns true iff `code` ada di Permissions.

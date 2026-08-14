@@ -32,3 +32,15 @@ type userSummary struct {
 	Name     string `json:"name"`
 	UserType string `json:"user_type"`
 }
+
+// guestVerifyRequest — POST /lacak/:resi/verify body. Phone accepts any
+// locally-recognized format (08xx / 62xx / +62xx); normalized in service.
+type guestVerifyRequest struct {
+	Phone string `json:"phone" binding:"required,min=8,max=20"`
+}
+
+// guestVerifyResponse — contract is fixed: exactly {"token", "expires_at"}.
+type guestVerifyResponse struct {
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expires_at"` // RFC3339 UTC
+}

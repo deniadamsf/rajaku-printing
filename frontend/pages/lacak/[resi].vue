@@ -17,9 +17,16 @@ import {
   Circle,
   Loader2,
   ExternalLink,
+  ShieldCheck,
+  LogOut,
+  Clock,
+  Upload,
+  FileText,
+  FileWarning,
 } from '@lucide/vue'
 import { ApiError } from '~/composables/useApi'
 import type { PublicTracking } from '~/types/tracking'
+import type { DesignFile } from '~/types/design'
 
 definePageMeta({ layout: 'default' })
 
@@ -55,6 +62,150 @@ async function load() {
 }
 
 onMounted(load)
+
+// -------------------- guest ownership verification (§ guest design upload) --------------------
+// Guest (order tanpa akun) buktikan kepemilikan pakai resi + nomor WA, dapat
+// token sesi terbatas (30 menit, sessionStorage only) untuk unggah desain —
+// lihat useGuestOrderSession. Endpoint aksi desain sama dgn customer login,
+// cuma header Authorization pakai token guest ini (lihat useDesign override).
+const guestSession = useGuestOrderSession(() => resi.value)
+const guestDesignApi = useDesign({ token: () => guestSession.token.value })
+
+const guestPhone = ref('')
+
+async function submitGuestVerify() {
+  const phone = guestPhone.value.trim()
+  if (!phone) return
+  const ok = await guestSession.verify(phone)
+  if (ok) guestPhone.value = ''
+}
+
+// Aturan gating HARUS sama persis dengan backend (design_service.go
+// UploadCustomerFile), kalau tidak kartu tampil tapi upload ditolak 400:
+//   design_source 'upload'  → hanya status 'dibayar'
+//   design_source 'request' → 'dibayar' / 'desain_dikerjakan' / 'menunggu_approval_desain'
+// Sama dengan `customerUploadKind` di /akun/pesanan/[resi].vue.
+const guestUploadKind = computed<'upload' | 'request' | null>(() => {
+  if (!guestSession.isVerified.value || !data.value) return null
+  const d = data.value
+  if (d.design_source === 'upload' && d.status === 'dibayar') return 'upload'
+  if (
+    d.design_source === 'request' &&
+    ['dibayar', 'desain_dikerjakan', 'menunggu_approval_desain'].includes(d.status)
+  ) {
+    return 'request'
+  }
+  return null
+})
+
+const canUploadGuestDesign = computed(() => guestUploadKind.value !== null)
+
+const guestDesignFiles = ref<DesignFile[]>([])
+const loadingGuestDesignFiles = ref(false)
+
+async function loadGuestDesignFiles() {
+  if (!guestSession.isVerified.value) return
+  loadingGuestDesignFiles.value = true
+  try {
+    const res = await guestDesignApi.listByResi(resi.value)
+    guestDesignFiles.value = res.items ?? []
+  } catch (e) {
+    guestDesignFiles.value = []
+  } finally {
+    loadingGuestDesignFiles.value = false
+  }
+}
+
+watch(
+  () => guestSession.isVerified.value,
+  (verified) => {
+    if (verified) loadGuestDesignFiles()
+    else guestDesignFiles.value = []
+  },
+)
+
+const guestUploadedFiles = computed(() =>
+  guestDesignFiles.value.filter((f) => f.role === 'customer_upload' || f.role === 'customer_asset'),
+)
+
+function guestLogout() {
+  guestSession.logout()
+  guestDesignFiles.value = []
+}
+
+// -------------------- guest design upload form --------------------
+// Validasi & batas identik dengan /akun/pesanan/[resi].vue (jalur customer
+// login) — jangan menyimpang supaya perilaku konsisten lintas jalur.
+const DESIGN_MAX_UPLOAD_MB = 25
+const DESIGN_ALLOWED_EXT = ['jpg', 'jpeg', 'png', 'webp', 'pdf', 'cdr', 'ai']
+
+const guestDesignFile = ref<File | null>(null)
+const guestDesignNotes = ref('')
+const guestDesignUploading = ref(false)
+const guestDesignFileInput = ref<HTMLInputElement | null>(null)
+const guestDesignError = ref<string | null>(null)
+const guestDesignSuccess = ref<string | null>(null)
+
+function onGuestDesignFilePick(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  guestDesignFile.value = input.files?.[0] ?? null
+}
+
+function validateGuestDesignFile(file: File): string | null {
+  if (file.size === 0) return 'File kosong, pilih file yang valid.'
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  if (!DESIGN_ALLOWED_EXT.includes(ext)) {
+    return `Format .${ext || '?'} tidak didukung. Format yang diterima: ${DESIGN_ALLOWED_EXT.map((e) => `.${e}`).join(', ')}.`
+  }
+  const maxBytes = DESIGN_MAX_UPLOAD_MB * 1024 * 1024
+  if (file.size > maxBytes) {
+    return `Ukuran file ${formatBytes(file.size)} melebihi batas ${DESIGN_MAX_UPLOAD_MB} MB.`
+  }
+  return null
+}
+
+async function submitGuestDesign() {
+  guestDesignError.value = null
+  guestDesignSuccess.value = null
+  if (!guestDesignFile.value) {
+    guestDesignError.value = 'Pilih file desain dulu.'
+    return
+  }
+  const validationError = validateGuestDesignFile(guestDesignFile.value)
+  if (validationError) {
+    guestDesignError.value = validationError
+    return
+  }
+  guestDesignUploading.value = true
+  try {
+    await guestDesignApi.uploadCustomerFile(
+      resi.value,
+      guestDesignFile.value,
+      guestDesignNotes.value.trim() || undefined,
+    )
+    guestDesignSuccess.value = 'File desain terupload. Tim kami akan memeriksanya.'
+    guestDesignFile.value = null
+    guestDesignNotes.value = ''
+    if (guestDesignFileInput.value) guestDesignFileInput.value.value = ''
+    // Upload aset pertama bisa meng-advance status order di backend — reload
+    // timeline + daftar file supaya UI sinkron.
+    await Promise.all([load(), loadGuestDesignFiles()])
+  } catch (e) {
+    guestDesignError.value = e instanceof ApiError ? e.message : 'Gagal upload file desain'
+  } finally {
+    guestDesignUploading.value = false
+  }
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+function fmtMinutesLeft(ms: number): string {
+  return String(Math.max(0, Math.ceil(ms / 60000)))
+}
 
 // -------------------- helpers --------------------
 // Status labels sesuai §4 state machine.
@@ -282,6 +433,191 @@ async function copyResi() {
           </li>
         </ol>
       </div>
+
+      <!-- ============ Guest ownership verification ============ -->
+      <div
+        v-if="!guestSession.isVerified.value"
+        class="rounded-lg border-2 border-brand-500 bg-brand-50/40 p-6"
+      >
+        <div class="flex items-start gap-3">
+          <ShieldCheck class="h-5 w-5 text-brand-700 flex-none mt-0.5" :stroke-width="1.75" />
+          <div class="flex-1">
+            <h2 class="font-serif text-lg font-semibold text-ink-950">Ini pesanan saya</h2>
+            <p class="mt-1 text-sm text-ink-700 leading-relaxed">
+              Kalau ini pesanan Anda, masukkan nomor WhatsApp yang dipakai saat order untuk
+              membuka akses upload file desain. Nomor ini juga jadi cara kami memverifikasi
+              kepemilikan tanpa perlu Anda mendaftar akun.
+            </p>
+
+            <form class="mt-4 flex flex-wrap items-end gap-3" @submit.prevent="submitGuestVerify">
+              <div class="min-w-0 flex-1">
+                <label for="guest-phone" class="text-sm font-medium text-ink-900">Nomor WhatsApp</label>
+                <input
+                  id="guest-phone"
+                  v-model="guestPhone"
+                  type="tel"
+                  inputmode="tel"
+                  placeholder="0812xxxxxxx"
+                  class="mt-1 block w-full max-w-xs rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                >
+              </div>
+              <button
+                type="button"
+                :disabled="guestSession.verifying.value || !guestPhone.trim()"
+                class="inline-flex items-center gap-2 rounded-md bg-brand-500 px-4 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                @click="submitGuestVerify"
+              >
+                <Loader2 v-if="guestSession.verifying.value" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
+                <ShieldCheck v-else class="h-4 w-4" :stroke-width="1.75" />
+                {{ guestSession.verifying.value ? 'Memeriksa…' : 'Verifikasi' }}
+              </button>
+            </form>
+
+            <AlertMessage v-if="guestSession.errorMsg.value" variant="error" :message="guestSession.errorMsg.value" class="mt-3" />
+            <!-- Petunjuk ini sengaja tampil pada SEMUA kegagalan, bukan hanya
+                 kasus akun terdaftar. Verifikasi di sini khusus pesanan tanpa
+                 akun; pemilik akun harus lewat login. Kalau pesannya dibedakan
+                 per penyebab, respons itu sendiri membocorkan resi mana yang
+                 dimiliki akun terdaftar — jadi bentuknya harus seragam. -->
+            <p v-if="guestSession.errorMsg.value" class="mt-2 text-xs text-ink-500 leading-relaxed">
+              Punya akun Rajaku? Pesanan yang dibuat sambil login dikelola dari
+              <NuxtLink
+                to="/login"
+                class="font-medium text-brand-500 underline rounded-sm hover:text-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
+              >halaman akun</NuxtLink>, bukan dari sini.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Guest verified: upload desain + logout ============ -->
+      <template v-else>
+        <div class="rounded-lg border border-hairline bg-canvas-alt/50 p-4 flex flex-wrap items-center justify-between gap-3">
+          <div class="flex items-center gap-2 text-sm text-ink-700">
+            <ShieldCheck class="h-4 w-4 text-emerald-700" :stroke-width="1.75" />
+            <span>Kepemilikan pesanan terverifikasi.</span>
+            <span class="hidden sm:inline-flex items-center gap-1 text-xs text-ink-500">
+              <Clock class="h-3.5 w-3.5" :stroke-width="1.75" />
+              Sesi berlaku 30 menit — sisa {{ fmtMinutesLeft(guestSession.expiresInMs.value) }} menit.
+            </span>
+          </div>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
+            @click="guestLogout"
+          >
+            <LogOut class="h-3.5 w-3.5" :stroke-width="1.75" />
+            Keluar dari sesi ini
+          </button>
+        </div>
+
+        <!-- Upload desain -->
+        <div
+          v-if="canUploadGuestDesign"
+          class="rounded-lg border-2 border-gold-400 bg-gold-50/50 p-6"
+        >
+          <div class="flex items-start gap-3">
+            <Upload class="h-5 w-5 text-gold-700 flex-none mt-0.5" :stroke-width="1.75" />
+            <div class="flex-1">
+              <h2 class="font-serif text-lg font-semibold text-ink-950">
+                {{ guestUploadKind === 'upload' ? 'Upload desain siap cetak' : 'Upload aset desain (logo / foto)' }}
+              </h2>
+              <p class="mt-1 text-sm text-ink-700 leading-relaxed">
+                <template v-if="guestUploadKind === 'upload'">
+                  Upload file desain final Anda. Format yang diterima: JPG, PNG, WebP, PDF, CDR, AI — maksimal
+                  {{ DESIGN_MAX_UPLOAD_MB }} MB. Tim kami akan memverifikasi file sebelum masuk proses cetak.
+                </template>
+                <template v-else>
+                  Upload logo/foto yang ingin dipakai desainer untuk mengerjakan draft Anda. Boleh upload lebih
+                  dari satu file — cukup ulangi proses ini satu per satu. Maksimal {{ DESIGN_MAX_UPLOAD_MB }} MB per file.
+                </template>
+              </p>
+
+              <form class="mt-4 space-y-3" @submit.prevent="submitGuestDesign">
+                <div>
+                  <label class="text-sm font-medium text-ink-900">File desain <span class="text-brand-500">*</span></label>
+                  <input
+                    ref="guestDesignFileInput"
+                    type="file"
+                    accept=".jpg,.jpeg,.png,.webp,.pdf,.cdr,.ai"
+                    required
+                    class="mt-1 block w-full rounded-md text-sm text-ink-700 file:mr-3 file:rounded-md file:border-0 file:bg-ink-950 file:px-3 file:py-1.5 file:text-canvas file:font-medium hover:file:bg-ink-900 file:transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+                    @change="onGuestDesignFilePick"
+                  >
+                  <p class="mt-1 text-xs text-ink-500">Format: JPG / PNG / WebP / PDF / CDR / AI. Max {{ DESIGN_MAX_UPLOAD_MB }} MB.</p>
+                </div>
+
+                <div>
+                  <label class="text-sm font-medium text-ink-900">Catatan untuk tim (opsional)</label>
+                  <textarea
+                    v-model="guestDesignNotes"
+                    rows="2"
+                    maxlength="500"
+                    placeholder="Contoh: ini logo terbaru, tolong pakai versi ini."
+                    class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  :disabled="guestDesignUploading || !guestDesignFile"
+                  class="inline-flex items-center gap-2 rounded-md bg-brand-500 px-4 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  @click="submitGuestDesign"
+                >
+                  <Loader2 v-if="guestDesignUploading" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
+                  <Upload v-else class="h-4 w-4" :stroke-width="1.75" />
+                  {{ guestDesignUploading ? 'Mengupload…' : 'Upload file' }}
+                </button>
+              </form>
+
+              <AlertMessage v-if="guestDesignError" variant="error" :message="guestDesignError" class="mt-3" />
+              <AlertMessage v-if="guestDesignSuccess" variant="success" :message="guestDesignSuccess" class="mt-3" />
+            </div>
+          </div>
+        </div>
+        <div v-else class="rounded-lg border border-hairline bg-canvas p-6">
+          <p class="text-sm text-ink-700 leading-relaxed">
+            Upload file desain belum tersedia untuk status pesanan saat ini
+            (<strong class="text-ink-950">{{ labelOf(currentStatus) }}</strong>). Kartu upload akan muncul
+            begitu pesanan siap menerima file desain.
+          </p>
+        </div>
+
+        <!-- Daftar file yang sudah diupload -->
+        <div v-if="loadingGuestDesignFiles" class="rounded-lg border border-hairline bg-canvas p-6 text-center">
+          <Loader2 class="mx-auto h-4 w-4 animate-spin text-ink-500" :stroke-width="1.75" />
+        </div>
+        <div v-else-if="guestUploadedFiles.length" class="rounded-lg border border-hairline bg-canvas p-6">
+          <div class="flex items-center gap-2 mb-3">
+            <FileText class="h-4 w-4 text-ink-500" :stroke-width="1.75" />
+            <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">File desain yang Anda upload</p>
+          </div>
+          <ul class="space-y-3">
+            <li
+              v-for="f in guestUploadedFiles"
+              :key="f.id"
+              class="rounded-md border border-hairline bg-canvas-alt/40 p-3"
+            >
+              <div class="flex items-start gap-2">
+                <FileWarning v-if="f.is_purged" class="h-3.5 w-3.5 text-ink-400 flex-none mt-0.5" :stroke-width="1.75" />
+                <FileText v-else class="h-3.5 w-3.5 text-ink-500 flex-none mt-0.5" :stroke-width="1.75" />
+                <div class="min-w-0 flex-1">
+                  <p class="text-xs text-ink-900 truncate font-mono">{{ f.file_original_name }}</p>
+                  <p class="mt-1 text-[10px] text-ink-500">
+                    {{ formatBytes(f.file_size_bytes) }} · {{ fmtDateTime(f.uploaded_at) }}
+                  </p>
+                  <p v-if="f.notes" class="mt-1.5 text-xs text-ink-700 italic border-l-2 border-gold-300 pl-2">
+                    "{{ f.notes }}"
+                  </p>
+                  <p v-if="f.is_purged" class="mt-1.5 text-[10px] text-ink-500">
+                    File sudah dihapus dari server sesuai kebijakan retensi 30 hari dan tidak bisa didownload lagi.
+                  </p>
+                </div>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </template>
 
       <!-- Action footer -->
       <div class="flex flex-wrap gap-2">

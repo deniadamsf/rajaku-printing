@@ -4,6 +4,11 @@
  * `http://localhost:8080` di komponen.
  *
  * Auto-attach Bearer token dari cookie `rajaku_token` (SSR-safe) kalau ada.
+ * Untuk kasus token bukan dari cookie sesi customer/staff biasa — mis. sesi
+ * guest terbatas di halaman lacak resi publik (§ guest design upload) — panggil
+ * `useApi({ token: () => guestToken.value })`. Override ini TIDAK menyentuh
+ * cookie `rajaku_token`, jadi sesi customer login asli tidak pernah tertukar.
+ * Semua call site lama `useApi()` tanpa argumen tetap pakai cookie seperti biasa.
  *
  * Response envelope backend: `{ success, data, error }`. Wrapper ini mengembalikan
  * `data` langsung untuk happy path & melempar ApiError dengan code/message dari
@@ -46,17 +51,37 @@ export function useAuthTokenCookie() {
   })
 }
 
-export function useApi() {
+export interface UseApiOptions {
+  /** Sumber token override (mis. sesi guest). Default: cookie `rajaku_token`. */
+  token?: () => string | null | undefined
+}
+
+/**
+ * humanNetworkMessage — pesan pengganti saat respons backend tidak membawa
+ * envelope error. Pesan asli $fetch ("[POST] \"http://localhost:8080/…\":
+ * 404 Not Found") membocorkan URL internal dan tidak terbaca pengguna.
+ */
+function humanNetworkMessage(status?: number): string {
+  if (status === undefined) return 'Tidak bisa terhubung ke server. Cek koneksi Anda lalu coba lagi.'
+  if (status === 404) return 'Layanan yang diminta tidak tersedia. Coba lagi nanti.'
+  if (status === 429) return 'Terlalu banyak permintaan. Tunggu sebentar lalu coba lagi.'
+  if (status >= 500) return 'Server sedang bermasalah. Coba lagi beberapa saat lagi.'
+  return 'Permintaan gagal diproses. Coba lagi.'
+}
+
+export function useApi(options: UseApiOptions = {}) {
   const config = useRuntimeConfig()
   const baseURL = config.public.apiBase
   const tokenCookie = useAuthTokenCookie()
+  const getToken = options.token ?? (() => tokenCookie.value)
 
   async function request<T>(path: string, opts: Parameters<typeof $fetch>[1] = {}): Promise<T> {
     const headers: Record<string, string> = {
       ...(opts.headers as Record<string, string> | undefined),
     }
-    if (tokenCookie.value) {
-      headers['Authorization'] = `Bearer ${tokenCookie.value}`
+    const token = getToken()
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
     }
 
     try {
@@ -87,7 +112,12 @@ export function useApi() {
         )
       }
       if (e instanceof ApiError) throw e
-      throw new ApiError(err?.message ?? 'Network error', 'NETWORK_ERROR', err?.status ?? err?.statusCode)
+      // Tidak ada envelope: 404 polos dari router, kegagalan jaringan, atau
+      // error proxy. Pesan mentah $fetch memuat URL backend lengkap — jangan
+      // pernah ditampilkan ke pengguna. Simpan di `details` untuk debugging,
+      // tampilkan pesan yang bisa dibaca manusia.
+      const status = err?.status ?? err?.statusCode
+      throw new ApiError(humanNetworkMessage(status), 'NETWORK_ERROR', status, err?.message)
     }
   }
 

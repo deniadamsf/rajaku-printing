@@ -332,6 +332,13 @@ function resetForm() {
             <span v-if="successResult.design_source === 'request'">
               Tim desainer kami akan kirim draft untuk approval Anda sebelum masuk cetak.
             </span>
+            <!-- Halaman detail pesanan dijaga middleware customer-only, jadi link
+                 hanya relevan untuk customer terdaftar. Order guest belum punya
+                 jalur upload mandiri — arahkan ke WA supaya tidak mentok di login. -->
+            <span v-else-if="auth.isCustomer">
+              Setelah pembayaran terverifikasi, upload file desain Anda (CDR / AI / PDF / JPG / PNG)
+              di halaman <NuxtLink :to="`/akun/pesanan/${successResult.resi}`" class="underline rounded-sm hover:text-gold-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950 transition-colors">detail pesanan</NuxtLink> — tim cek lalu langsung cetak.
+            </span>
             <span v-else>
               Kirimkan file desain Anda (CDR / AI / PDF / JPG / PNG) via WA — tim cek lalu langsung cetak.
             </span>

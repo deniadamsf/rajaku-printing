@@ -44,27 +44,72 @@ type DesignStore interface {
 	MarkReminderSent(ctx context.Context, id uuid.UUID, at time.Time) error
 }
 
-// allowedMimeTypes — file yg boleh untuk cetak (§6). CDR & AI tidak
-// previewable — staff harus download.
-var allowedMimeTypes = map[string]struct {
-	ext         string
-	previewable bool
-}{
-	"image/jpeg":                {".jpg", true},
-	"image/png":                 {".png", true},
-	"image/webp":                {".webp", true},
-	"application/pdf":           {".pdf", true},
-	// CorelDRAW — vendor mime string bervariasi. Terima yg umum + fallback
-	// generic (handler cross-check ekstensi).
-	"application/x-cdr":         {".cdr", false},
-	"application/cdr":           {".cdr", false},
-	"application/coreldraw":     {".cdr", false},
-	"image/x-coreldraw":         {".cdr", false},
+// allowedMimeTypes — file yg boleh untuk cetak (§6).
+//
+// Daftar ini SENDIRIAN tidak cukup sebagai gerbang: "application/octet-stream"
+// ada di sini karena browser sering mengirimnya untuk CDR/AI yang tidak dikenal,
+// dan tanpa pengecekan kedua nilai itu meloloskan file jenis APA PUN. Karena
+// itu setiap upload juga wajib lolos allowedExtensions di bawah — lihat
+// resolveFileSpec.
+var allowedMimeTypes = map[string]struct{}{
+	"image/jpeg":      {},
+	"image/png":       {},
+	"image/webp":      {},
+	"application/pdf": {},
+	// CorelDRAW — vendor mime string bervariasi, terima yang umum.
+	"application/x-cdr":     {},
+	"application/cdr":       {},
+	"application/coreldraw": {},
+	"image/x-coreldraw":     {},
 	// Adobe Illustrator
-	"application/postscript":    {".ai", false},
-	"application/illustrator":   {".ai", false},
-	// Generic — kalau upload dari browser tanpa mime tepat.
-	"application/octet-stream":  {".bin", false},
+	"application/postscript":  {},
+	"application/illustrator": {},
+	// Generic — browser tanpa mime tepat. Hanya lolos kalau ekstensinya sah.
+	"application/octet-stream": {},
+}
+
+// allowedExtensions — sumber kebenaran untuk jenis file yang boleh disimpan,
+// beserta apakah browser bisa mem-preview-nya. Ekstensi dipakai (bukan mime)
+// karena mime datang dari client dan bisa dipalsukan jadi nilai generik.
+// CDR & AI tidak previewable — staff harus download.
+// canonicalMime — mime yang DISIMPAN dan disajikan kembali di header
+// Content-Type, diturunkan dari ekstensi. Mime mentah dari client tidak boleh
+// dipakai untuk itu: browser sering mengirim "application/octet-stream" untuk
+// PNG/PDF yang sah, sehingga file yang previewable justru gagal dirender staff
+// (atau malah memicu unduhan) karena Content-Type-nya generik.
+var allowedExtensions = map[string]struct {
+	previewable   bool
+	canonicalMime string
+}{
+	".jpg":  {true, "image/jpeg"},
+	".jpeg": {true, "image/jpeg"},
+	".png":  {true, "image/png"},
+	".webp": {true, "image/webp"},
+	".pdf":  {true, "application/pdf"},
+	".cdr":  {false, "application/x-cdr"},
+	".ai":   {false, "application/postscript"},
+}
+
+// resolveFileSpec memvalidasi mime DAN ekstensi nama file asli, lalu
+// mengembalikan ekstensi penyimpanan + flag previewable.
+//
+// Keduanya wajib lolos. Mime sendiri tidak cukup (client bisa mengirim
+// "application/octet-stream" untuk file apa pun); ekstensi sendiri juga tidak
+// cukup (nama file sepenuhnya dikendalikan client). File tanpa ekstensi yang
+// dikenal ditolak — bukan regresi yang berarti karena unggahan asli selalu
+// membawa ekstensi, dan menyimpan blob tak dikenal di disk VPS adalah persis
+// yang ingin dicegah (§19).
+func resolveFileSpec(mimeType, originalName string) (ext string, previewable bool, canonicalMime string, err error) {
+	m := strings.ToLower(strings.TrimSpace(mimeType))
+	if _, ok := allowedMimeTypes[m]; !ok {
+		return "", false, "", designapi.ErrInvalidMimeType
+	}
+	e := strings.ToLower(path.Ext(strings.TrimSpace(originalName)))
+	spec, ok := allowedExtensions[e]
+	if !ok {
+		return "", false, "", designapi.ErrInvalidMimeType
+	}
+	return e, spec.previewable, spec.canonicalMime, nil
 }
 
 type Service struct {
@@ -147,6 +192,9 @@ func (s *Service) UploadCustomerFile(ctx context.Context, in UploadInput) (*mode
 	if !in.IsStaff && order.CustomerID != in.CallerID {
 		return nil, designapi.ErrNotOrderOwner
 	}
+	if err := checkScopedOrder(in.ScopedOrderID, order.ID); err != nil {
+		return nil, err
+	}
 
 	// Derive role + state guard.
 	var role model.Role
@@ -168,7 +216,7 @@ func (s *Service) UploadCustomerFile(ctx context.Context, in UploadInput) (*mode
 		return nil, designapi.ErrDesignSourceMismatch
 	}
 
-	saved, err := s.persistBlobAndRow(ctx, order.ID, role, in, /* approvalPending */ false, nil, /* notes */ in.Notes)
+	saved, err := s.persistBlobAndRow(ctx, order.ID, role, in /* approvalPending */, false, nil /* notes */, in.Notes)
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +258,9 @@ func (s *Service) ApproveDraft(ctx context.Context, in ApproveInput) (*model.Des
 	}
 	if !in.IsStaff && order.CustomerID != in.CallerID {
 		return nil, designapi.ErrNotOrderOwner
+	}
+	if err := checkScopedOrder(in.ScopedOrderID, order.ID); err != nil {
+		return nil, err
 	}
 
 	now := s.nowFn().UTC()
@@ -274,6 +325,9 @@ func (s *Service) RequestRevision(ctx context.Context, in RevisionInput) (*model
 	}
 	if !in.IsStaff && order.CustomerID != in.CallerID {
 		return nil, designapi.ErrNotOrderOwner
+	}
+	if err := checkScopedOrder(in.ScopedOrderID, order.ID); err != nil {
+		return nil, err
 	}
 
 	now := s.nowFn().UTC()
@@ -458,7 +512,10 @@ func (s *Service) StaffApproveWalkinInstant(ctx context.Context, in WalkinInstan
 
 // ListForOrder returns all design files for an order (customer sees own,
 // staff sees anything). No file bytes — hanya metadata.
-func (s *Service) ListForOrder(ctx context.Context, resi string, callerID uuid.UUID, isStaff bool) ([]model.DesignFile, error) {
+//
+// scopedOrderID — non-nil kalau caller memakai token guest_order
+// (authapi.Identity.OrderID); lihat dokumentasi UploadInput.ScopedOrderID.
+func (s *Service) ListForOrder(ctx context.Context, resi string, callerID uuid.UUID, isStaff bool, scopedOrderID *uuid.UUID) ([]model.DesignFile, error) {
 	order, err := s.orderCmd.FindSummaryByResi(ctx, resi)
 	if err != nil {
 		if errors.Is(err, orderapi.ErrOrderNotFound) {
@@ -469,13 +526,19 @@ func (s *Service) ListForOrder(ctx context.Context, resi string, callerID uuid.U
 	if !isStaff && order.CustomerID != callerID {
 		return nil, designapi.ErrNotOrderOwner
 	}
+	if err := checkScopedOrder(scopedOrderID, order.ID); err != nil {
+		return nil, err
+	}
 	return s.files.ListByOrder(ctx, order.ID)
 }
 
 // GetFile authorizes access & returns filesystem handle to stream via
 // http.ServeFile. Purged files return ErrFilePurged (§19: metadata masih ada,
 // blob sudah dihapus).
-func (s *Service) GetFile(ctx context.Context, id uuid.UUID, callerID uuid.UUID, isStaff bool) (*FileHandle, error) {
+//
+// scopedOrderID — non-nil kalau caller memakai token guest_order
+// (authapi.Identity.OrderID); lihat dokumentasi UploadInput.ScopedOrderID.
+func (s *Service) GetFile(ctx context.Context, id uuid.UUID, callerID uuid.UUID, isStaff bool, scopedOrderID *uuid.UUID) (*FileHandle, error) {
 	f, err := s.files.FindByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, designrepo.ErrNotFound) {
@@ -485,6 +548,14 @@ func (s *Service) GetFile(ctx context.Context, id uuid.UUID, callerID uuid.UUID,
 	}
 	if f.IsPurged {
 		return nil, designapi.ErrFilePurged
+	}
+	// Batas scope token ditegakkan TANPA syarat, sejajar dengan empat jalur
+	// lain (upload/approve/revision/list). Sebelumnya cek ini bersarang di
+	// dalam `if !isStaff`, sehingga kalau suatu saat ada token ber-scope milik
+	// user bertipe staff, GetFile jadi satu-satunya jalur yang melewatkan
+	// pembatasan per-order dan bisa mengunduh blob order mana pun.
+	if err := checkScopedOrder(scopedOrderID, f.OrderID); err != nil {
+		return nil, err
 	}
 	if !isStaff {
 		order, err := s.orderCmd.FindSummaryByID(ctx, f.OrderID)
@@ -508,6 +579,25 @@ func (s *Service) GetFile(ctx context.Context, id uuid.UUID, callerID uuid.UUID,
 
 // ---- Internal helpers ----
 
+// checkScopedOrder enforces that a caller using a scope-limited token (mis.
+// ScopeGuestOrder, minted by POST /lacak/:resi/verify) only ever touches the
+// ONE order that token was verified against. `scopedOrderID` is
+// authapi.Identity.OrderID, threaded through as UploadInput/ApproveInput/
+// RevisionInput.ScopedOrderID (or a direct parameter for the read paths) —
+// nil means a full session, which has no extra restriction beyond the
+// ownership check that already ran at the call site.
+//
+// Without this, a guest token issued for resi A would still pass the plain
+// `order.CustomerID == callerID` ownership check for resi B, C, … — every
+// OTHER order owned by the same phone number — because the token's uid is
+// the real (shared) customer_id, not something scoped per-order.
+func checkScopedOrder(scopedOrderID *uuid.UUID, orderID uuid.UUID) error {
+	if scopedOrderID != nil && *scopedOrderID != orderID {
+		return designapi.ErrNotOrderOwner
+	}
+	return nil
+}
+
 func (s *Service) persistBlobAndRow(
 	ctx context.Context,
 	orderID uuid.UUID,
@@ -517,11 +607,10 @@ func (s *Service) persistBlobAndRow(
 	approvalStatus *model.ApprovalStatus,
 	notes string,
 ) (*model.DesignFile, error) {
-	// Validate mime + size.
-	mime := strings.ToLower(strings.TrimSpace(in.MimeType))
-	spec, ok := allowedMimeTypes[mime]
-	if !ok {
-		return nil, designapi.ErrInvalidMimeType
+	// Validate mime + ekstensi + size.
+	ext, previewable, canonicalMime, err := resolveFileSpec(in.MimeType, in.OriginalName)
+	if err != nil {
+		return nil, err
 	}
 	if in.FileSize <= 0 {
 		return nil, designapi.ErrFileEmpty
@@ -537,7 +626,7 @@ func (s *Service) persistBlobAndRow(
 		"design_files",
 		fmt.Sprintf("%04d", now.Year()),
 		fmt.Sprintf("%02d", now.Month()),
-		fileID.String()+spec.ext,
+		fileID.String()+ext,
 	)
 	written, err := s.blobs.Save(ctx, subpath, in.FileReader)
 	if err != nil {
@@ -555,8 +644,10 @@ func (s *Service) persistBlobAndRow(
 		FilePath:         subpath,
 		FileOriginalName: safeOriginalName(in.OriginalName),
 		FileSizeBytes:    written,
-		FileMimeType:     mime,
-		IsPreviewable:    spec.previewable,
+		// Mime kanonik dari ekstensi, BUKAN nilai mentah client — nilai ini
+		// disajikan kembali sebagai Content-Type saat file di-stream.
+		FileMimeType:     canonicalMime,
+		IsPreviewable:    previewable,
 		UploadedAt:       now,
 		UploadedBy:       &in.CallerID,
 	}

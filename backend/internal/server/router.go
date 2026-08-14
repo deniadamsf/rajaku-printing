@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -29,8 +30,6 @@ import (
 	"github.com/rajaku-printing/backend/internal/invoice/pdfrender"
 	invoicerepo "github.com/rajaku-printing/backend/internal/invoice/repository"
 	invoiceservice "github.com/rajaku-printing/backend/internal/invoice/service"
-	poshandler "github.com/rajaku-printing/backend/internal/pos/handler"
-	posservice "github.com/rajaku-printing/backend/internal/pos/service"
 	notifhandler "github.com/rajaku-printing/backend/internal/notification/handler"
 	notifrepo "github.com/rajaku-printing/backend/internal/notification/repository"
 	notifservice "github.com/rajaku-printing/backend/internal/notification/service"
@@ -40,6 +39,8 @@ import (
 	paymenthandler "github.com/rajaku-printing/backend/internal/payment/handler"
 	paymentrepo "github.com/rajaku-printing/backend/internal/payment/repository"
 	paymentservice "github.com/rajaku-printing/backend/internal/payment/service"
+	poshandler "github.com/rajaku-printing/backend/internal/pos/handler"
+	posservice "github.com/rajaku-printing/backend/internal/pos/service"
 	productionhandler "github.com/rajaku-printing/backend/internal/production/handler"
 	productionservice "github.com/rajaku-printing/backend/internal/production/service"
 	settingshandler "github.com/rajaku-printing/backend/internal/settings/handler"
@@ -72,6 +73,23 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 
 	r := gin.New()
 
+	// SetTrustedProxies — security review finding: gin.New()'s DEFAULT trusts
+	// every proxy, so without this call, Context.ClientIP() (used by every
+	// RateLimitPublic-guarded route, mis. the guest-checkout verify endpoint
+	// below) would read whatever X-Forwarded-For the caller sends. An
+	// attacker can rotate that header per-request to get a fresh limiter
+	// bucket every time, making the rate limit meaningless. Empty config
+	// (dev default) → SetTrustedProxies(nil) → ClientIP() ignores
+	// X-Forwarded-For entirely and uses the raw TCP RemoteAddr. Only
+	// non-empty when TRUSTED_PROXIES names a specific, known reverse proxy.
+	var trustedProxies []string
+	if len(d.Config.TrustedProxies) > 0 {
+		trustedProxies = d.Config.TrustedProxies
+	}
+	if err := r.SetTrustedProxies(trustedProxies); err != nil {
+		return nil, nil, fmt.Errorf("set trusted proxies: %w", err)
+	}
+
 	r.Use(middleware.Recover())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.CORS(d.Config.CORS.AllowedOrigins))
@@ -92,6 +110,13 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// guestOrderIssuer — same secret/issuer name as jwtIssuer (so authSvc.VerifyToken
+	// can verify tokens it signs) but a much shorter TTL. Deliberately a SEPARATE
+	// *token.Issuer instance — never reuse jwtIssuer's 24h TTL for guest tokens.
+	guestOrderIssuer, err := token.NewIssuer(d.Config.JWT.Secret, d.Config.JWT.GuestOrderTTL, d.Config.JWT.Issuer)
+	if err != nil {
+		return nil, nil, err
+	}
 	userRepo := authrepo.NewUserRepository(d.DB)
 	roleRepo := authrepo.NewRoleRepository(d.DB)
 	inviteRepo := authrepo.NewStaffInviteRepository(d.DB)
@@ -99,6 +124,12 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	authH := authhandler.New(authSvc)
 	// authapi.CustomerService — dipakai order module.
 	customerSvc := authservice.NewCustomerService(userRepo)
+	// Guest-checkout ownership proof (POST /lacak/:resi/verify). orderCmd
+	// wired below via SetOrderCommandService — order module is built AFTER
+	// auth (order needs authapi.CustomerService first), same setter-injection
+	// pattern as SetNotifier elsewhere in this file.
+	guestOrderSvc := authservice.NewGuestOrderService(userRepo, guestOrderIssuer)
+	guestOrderH := authhandler.NewGuestOrderHandler(guestOrderSvc)
 
 	// --- Admin panel: staff & role management (§10) ---
 	inviteSvc := authservice.NewInviteService(inviteRepo, userRepo, authservice.InviteConfig{})
@@ -119,6 +150,9 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	orderRepo := orderrepo.NewOrderRepository(d.DB)
 	orderSvc := orderservice.New(orderRepo, catalogSvc, customerSvc)
 	orderH := orderhandler.New(orderSvc)
+	// orderSvc satisfies orderapi.OrderCommandService — needed by guest order
+	// verification (resi → order → CustomerID).
+	guestOrderSvc.SetOrderCommandService(orderSvc)
 
 	// --- Wiring modul payment ---
 	// filestore backing customer-uploaded proofs; disk local per spec §19.
@@ -236,6 +270,21 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 			// GET /lacak/:resi (public tracking tercensor). GET /orders/:resi
 			// (auth) di-mount di dalam v1 group non-public.
 			orderH.RegisterRoutes(v1, public, authSvc)
+
+			// POST /lacak/:resi/verify — guest checkout ownership proof (resi +
+			// no. WA → token guest_order, dipakai upload/approve desain tanpa
+			// akun). Endpoint milik modul auth (urusan sesi/identitas), tapi
+			// path bersarang di bawah /lacak/:resi milik order module — aman,
+			// gin memisah pohon routing per HTTP method (GET vs POST) sehingga
+			// tidak konflik dengan GET /lacak/:resi di atas.
+			//
+			// Limiter TAMBAHAN (jauh lebih ketat) di atas limiter publik grup
+			// yang sudah berlaku (public.Use di atas) — endpoint ini vektor
+			// brute-force nomor WA (coba banyak nomor untuk satu resi).
+			guestVerify := public.Group("/lacak/:resi")
+			guestVerify.Use(middleware.RateLimitPublic(
+				d.Config.RateLimit.GuestVerifyRPS, d.Config.RateLimit.GuestVerifyBurst))
+			guestVerify.POST("/verify", guestOrderH.VerifyOwnership)
 
 			public.GET("/ping", func(c *gin.Context) {
 				httpx.OK(c, gin.H{"pong": true})

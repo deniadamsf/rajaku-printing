@@ -154,6 +154,7 @@ func (s *Service) CreateOnlineOrder(ctx context.Context, in CreateOnlineOrderInp
 // Rules:
 //   - Staff (user_type=staff): boleh lihat semua order.
 //   - Customer: hanya boleh lihat order milik customer_id-nya sendiri.
+//
 // Kalau resi tidak ada → ErrOrderNotFound. Kalau caller bukan owner & bukan staff
 // → ErrNotOwner (handler maps ke 403).
 func (s *Service) GetByResiForOwner(ctx context.Context, resiStr string, caller *authapi.Identity) (*model.Order, error) {
@@ -201,6 +202,7 @@ func (s *Service) GetByResiPublic(ctx context.Context, resiStr string) (*PublicT
 		Status:       string(o.Status),
 		Channel:      string(o.Channel),
 		MetodeAmbil:  string(o.MetodeAmbil),
+		DesignSource: string(o.DesignSource),
 		ProductName:  o.ProductNameSnapshot,
 		MaterialName: o.MaterialNameSnapshot,
 		CreatedAt:    o.CreatedAt.UTC().Format(time.RFC3339),

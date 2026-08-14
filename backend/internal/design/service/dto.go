@@ -19,6 +19,14 @@ type UploadInput struct {
 	CallerID uuid.UUID
 	IsStaff  bool
 
+	// ScopedOrderID — non-nil kalau caller memakai token guest_order
+	// (authapi.Identity.OrderID). Token itu terbit untuk SATU order spesifik;
+	// tanpa dicek di sini, token dari resi A akan tetap lolos ownership check
+	// (order.CustomerID == callerID) untuk resi LAIN milik nomor WA yang
+	// sama. nil untuk sesi penuh (login/register) — tidak ada pembatasan
+	// tambahan selain ownership check yang sudah ada.
+	ScopedOrderID *uuid.UUID
+
 	// File meta — handler validasi shape (non-empty, size, mime) sebelum call.
 	FileReader   io.Reader
 	FileSize     int64
@@ -32,9 +40,11 @@ type UploadInput struct {
 
 // ApproveInput — customer approve staff draft.
 type ApproveInput struct {
-	DraftID    uuid.UUID
-	CallerID   uuid.UUID
-	IsStaff    bool
+	DraftID  uuid.UUID
+	CallerID uuid.UUID
+	IsStaff  bool
+	// ScopedOrderID — lihat dokumentasi UploadInput.ScopedOrderID.
+	ScopedOrderID *uuid.UUID
 }
 
 // RevisionInput — customer minta revisi.
@@ -43,6 +53,8 @@ type RevisionInput struct {
 	CallerID uuid.UUID
 	IsStaff  bool
 	Notes    string // wajib
+	// ScopedOrderID — lihat dokumentasi UploadInput.ScopedOrderID.
+	ScopedOrderID *uuid.UUID
 }
 
 // StaffVerifyInput — staff verifikasi file customer (upload path).

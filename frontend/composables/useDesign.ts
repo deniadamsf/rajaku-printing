@@ -7,13 +7,26 @@
  *   POST /admin/orders/:resi/design-verify      — verifikasi customer_upload — perm design.approve
  *   POST /admin/orders/:resi/design-walkin-approve — POS instant approve (§11) — perm design.approve
  *   GET  /design-files/:id/file                 — stream (auth req, Bearer header) — dipakai fetchFileBlob
+ *
+ * Endpoint yg dipakai customer:
+ *   POST /orders/:resi/design-files              — customer upload desain siap cetak (role
+ *                                                   customer_upload) atau aset desain (role
+ *                                                   customer_asset), multipart — dipanggil uploadCustomerFile
+ *
+ * Endpoint di atas juga dipakai oleh sesi guest terverifikasi di halaman lacak
+ * resi publik (nomor resi + nomor WA, lihat `useGuestOrderSession`) — bedanya
+ * cuma header Authorization pakai token guest, bukan cookie `rajaku_token`.
+ * Panggil `useDesign({ token: () => guestToken.value })` untuk kasus itu; default
+ * `useDesign()` tanpa argumen tetap pakai cookie seperti biasa.
  */
 import type { DesignFile, DesignFileList } from '~/types/design'
+import type { UseApiOptions } from '~/composables/useApi'
 
-export function useDesign() {
-  const api = useApi()
+export function useDesign(options: UseApiOptions = {}) {
+  const api = useApi(options)
   const config = useRuntimeConfig()
   const tokenCookie = useAuthTokenCookie()
+  const getToken = options.token ?? (() => tokenCookie.value)
 
   function listByResi(resi: string): Promise<DesignFileList> {
     return api.get<DesignFileList>(`/orders/${resi}/design-files`)
@@ -44,13 +57,27 @@ export function useDesign() {
   }
 
   /**
+   * uploadCustomerFile — customer upload desain siap cetak (design_source
+   * 'upload') atau aset desain untuk request desain (design_source 'request').
+   * Role di-derive backend dari `order.design_source`; validasi state (order
+   * harus 'dibayar' dst) juga di backend — lihat design_service.go.
+   */
+  async function uploadCustomerFile(resi: string, file: File, notes?: string): Promise<DesignFile> {
+    const form = new FormData()
+    form.append('file', file)
+    if (notes) form.append('notes', notes)
+    return api.post<DesignFile>(`/orders/${resi}/design-files`, form)
+  }
+
+  /**
    * fetchFileBlob — GET file via Bearer header, return object URL untuk render
    * di <img>/<object> tanpa expose token di URL. Caller wajib URL.revokeObjectURL
    * saat unmount / ganti file supaya tidak leak memory.
    */
   async function fetchFileBlob(id: string): Promise<{ url: string; mime: string; name: string }> {
+    const token = getToken()
     const res = await fetch(`${config.public.apiBase}/design-files/${id}/file`, {
-      headers: tokenCookie.value ? { Authorization: `Bearer ${tokenCookie.value}` } : {},
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
     if (!res.ok) throw new Error(`Fetch file gagal: ${res.status}`)
     const blob = await res.blob()
@@ -69,6 +96,7 @@ export function useDesign() {
     approveDraft,
     requestRevision,
     uploadDraft,
+    uploadCustomerFile,
     fetchFileBlob,
   }
 }

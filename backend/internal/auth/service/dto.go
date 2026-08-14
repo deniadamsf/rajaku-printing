@@ -35,3 +35,11 @@ type MeOutput struct {
 	Roles       []string  `json:"roles"`
 	Permissions []string  `json:"permissions"`
 }
+
+// GuestOrderToken is the result of successful guest ownership verification
+// (POST /lacak/:resi/verify) — a short-TTL, scope-limited access token that
+// proves the caller controls the phone number tied to the order's customer.
+type GuestOrderToken struct {
+	AccessToken string
+	ExpiresAt   time.Time // UTC
+}

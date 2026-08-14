@@ -20,20 +20,20 @@ import (
 // ---------- fakes ----------
 
 type fakeStore struct {
-	created            *model.DesignFile
-	createErr          error
-	createCalls        int
-	findByID           *model.DesignFile
-	findByIDErr        error
-	pendingDraft       *model.DesignFile
-	pendingDraftErr    error
-	listByOrder        []model.DesignFile
-	listByOrderErr     error
-	reviewCalls        int
-	reviewErr          error
-	reviewLastParams   designrepo.ReviewDraftParams
-	markPurgedCalls    int
-	deleteCalls        int
+	created          *model.DesignFile
+	createErr        error
+	createCalls      int
+	findByID         *model.DesignFile
+	findByIDErr      error
+	pendingDraft     *model.DesignFile
+	pendingDraftErr  error
+	listByOrder      []model.DesignFile
+	listByOrderErr   error
+	reviewCalls      int
+	reviewErr        error
+	reviewLastParams designrepo.ReviewDraftParams
+	markPurgedCalls  int
+	deleteCalls      int
 
 	// Retention (§19)
 	purgeCandidates       []model.DesignFile
@@ -141,14 +141,14 @@ func (f *fakeBlobs) AbsPath(subpath string) (string, error) {
 }
 
 type fakeOrderCmd struct {
-	summary                  *orderapi.OrderSummary
-	summaryErr               error
-	dikerjaknCalls           int
-	dikerjaknErr             error
-	menungguApprovalCalls    int
-	menungguApprovalErr      error
-	diverifikasiCalls        int
-	diverifikasiErr          error
+	summary               *orderapi.OrderSummary
+	summaryErr            error
+	dikerjaknCalls        int
+	dikerjaknErr          error
+	menungguApprovalCalls int
+	menungguApprovalErr   error
+	diverifikasiCalls     int
+	diverifikasiErr       error
 }
 
 func (f *fakeOrderCmd) FindSummaryByResi(context.Context, string) (*orderapi.OrderSummary, error) {
@@ -294,6 +294,59 @@ func TestUploadCustomerFile_NotOwner_Rejected(t *testing.T) {
 	}
 }
 
+// TestUploadCustomerFile_ScopedToDifferentOrder_Rejected is a regression test
+// for a review finding (§3): a guest_order token minted for resi A carries
+// the customer's REAL user_id, so the plain ownership check (order.CustomerID
+// == callerID) alone would keep passing for every OTHER order owned by that
+// same customer/phone number. ScopedOrderID closes that gap.
+func TestUploadCustomerFile_ScopedToDifferentOrder_Rejected(t *testing.T) {
+	cust := uuid.New()
+	orderA := uuid.New()
+	orderB := uuid.New()
+	store := &fakeStore{}
+	// Caller's token was verified against orderA, but they're trying to
+	// upload to orderB — same owner (cust), different order.
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: orderB, Resi: "RJK-ORDERB", CustomerID: cust,
+		Status: "dibayar", DesignSource: "upload",
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	in := newUpload("RJK-ORDERB", cust, false, "PDF", "application/pdf")
+	in.ScopedOrderID = &orderA
+	_, err := svc.UploadCustomerFile(context.Background(), in)
+	if !errors.Is(err, designapi.ErrNotOrderOwner) {
+		t.Fatalf("want ErrNotOrderOwner for cross-order scoped token, got %v", err)
+	}
+	if store.createCalls != 0 {
+		t.Errorf("must not create file when scoped token targets a different order")
+	}
+}
+
+// TestUploadCustomerFile_ScopedToSameOrder_Allowed is the companion happy
+// path: a scoped token targeting the SAME order it's used against must still
+// work normally.
+func TestUploadCustomerFile_ScopedToSameOrder_Allowed(t *testing.T) {
+	cust := uuid.New()
+	orderID := uuid.New()
+	store := &fakeStore{}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: orderID, Resi: "RJK-SAME", CustomerID: cust,
+		Status: "dibayar", DesignSource: "upload",
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	in := newUpload("RJK-SAME", cust, false, "PDF", "application/pdf")
+	in.ScopedOrderID = &orderID
+	_, err := svc.UploadCustomerFile(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected err for scoped token targeting its own order: %v", err)
+	}
+	if store.createCalls != 1 {
+		t.Errorf("expected file to be created, createCalls=%d", store.createCalls)
+	}
+}
+
 func TestUploadCustomerFile_WrongStatus_Rejected(t *testing.T) {
 	cust := uuid.New()
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
@@ -319,6 +372,71 @@ func TestUploadCustomerFile_InvalidMime_Rejected(t *testing.T) {
 	if !errors.Is(err, designapi.ErrInvalidMimeType) {
 		t.Fatalf("want ErrInvalidMimeType, got %v", err)
 	}
+}
+
+// TestUploadCustomerFile_GenericMimeRequiresAllowedExtension menutup lubang
+// unggah file sembarangan: "application/octet-stream" ada di allowedMimeTypes
+// karena browser mengirimnya untuk CDR/AI, tapi tanpa cross-check ekstensi
+// nilai itu meloloskan file jenis APA PUN (.exe, .sh, …) ke disk VPS.
+func TestUploadCustomerFile_GenericMimeRequiresAllowedExtension(t *testing.T) {
+	cust := uuid.New()
+	newCmd := func() *fakeOrderCmd {
+		return &fakeOrderCmd{summary: &orderapi.OrderSummary{
+			ID: uuid.New(), CustomerID: cust, Status: "dibayar", DesignSource: "upload",
+		}}
+	}
+
+	t.Run("ekstensi terlarang ditolak meski mime generik", func(t *testing.T) {
+		svc := newSvc(&fakeStore{}, &fakeBlobs{}, newCmd())
+		in := newUpload("RJK-X", cust, false, "MZ\x90\x00", "application/octet-stream")
+		in.OriginalName = "payload.exe"
+		if _, err := svc.UploadCustomerFile(context.Background(), in); !errors.Is(err, designapi.ErrInvalidMimeType) {
+			t.Fatalf("want ErrInvalidMimeType for .exe, got %v", err)
+		}
+	})
+
+	t.Run("tanpa ekstensi ditolak", func(t *testing.T) {
+		svc := newSvc(&fakeStore{}, &fakeBlobs{}, newCmd())
+		in := newUpload("RJK-X", cust, false, "data", "application/octet-stream")
+		in.OriginalName = "berkas-tanpa-ekstensi"
+		if _, err := svc.UploadCustomerFile(context.Background(), in); !errors.Is(err, designapi.ErrInvalidMimeType) {
+			t.Fatalf("want ErrInvalidMimeType for extensionless file, got %v", err)
+		}
+	})
+
+	// Jalur yang HARUS tetap jalan: browser kirim octet-stream untuk .cdr —
+	// justru alasan fallback generik itu ada. Jangan sampai perbaikan ini
+	// mematikan unggahan CorelDRAW yang sah.
+	t.Run("cdr dengan mime generik tetap diterima", func(t *testing.T) {
+		store := &fakeStore{}
+		svc := newSvc(store, &fakeBlobs{}, newCmd())
+		in := newUpload("RJK-X", cust, false, "CDR-BODY", "application/octet-stream")
+		in.OriginalName = "spanduk.CDR" // uppercase — harus case-insensitive
+		got, err := svc.UploadCustomerFile(context.Background(), in)
+		if err != nil {
+			t.Fatalf("want success for .cdr, got %v", err)
+		}
+		if got.IsPreviewable {
+			t.Errorf("CDR tidak boleh ditandai previewable")
+		}
+		if !strings.HasSuffix(got.FilePath, ".cdr") {
+			t.Errorf("blob harus disimpan dengan ekstensi .cdr, got %q", got.FilePath)
+		}
+	})
+
+	// Previewable diturunkan dari ekstensi, bukan dari mime yang bisa dipalsukan.
+	t.Run("png dengan mime generik previewable dari ekstensi", func(t *testing.T) {
+		svc := newSvc(&fakeStore{}, &fakeBlobs{}, newCmd())
+		in := newUpload("RJK-X", cust, false, "PNG-BODY", "application/octet-stream")
+		in.OriginalName = "logo.png"
+		got, err := svc.UploadCustomerFile(context.Background(), in)
+		if err != nil {
+			t.Fatalf("want success for .png, got %v", err)
+		}
+		if !got.IsPreviewable {
+			t.Errorf("PNG harus previewable meski mime-nya generik")
+		}
+	})
 }
 
 func TestUploadCustomerFile_TooLarge_Rejected(t *testing.T) {
@@ -430,6 +548,62 @@ func TestApproveDraft_NotOwner_Rejected(t *testing.T) {
 	})
 	if !errors.Is(err, designapi.ErrNotOrderOwner) {
 		t.Fatalf("want ErrNotOrderOwner, got %v", err)
+	}
+}
+
+// TestApproveDraft_ScopedToDifferentOrder_Rejected mirrors the upload-path
+// regression test above for the approve-draft path (§3 review finding).
+func TestApproveDraft_ScopedToDifferentOrder_Rejected(t *testing.T) {
+	cust := uuid.New()
+	orderA := uuid.New()
+	orderB := uuid.New()
+	draftID := uuid.New()
+	pending := model.ApprovalPending
+	draft := &model.DesignFile{
+		ID: draftID, OrderID: orderB, Role: model.RoleStaffDraft, ApprovalStatus: &pending,
+	}
+	store := &fakeStore{findByID: draft}
+	// Draft belongs to orderB, owned by the same customer — but the caller's
+	// token was verified against orderA.
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: orderB, CustomerID: cust, Status: "menunggu_approval_desain",
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	_, err := svc.ApproveDraft(context.Background(), ApproveInput{
+		DraftID: draftID, CallerID: cust, IsStaff: false, ScopedOrderID: &orderA,
+	})
+	if !errors.Is(err, designapi.ErrNotOrderOwner) {
+		t.Fatalf("want ErrNotOrderOwner for cross-order scoped token, got %v", err)
+	}
+	if store.reviewCalls != 0 {
+		t.Errorf("must not review draft when scoped token targets a different order")
+	}
+}
+
+// TestApproveDraft_ScopedToSameOrder_Allowed is the companion happy path.
+func TestApproveDraft_ScopedToSameOrder_Allowed(t *testing.T) {
+	cust := uuid.New()
+	orderID := uuid.New()
+	draftID := uuid.New()
+	pending := model.ApprovalPending
+	draft := &model.DesignFile{
+		ID: draftID, OrderID: orderID, Role: model.RoleStaffDraft, ApprovalStatus: &pending,
+	}
+	store := &fakeStore{findByID: draft}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: orderID, CustomerID: cust, Status: "menunggu_approval_desain",
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	_, err := svc.ApproveDraft(context.Background(), ApproveInput{
+		DraftID: draftID, CallerID: cust, IsStaff: false, ScopedOrderID: &orderID,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err for scoped token targeting its own order: %v", err)
+	}
+	if store.reviewCalls != 1 {
+		t.Errorf("expected draft to be reviewed, reviewCalls=%d", store.reviewCalls)
 	}
 }
 
@@ -566,5 +740,141 @@ func TestStaffApproveWalkinInstant_NotPOS_Rejected(t *testing.T) {
 	})
 	if !errors.Is(err, designapi.ErrWalkinOnlyForPOS) {
 		t.Fatalf("want ErrWalkinOnlyForPOS, got %v", err)
+	}
+}
+
+// ---------- Regresi batas scope: 3 jalur yang sebelumnya tidak terkunci ----------
+//
+// Review putaran kedua menemukan penegakan `ScopedOrderID` hanya diuji di jalur
+// upload & approve. Tanpa test di bawah, menghapus `checkScopedOrder` dari
+// RequestRevision / ListForOrder / GetFile membuat SELURUH suite tetap hijau
+// sementara token guest resi A kembali bisa membaca metadata, mengunduh blob,
+// dan memaksa revisi di order lain — persis kelas kerentanan yang baru ditambal.
+
+func TestRequestRevision_ScopedToDifferentOrder_Rejected(t *testing.T) {
+	cust := uuid.New()
+	orderA, orderB := uuid.New(), uuid.New()
+	draftID := uuid.New()
+	pending := model.ApprovalPending
+	store := &fakeStore{findByID: &model.DesignFile{
+		ID: draftID, OrderID: orderB, Role: model.RoleStaffDraft, ApprovalStatus: &pending,
+	}}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: orderB, CustomerID: cust, Status: "menunggu_approval_desain",
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	_, err := svc.RequestRevision(context.Background(), RevisionInput{
+		DraftID: draftID, CallerID: cust, IsStaff: false,
+		Notes: "tolong warnanya dinaikkan", ScopedOrderID: &orderA,
+	})
+	if !errors.Is(err, designapi.ErrNotOrderOwner) {
+		t.Fatalf("want ErrNotOrderOwner for cross-order scoped token, got %v", err)
+	}
+	if store.reviewCalls != 0 {
+		t.Errorf("must not touch draft when scoped token targets a different order")
+	}
+}
+
+func TestListForOrder_ScopedToDifferentOrder_Rejected(t *testing.T) {
+	cust := uuid.New()
+	orderA, orderB := uuid.New(), uuid.New()
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: orderB, Resi: "RJK-B", CustomerID: cust, Status: "dibayar", DesignSource: "upload",
+	}}
+	store := &fakeStore{listByOrder: []model.DesignFile{{ID: uuid.New(), OrderID: orderB}}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	if _, err := svc.ListForOrder(context.Background(), "RJK-B", cust, false, &orderA); !errors.Is(err, designapi.ErrNotOrderOwner) {
+		t.Fatalf("want ErrNotOrderOwner listing another order with scoped token, got %v", err)
+	}
+}
+
+func TestListForOrder_ScopedToSameOrder_Allowed(t *testing.T) {
+	cust := uuid.New()
+	orderB := uuid.New()
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: orderB, Resi: "RJK-B", CustomerID: cust, Status: "dibayar", DesignSource: "upload",
+	}}
+	store := &fakeStore{listByOrder: []model.DesignFile{{ID: uuid.New(), OrderID: orderB}}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	items, err := svc.ListForOrder(context.Background(), "RJK-B", cust, false, &orderB)
+	if err != nil {
+		t.Fatalf("scoped token for its own order must be allowed, got %v", err)
+	}
+	if len(items) != 1 {
+		t.Errorf("want 1 item, got %d", len(items))
+	}
+}
+
+func TestGetFile_ScopedToDifferentOrder_Rejected(t *testing.T) {
+	cust := uuid.New()
+	orderA, orderB := uuid.New(), uuid.New()
+	fileID := uuid.New()
+	store := &fakeStore{findByID: &model.DesignFile{
+		ID: fileID, OrderID: orderB, Role: model.RoleCustomerUpload, FilePath: "design_files/2026/08/x.pdf",
+	}}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{ID: orderB, CustomerID: cust}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	if _, err := svc.GetFile(context.Background(), fileID, cust, false, &orderA); !errors.Is(err, designapi.ErrNotOrderOwner) {
+		t.Fatalf("want ErrNotOrderOwner downloading another order's file, got %v", err)
+	}
+}
+
+// Batas scope harus berlaku juga untuk caller bertipe staff — cek ini dulunya
+// bersarang di dalam `if !isStaff`, sehingga GetFile jadi satu-satunya jalur
+// yang bocor kalau suatu saat ada token ber-scope milik staff.
+func TestGetFile_ScopedEnforcedEvenForStaffCaller(t *testing.T) {
+	orderA, orderB := uuid.New(), uuid.New()
+	fileID := uuid.New()
+	store := &fakeStore{findByID: &model.DesignFile{
+		ID: fileID, OrderID: orderB, Role: model.RoleCustomerUpload, FilePath: "design_files/2026/08/x.pdf",
+	}}
+	svc := newSvc(store, &fakeBlobs{}, &fakeOrderCmd{})
+
+	if _, err := svc.GetFile(context.Background(), fileID, uuid.New(), true, &orderA); !errors.Is(err, designapi.ErrNotOrderOwner) {
+		t.Fatalf("scoped token must be order-bound even for staff caller, got %v", err)
+	}
+}
+
+func TestGetFile_ScopedToSameOrder_Allowed(t *testing.T) {
+	cust := uuid.New()
+	orderB := uuid.New()
+	fileID := uuid.New()
+	store := &fakeStore{findByID: &model.DesignFile{
+		ID: fileID, OrderID: orderB, Role: model.RoleCustomerUpload, FilePath: "design_files/2026/08/x.pdf",
+	}}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{ID: orderB, CustomerID: cust}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	if _, err := svc.GetFile(context.Background(), fileID, cust, false, &orderB); err != nil {
+		t.Fatalf("scoped token for its own file must be allowed, got %v", err)
+	}
+}
+
+// Mime yang DISIMPAN harus kanonik dari ekstensi, bukan nilai mentah client:
+// nilai ini disajikan kembali sebagai Content-Type, jadi kalau ikut generik,
+// file previewable gagal dirender staff di admin panel.
+func TestUploadCustomerFile_StoresCanonicalMimeNotClientMime(t *testing.T) {
+	cust := uuid.New()
+	store := &fakeStore{}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: uuid.New(), CustomerID: cust, Status: "dibayar", DesignSource: "upload",
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	in := newUpload("RJK-X", cust, false, "PNGDATA", "application/octet-stream")
+	in.OriginalName = "logo.png"
+	got, err := svc.UploadCustomerFile(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got.FileMimeType != "image/png" {
+		t.Errorf("want canonical image/png, got %q", got.FileMimeType)
+	}
+	if !got.IsPreviewable {
+		t.Errorf("png must stay previewable")
 	}
 }

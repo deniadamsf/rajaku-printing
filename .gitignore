@@ -40,6 +40,10 @@ services/notification-worker/auth_info_baileys/
 # ==== Storage (runtime uploads) ====
 storage/uploads/
 storage/tmp/
+# STORAGE_LOCAL_ROOT default "./storage" relatif ke cwd backend, jadi blob
+# sungguhan mendarat di backend/storage/ — bukan di dua pola di atas. Tanpa
+# baris ini, file desain pelanggan (§19) ikut ter-commit ke repo.
+backend/storage/
 
 # ==== Logs ====
 *.log

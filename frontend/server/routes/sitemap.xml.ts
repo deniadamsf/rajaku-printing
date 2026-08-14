@@ -60,7 +60,7 @@ export default defineEventHandler(async (event) => {
     `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
     [...staticURLs, ...articleURLs]
       .map((u) => {
-        const lastmod = 'lastmod' in u && u.lastmod ? `    <lastmod>${escapeXML(u.lastmod)}</lastmod>\n` : ''
+        const lastmod = 'lastmod' in u && u.lastmod ? `    <lastmod>${escapeXML(String(u.lastmod))}</lastmod>\n` : ''
         return (
           `  <url>\n` +
           `    <loc>${escapeXML(u.loc)}</loc>\n` +

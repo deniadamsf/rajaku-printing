@@ -15,6 +15,7 @@ export default defineEventHandler((event) => {
     `Allow: /\n` +
     `Disallow: /admin/\n` +
     `Disallow: /akun/\n` +
+    `Disallow: /invites/\n` +
     `Disallow: /login\n` +
     `Disallow: /register\n` +
     `\n` +

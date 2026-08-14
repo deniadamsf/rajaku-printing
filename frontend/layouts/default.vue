@@ -82,6 +82,28 @@ function isActive(prefix: string) {
 
         <nav class="flex items-center gap-4 sm:gap-6">
           <NuxtLink
+            to="/katalog"
+            :class="[
+              'hidden sm:inline text-sm font-medium transition-colors',
+              isActive('/katalog') ? 'text-brand-500' : 'text-ink-700 hover:text-ink-950',
+              focusRing,
+            ]"
+          >
+            Katalog
+          </NuxtLink>
+
+          <NuxtLink
+            to="/showcase"
+            :class="[
+              'hidden sm:inline text-sm font-medium transition-colors',
+              isActive('/showcase') ? 'text-brand-500' : 'text-ink-700 hover:text-ink-950',
+              focusRing,
+            ]"
+          >
+            Showcase
+          </NuxtLink>
+
+          <NuxtLink
             to="/artikel"
             :class="[
               'hidden sm:inline text-sm font-medium transition-colors',
@@ -135,7 +157,10 @@ function isActive(prefix: string) {
         <p class="font-serif text-sm text-ink-700">
           Rajaku <span class="text-gold-500">Printing</span>
         </p>
-        <nav class="flex items-center gap-5">
+        <nav class="flex flex-wrap items-center justify-center gap-5">
+          <NuxtLink to="/katalog" :class="['hover:text-ink-900 transition-colors', focusRing]">Katalog</NuxtLink>
+          <NuxtLink to="/showcase" :class="['hover:text-ink-900 transition-colors', focusRing]">Showcase</NuxtLink>
+          <NuxtLink to="/tentang-kami" :class="['hover:text-ink-900 transition-colors', focusRing]">Tentang Kami</NuxtLink>
           <NuxtLink to="/artikel" :class="['hover:text-ink-900 transition-colors', focusRing]">Artikel</NuxtLink>
           <NuxtLink to="/order" :class="['hover:text-ink-900 transition-colors', focusRing]">Order Banner</NuxtLink>
           <NuxtLink to="/lacak" :class="['hover:text-ink-900 transition-colors', focusRing]">Lacak Resi</NuxtLink>

@@ -8,7 +8,15 @@ export default defineNuxtConfig({
     '@pinia/nuxt',
     '@vueuse/nuxt',
     '@nuxtjs/google-fonts',
+    '@tresjs/nuxt',
   ],
+
+  // TresJS devtools tab hanya berguna waktu dev; matikan di build produksi
+  // untuk bundle sedikit lebih ramping. Modul TresJS sendiri hanya dipakai di
+  // /showcase (§16 poin 2) — tidak pernah di-import di homepage.
+  tres: {
+    devtools: false,
+  },
 
   // Font pairing CLAUDE.md §26.3 — Fraunces (serif display, editorial), Inter
   // (sans body & UI), JetBrains Mono (data teknis / ID / slug).

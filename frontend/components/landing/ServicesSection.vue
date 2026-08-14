@@ -8,7 +8,7 @@
  * data yang direkayasa, section ini menampilkan tipe kalkulasi harga (per m² /
  * paket) sebagai badge, bukan angka harga yang tidak tersedia di tipe list.
  */
-import { Layers, PackageSearch } from '@lucide/vue'
+import { ArrowRight, Layers, PackageSearch } from '@lucide/vue'
 import type { CatalogProduct } from '~/types/catalog'
 
 const catalog = useCatalog()
@@ -35,6 +35,13 @@ function pricingLabel(p: CatalogProduct): string {
         Dari banner outdoor tahan cuaca sampai kebutuhan indoor event — ukuran dan
         bahan disesuaikan kebutuhan Anda.
       </p>
+      <NuxtLink
+        to="/katalog"
+        class="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-brand-500 transition-colors hover:text-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas rounded-sm"
+      >
+        Lihat katalog lengkap
+        <ArrowRight class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </NuxtLink>
     </div>
 
     <!-- Error -->

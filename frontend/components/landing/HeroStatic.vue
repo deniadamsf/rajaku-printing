@@ -48,8 +48,14 @@ import { motion } from 'motion-v'
           <ArrowRight class="h-4 w-4" :stroke-width="1.5" />
         </NuxtLink>
         <NuxtLink
-          to="/lacak"
+          to="/showcase"
           class="inline-flex items-center justify-center gap-2 rounded-md border border-canvas/25 px-6 py-3 text-sm font-semibold text-canvas transition-colors hover:bg-canvas/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950"
+        >
+          Lihat Showcase
+        </NuxtLink>
+        <NuxtLink
+          to="/lacak"
+          class="inline-flex items-center justify-center gap-2 text-sm font-medium text-canvas/70 transition-colors hover:text-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950 rounded-sm"
         >
           Lacak Resi
         </NuxtLink>

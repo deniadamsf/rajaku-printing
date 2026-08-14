@@ -43,6 +43,9 @@ export default defineEventHandler(async (event) => {
 
   const staticURLs = [
     { loc: `${base}/`, changefreq: 'weekly', priority: '1.0' },
+    { loc: `${base}/katalog`, changefreq: 'weekly', priority: '0.9' },
+    { loc: `${base}/showcase`, changefreq: 'monthly', priority: '0.7' },
+    { loc: `${base}/tentang-kami`, changefreq: 'monthly', priority: '0.6' },
     { loc: `${base}/artikel`, changefreq: 'weekly', priority: '0.8' },
     { loc: `${base}/order`, changefreq: 'monthly', priority: '0.9' },
     { loc: `${base}/lacak`, changefreq: 'monthly', priority: '0.5' },

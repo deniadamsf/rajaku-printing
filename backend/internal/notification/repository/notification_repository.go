@@ -1,0 +1,227 @@
+// Package repository — DB access untuk notification module.
+package repository
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/rajaku-printing/backend/internal/notification/model"
+)
+
+var (
+	ErrNotFound      = errors.New("notification/repository: not found")
+	ErrDedupConflict = errors.New("notification/repository: dedup_key already exists")
+	ErrJobStale      = errors.New("notification/repository: job status changed under update")
+)
+
+const pgUniqueViolationCode = "23505"
+
+type Repository struct {
+	db *gorm.DB
+}
+
+func NewRepository(db *gorm.DB) *Repository { return &Repository{db: db} }
+
+// Create inserts a job. Returns ErrDedupConflict when dedup_key unique index
+// is violated — caller (service.Enqueue) treats as idempotent no-op.
+func (r *Repository) Create(ctx context.Context, j *model.NotificationJob) error {
+	if err := r.db.WithContext(ctx).Create(j).Error; err != nil {
+		if isUniqueViolation(err) {
+			return ErrDedupConflict
+		}
+		return fmt.Errorf("insert notification_job: %w", err)
+	}
+	return nil
+}
+
+// ClaimBatch selects up to `limit` jobs eligible for dispatch and atomically
+// marks them `sending`, incrementing attempts + updated_at. Uses SKIP LOCKED
+// so multiple worker instances (future) don't fight over the same rows.
+//
+// Eligibility: status IN ('pending','failed') AND next_attempt_at <= NOW().
+// Note: `failed` rows are the transient-retry queue — worker will retry until
+// attempts reaches max_attempts, at which point CompleteFailure moves them to
+// `dead` (no more auto-retry).
+func (r *Repository) ClaimBatch(ctx context.Context, limit int) ([]model.NotificationJob, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	var jobs []model.NotificationJob
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.
+			Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where("status IN ? AND next_attempt_at <= ?",
+				[]model.JobStatus{model.JobPending, model.JobFailed}, time.Now().UTC()).
+			Order("next_attempt_at ASC").
+			Limit(limit).
+			Find(&jobs).Error; err != nil {
+			return fmt.Errorf("select claimable: %w", err)
+		}
+		if len(jobs) == 0 {
+			return nil
+		}
+		ids := make([]uuid.UUID, len(jobs))
+		for i, j := range jobs {
+			ids[i] = j.ID
+		}
+		res := tx.Model(&model.NotificationJob{}).
+			Where("id IN ?", ids).
+			Updates(map[string]any{
+				"status":     model.JobSending,
+				"attempts":   gorm.Expr("attempts + 1"),
+				"updated_at": time.Now().UTC(),
+			})
+		if res.Error != nil {
+			return fmt.Errorf("mark sending: %w", res.Error)
+		}
+		// Reflect changes locally for caller.
+		for i := range jobs {
+			jobs[i].Status = model.JobSending
+			jobs[i].Attempts++
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+// MarkSent finalizes a job. Idempotent: if the row is already sent, returns
+// ErrJobStale so caller can log & ignore.
+func (r *Repository) MarkSent(ctx context.Context, id uuid.UUID) error {
+	now := time.Now().UTC()
+	res := r.db.WithContext(ctx).
+		Model(&model.NotificationJob{}).
+		Where("id = ? AND status = ?", id, model.JobSending).
+		Updates(map[string]any{
+			"status":     model.JobSent,
+			"sent_at":    now,
+			"updated_at": now,
+		})
+	if res.Error != nil {
+		return fmt.Errorf("mark sent: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrJobStale
+	}
+	return nil
+}
+
+// MarkFailure records an error + reschedules per backoff. If attempts ≥
+// max_attempts the job is moved to `dead` and won't be auto-claimed again
+// (admin can manually re-enqueue).
+func (r *Repository) MarkFailure(ctx context.Context, id uuid.UUID, errMsg string, backoff time.Duration) error {
+	// We need current attempts + max_attempts to decide.
+	var current model.NotificationJob
+	if err := r.db.WithContext(ctx).
+		Select("id", "attempts", "max_attempts").
+		First(&current, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load job for failure: %w", err)
+	}
+
+	now := time.Now().UTC()
+	next := now.Add(backoff)
+	newStatus := model.JobFailed
+	if current.Attempts >= current.MaxAttempts {
+		newStatus = model.JobDead
+	}
+	// Cap error message so a huge stack trace doesn't blow the row.
+	if len(errMsg) > 2000 {
+		errMsg = errMsg[:2000] + "…(truncated)"
+	}
+	res := r.db.WithContext(ctx).
+		Model(&model.NotificationJob{}).
+		Where("id = ? AND status = ?", id, model.JobSending).
+		Updates(map[string]any{
+			"status":           newStatus,
+			"last_error":       errMsg,
+			"next_attempt_at":  next,
+			"updated_at":       now,
+		})
+	if res.Error != nil {
+		return fmt.Errorf("mark failure: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrJobStale
+	}
+	return nil
+}
+
+// FindByID — for admin/debug inspection.
+func (r *Repository) FindByID(ctx context.Context, id uuid.UUID) (*model.NotificationJob, error) {
+	var j model.NotificationJob
+	if err := r.db.WithContext(ctx).First(&j, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("find job by id %s: %w", id, err)
+	}
+	return &j, nil
+}
+
+// ListFilter — admin inspection filter.
+type ListFilter struct {
+	Status   model.JobStatus
+	Kind     string
+	OrderID  *uuid.UUID
+	Page     int
+	PageSize int
+}
+
+type ListResult struct {
+	Items    []model.NotificationJob
+	Total    int64
+	Page     int
+	PageSize int
+}
+
+func (r *Repository) List(ctx context.Context, f ListFilter) (*ListResult, error) {
+	if f.Page < 1 {
+		f.Page = 1
+	}
+	if f.PageSize < 1 || f.PageSize > 100 {
+		f.PageSize = 20
+	}
+	q := r.db.WithContext(ctx).Model(&model.NotificationJob{})
+	if f.Status != "" {
+		q = q.Where("status = ?", f.Status)
+	}
+	if f.Kind != "" {
+		q = q.Where("kind = ?", f.Kind)
+	}
+	if f.OrderID != nil {
+		q = q.Where("order_id = ?", *f.OrderID)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, fmt.Errorf("count jobs: %w", err)
+	}
+	var items []model.NotificationJob
+	if err := q.
+		Order("created_at DESC").
+		Offset((f.Page - 1) * f.PageSize).
+		Limit(f.PageSize).
+		Find(&items).Error; err != nil {
+		return nil, fmt.Errorf("list jobs: %w", err)
+	}
+	return &ListResult{Items: items, Total: total, Page: f.Page, PageSize: f.PageSize}, nil
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == pgUniqueViolationCode
+	}
+	return false
+}

@@ -1,0 +1,102 @@
+// Package notificationapi is the PUBLIC contract of the notification module
+// (spec §22 — cross-module import allowed hanya lewat package api). Modul lain
+// (order, payment, design, production, invoice) hanya boleh import package ini
+// untuk trigger notifikasi WA.
+package notificationapi
+
+import (
+	"context"
+	"errors"
+
+	"github.com/google/uuid"
+)
+
+// Sentinel errors — semua boleh error, tapi caller SEBAIKNYA log & continue
+// (jangan bikin pembayaran gagal cuma karena WA gagal di-enqueue). Notification
+// harus best-effort, tidak boleh block critical path.
+var (
+	ErrOrderNotFound      = errors.New("notificationapi: order not found for enqueue")
+	ErrRecipientMissing   = errors.New("notificationapi: recipient phone unresolved")
+	// ErrInternalRecipientMissing — NOTIFICATION_INTERNAL_PHONE tidak di-set,
+	// jadi alert internal (mis. reminder retensi §19) tidak punya tujuan.
+	// Bukan fatal: caller log warn & lanjut — alert internal sifatnya bantuan
+	// operasional, bukan jalur kritis.
+	ErrInternalRecipientMissing = errors.New("notificationapi: internal alert phone not configured")
+	ErrUnknownKind        = errors.New("notificationapi: unknown notification kind")
+	ErrDuplicateEnqueue   = errors.New("notificationapi: notification already enqueued (dedup key exists)")
+)
+
+// Kind — enum-like string type. String literal biar mudah persist di DB
+// tanpa migration setiap tambah trigger baru.
+type Kind string
+
+// Kind yang sudah punya template + trigger di modul consumer. Kind baru
+// ditambah HANYA kalau modul consumer-nya (production, invoice, POS, design)
+// sudah bikin trigger + template — jangan pre-declare kind yang tidak ada
+// template-nya (§22 no-silent-stub).
+const (
+	KindOngkirReady          Kind = "ongkir_ready"           // total fix, minta bayar
+	KindPaymentVerified      Kind = "payment_verified"       // bukti disetujui
+	KindPaymentRejected      Kind = "payment_rejected"       // bukti ditolak, upload ulang
+	KindDesignApproved       Kind = "design_approved"        // customer setuju draft desain (§6)
+	KindDesignNeedsRevision  Kind = "design_needs_revision"  // customer minta revisi (§6)
+	KindReadyPickup          Kind = "ready_pickup"           // pickup — siap diambil di toko
+	KindReadyShip            Kind = "ready_ship"             // kirim  — siap dikirim (belum ada resi ekspedisi)
+	KindShipped              Kind = "shipped"                // sudah dikirim, ada courier + tracking
+	KindInvoiceReady         Kind = "invoice_ready"          // invoice PDF siap didownload (§12)
+	KindPOSOrderCreated      Kind = "pos_order_created"      // konfirmasi walk-in order sudah diterima (§11)
+
+	// KindDesignRetentionWarning — INTERNAL (ke nomor ops/staff, bukan
+	// customer): file desain akan dihapus otomatis H-3 sementara order-nya
+	// belum `selesai` (§19). Staff diberi kesempatan download manual dulu
+	// kalau masih mungkin ada reprint.
+	KindDesignRetentionWarning Kind = "design_retention_warning"
+)
+
+// Enqueuer — kontrak untuk trigger notifikasi terkait order. Implementasi
+// (notification/service.Service) resolve recipient phone otomatis dari
+// order.customer + kirim.
+//
+// Kontrak untuk caller:
+//   - Method ini NON-BLOCKING (INSERT ke DB saja). Boleh dipanggil sinkron
+//     di dalam handler tanpa risiko latency.
+//   - Kalau return error, caller SEBAIKNYA log level=error tapi TIDAK
+//     rollback operasi bisnis (payment sudah verified, dll). Notifikasi
+//     bisa dikirim manual dari admin panel nanti.
+//   - Reason: WA gateway (Baileys) reliability ≠ 100%, ini best-effort.
+type Enqueuer interface {
+	// EnqueueOrderEvent renders template untuk `kind` dari order + extras,
+	// resolve recipient phone (kirim → shipping_recipient_phone, pickup →
+	// customer.phone), lalu insert row ke notification_jobs.
+	//
+	// extras — data tambahan template-specific:
+	//   - ongkir_ready: {"shipping_cost": 15000}
+	//   - payment_rejected: {"reason": "gambar buram"}
+	//   - shipped: {"courier": "JNE", "tracking": "12345"}
+	//
+	// Idempotent lewat dedup_key = "<kind>:<orderID>" (untuk kind sekali-per-order).
+	// Kalau caller memang mau kirim ulang (mis. reminder), pakai EnqueueOrderEventForce.
+	EnqueueOrderEvent(ctx context.Context, kind Kind, orderID uuid.UUID, extras map[string]any) error
+}
+
+// InternalAlerter — kontrak untuk notifikasi yang tujuannya TIM SENDIRI, bukan
+// pelanggan (mis. reminder retensi file desain §19, atau alert operasional
+// lain nanti). Recipient-nya satu nomor ops yang di-set lewat env
+// NOTIFICATION_INTERNAL_PHONE — caller tidak perlu (dan tidak boleh) tahu
+// nomornya, supaya tetap satu sumber konfigurasi (§2).
+//
+// Kontrak untuk caller — sama seperti Enqueuer: best-effort, jangan rollback
+// operasi bisnis kalau gagal. Khususnya kalau return ErrInternalRecipientMissing,
+// artinya fitur alert internal memang belum dikonfigurasi di deployment ini;
+// log warn sekali, jangan retry.
+type InternalAlerter interface {
+	// EnqueueInternalAlert merender template `kind` lalu insert job dengan
+	// tujuan nomor internal.
+	//
+	// orderID opsional — kalau di-set, service resolve resi & status order
+	// untuk dipakai template + disimpan di payload (memudahkan telusur).
+	//
+	// dedupKey wajib diisi caller (mis. "design_retention_warning:<file_id>")
+	// supaya reminder yang sama tidak dikirim dua kali saat job jalan ulang.
+	EnqueueInternalAlert(ctx context.Context, kind Kind, orderID *uuid.UUID, extras map[string]any, dedupKey string) error
+}

@@ -3,9 +3,63 @@
  * Layout default — sticky navbar (§17): CTA "Order Banner" & "Login" wajib selalu
  * visible di semua halaman publik. Compliant dengan CLAUDE.md §26 (brand tokens
  * + Fraunces wordmark, tanpa rose/slate).
+ *
+ * JSON-LD LocalBusiness (§15) dipasang sekali di sini (bukan per-halaman) —
+ * data NAP diambil dari satu sumber `~/utils/business.ts`.
  */
+import { business } from '~/utils/business'
+
 const auth = useAuthStore()
 const route = useRoute()
+const config = useRuntimeConfig()
+
+// Focus ring §26.6 — wajib di semua elemen interaktif. Dijadikan konstanta karena
+// dipakai di 8 link/button navbar & footer; menulis ulang inline bikin drift.
+const focusRing =
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas rounded-sm'
+
+const baseUrl = config.public.appBaseUrl.replace(/\/$/, '')
+
+useHead({
+  script: [
+    {
+      type: 'application/ld+json',
+      innerHTML: JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'LocalBusiness',
+        '@id': `${baseUrl}/#business`,
+        name: business.name,
+        legalName: business.legalName,
+        description: business.description,
+        url: baseUrl,
+        image: `${baseUrl}/og-image.jpg`,
+        telephone: business.telephone,
+        email: business.email,
+        priceRange: business.priceRange,
+        address: {
+          '@type': 'PostalAddress',
+          streetAddress: business.streetAddress,
+          addressLocality: business.addressLocality,
+          addressRegion: business.addressRegion,
+          postalCode: business.postalCode,
+          addressCountry: business.addressCountry,
+        },
+        geo: {
+          '@type': 'GeoCoordinates',
+          latitude: business.geo.latitude,
+          longitude: business.geo.longitude,
+        },
+        areaServed: business.serviceArea,
+        openingHoursSpecification: business.openingHours.map((h) => ({
+          '@type': 'OpeningHoursSpecification',
+          dayOfWeek: h.days,
+          opens: h.opens,
+          closes: h.closes,
+        })),
+      }),
+    },
+  ],
+})
 
 async function onLogout() {
   await auth.logout()
@@ -21,7 +75,7 @@ function isActive(prefix: string) {
   <div class="min-h-screen flex flex-col bg-canvas text-ink-900 font-sans">
     <header class="sticky top-0 z-40 bg-canvas/85 backdrop-blur border-b border-hairline">
       <div class="mx-auto max-w-6xl px-4 h-14 flex items-center justify-between">
-        <NuxtLink to="/" class="font-serif text-lg tracking-tight text-ink-950">
+        <NuxtLink to="/" :class="['font-serif text-lg tracking-tight text-ink-950', focusRing]">
           Rajaku
           <span class="text-gold-500 font-normal">Printing</span>
         </NuxtLink>
@@ -32,6 +86,7 @@ function isActive(prefix: string) {
             :class="[
               'hidden sm:inline text-sm font-medium transition-colors',
               isActive('/artikel') ? 'text-brand-500' : 'text-ink-700 hover:text-ink-950',
+              focusRing,
             ]"
           >
             Artikel
@@ -47,13 +102,13 @@ function isActive(prefix: string) {
           <template v-if="auth.isAuthenticated">
             <NuxtLink
               :to="auth.homePath"
-              class="text-sm font-medium text-ink-700 hover:text-ink-950 transition-colors"
+              :class="['text-sm font-medium text-ink-700 hover:text-ink-950 transition-colors', focusRing]"
             >
               {{ auth.user?.name?.split(' ')[0] || 'Akun' }}
             </NuxtLink>
             <button
               type="button"
-              class="text-sm font-medium text-ink-500 hover:text-brand-500 transition-colors"
+              :class="['text-sm font-medium text-ink-500 hover:text-brand-500 transition-colors', focusRing]"
               @click="onLogout"
             >
               Keluar
@@ -62,7 +117,7 @@ function isActive(prefix: string) {
           <template v-else>
             <NuxtLink
               to="/login"
-              class="text-sm font-medium text-ink-700 hover:text-ink-950 transition-colors"
+              :class="['text-sm font-medium text-ink-700 hover:text-ink-950 transition-colors', focusRing]"
             >
               Login
             </NuxtLink>
@@ -81,9 +136,9 @@ function isActive(prefix: string) {
           Rajaku <span class="text-gold-500">Printing</span>
         </p>
         <nav class="flex items-center gap-5">
-          <NuxtLink to="/artikel" class="hover:text-ink-900 transition-colors">Artikel</NuxtLink>
-          <NuxtLink to="/order" class="hover:text-ink-900 transition-colors">Order Banner</NuxtLink>
-          <NuxtLink to="/lacak" class="hover:text-ink-900 transition-colors">Lacak Resi</NuxtLink>
+          <NuxtLink to="/artikel" :class="['hover:text-ink-900 transition-colors', focusRing]">Artikel</NuxtLink>
+          <NuxtLink to="/order" :class="['hover:text-ink-900 transition-colors', focusRing]">Order Banner</NuxtLink>
+          <NuxtLink to="/lacak" :class="['hover:text-ink-900 transition-colors', focusRing]">Lacak Resi</NuxtLink>
         </nav>
         <p>&copy; {{ new Date().getFullYear() }} Rajaku Printing</p>
       </div>

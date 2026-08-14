@@ -95,11 +95,11 @@ export function useApi() {
     get: <T>(path: string, opts?: Parameters<typeof $fetch>[1]) =>
       request<T>(path, { ...opts, method: 'GET' }),
     post: <T>(path: string, body?: unknown, opts?: Parameters<typeof $fetch>[1]) =>
-      request<T>(path, { ...opts, method: 'POST', body }),
+      request<T>(path, { ...opts, method: 'POST', body: body as Record<string, unknown> | BodyInit | null | undefined }),
     put: <T>(path: string, body?: unknown, opts?: Parameters<typeof $fetch>[1]) =>
-      request<T>(path, { ...opts, method: 'PUT', body }),
+      request<T>(path, { ...opts, method: 'PUT', body: body as Record<string, unknown> | BodyInit | null | undefined }),
     patch: <T>(path: string, body?: unknown, opts?: Parameters<typeof $fetch>[1]) =>
-      request<T>(path, { ...opts, method: 'PATCH', body }),
+      request<T>(path, { ...opts, method: 'PATCH', body: body as Record<string, unknown> | BodyInit | null | undefined }),
     delete: <T>(path: string, opts?: Parameters<typeof $fetch>[1]) =>
       request<T>(path, { ...opts, method: 'DELETE' }),
   }

@@ -1,0 +1,2 @@
+# Migrations dikelola oleh golang-migrate.
+# Buat migration baru: `make migrate-create name=create_customers_table`

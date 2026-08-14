@@ -1,0 +1,49 @@
+# ==== OS / Editor ====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ==== Env & secrets ====
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ==== Go (backend) ====
+backend/bin/
+backend/tmp/
+backend/*.exe
+backend/coverage.out
+backend/coverage.html
+vendor/
+
+# ==== Node / Nuxt (frontend) ====
+frontend/node_modules/
+frontend/.nuxt/
+frontend/.output/
+frontend/.nitro/
+frontend/.cache/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
+# ==== Notification worker (Node) ====
+services/notification-worker/node_modules/
+services/notification-worker/.env
+services/notification-worker/session/
+services/notification-worker/auth_info_baileys/
+
+# ==== Storage (runtime uploads) ====
+storage/uploads/
+storage/tmp/
+
+# ==== Logs ====
+*.log
+logs/
+
+# ==== Docker volumes (local dev) ====
+.docker-data/

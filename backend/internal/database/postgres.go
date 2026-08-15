@@ -16,10 +16,16 @@ import (
 )
 
 func Open(ctx context.Context, cfg config.DBConfig, isDev bool) (*gorm.DB, error) {
+	// gormLogLevel — deliberately logger.Warn in EVERY environment, including
+	// development (isDev is no longer consulted here). logger.Info makes GORM
+	// print every SQL statement WITH bound parameters to stdout — that used
+	// to mean plaintext WhatsApp OTP codes (notification_jobs.message inserts,
+	// phone_verifications writes) landed straight in application logs on any
+	// dev machine, which defeats the point of hashing the code at rest
+	// (review finding #3). Bump to logger.Info locally on your own machine
+	// when you actually need to debug a specific query — never as the
+	// checked-in default.
 	gormLogLevel := logger.Warn
-	if isDev {
-		gormLogLevel = logger.Info
-	}
 
 	db, err := gorm.Open(postgres.Open(cfg.DSN()), &gorm.Config{
 		Logger:      logger.Default.LogMode(gormLogLevel),

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	"github.com/rajaku-printing/backend/internal/auth/authapi"
 	"github.com/rajaku-printing/backend/internal/auth/model"
@@ -60,9 +61,14 @@ type googleOTPStore interface {
 	FindActive(ctx context.Context, handoffID uuid.UUID, phone string) (*model.PhoneVerification, error)
 	FindLatest(ctx context.Context, handoffID uuid.UUID, phone string) (*model.PhoneVerification, error)
 	CancelPendingForHandoff(ctx context.Context, handoffID uuid.UUID) error
-	IncrementAttempts(ctx context.Context, id uuid.UUID) (int, error)
+	IncrementAttemptsIfAllowed(ctx context.Context, id uuid.UUID, maxAttempts int) (int, error)
 	MarkVerified(ctx context.Context, id uuid.UUID) error
 	MarkConsumed(ctx context.Context, id uuid.UUID) error
+	// CountAndOldestSince / SumAttemptsSince — cross-handoff, per-phone rate
+	// limiting (review finding #2). See repository.PhoneVerificationRepository
+	// for the exact semantics.
+	CountAndOldestSince(ctx context.Context, phone string, since time.Time) (int64, *time.Time, error)
+	SumAttemptsSince(ctx context.Context, phone string, since time.Time) (int64, error)
 }
 
 // googleExchanger narrows oauth.GoogleClient — lets tests fake the Google
@@ -91,6 +97,10 @@ type OTPConfig struct {
 	MaxAttempts    int
 	ResendCooldown time.Duration
 	CodeLength     int
+	// MaxPerPhoneHour / MaxFailedPerPhoneHour — cross-handoff, per-phone rate
+	// limits (review finding #2). See config.OTPConfig for the full doc.
+	MaxPerPhoneHour       int
+	MaxFailedPerPhoneHour int
 }
 
 // GoogleOAuthService implements the Google login/registration flow. Kept
@@ -104,13 +114,9 @@ type GoogleOAuthService struct {
 	issuer    *token.Issuer
 	otpCfg    OTPConfig
 	otpSender notificationapi.OTPSender
-
-	// frontendURL — kept for parity with how other services in this module
-	// receive their outward-facing base URL (§2 "satu sumber APP_BASE_URL"),
-	// even though today's flow builds every redirect URL in the handler
-	// layer (it owns the http.ResponseWriter). Reserved for future service-
-	// level use (e.g. building URLs embedded in notification payloads).
-	frontendURL string
+	// txRunner — opens the single DB transaction Complete() needs across
+	// users/codes/otps (review finding #4). See google_oauth_tx.go.
+	txRunner googleOAuthTxRunner
 }
 
 func NewGoogleOAuthService(
@@ -119,12 +125,12 @@ func NewGoogleOAuthService(
 	otps *repository.PhoneVerificationRepository,
 	google *oauth.GoogleClient,
 	issuer *token.Issuer,
-	frontendURL string,
 	otpCfg OTPConfig,
+	db *gorm.DB,
 ) *GoogleOAuthService {
 	return &GoogleOAuthService{
 		users: users, codes: codes, otps: otps, google: google,
-		issuer: issuer, frontendURL: frontendURL, otpCfg: otpCfg,
+		issuer: issuer, otpCfg: otpCfg, txRunner: newGormTxRunner(db),
 	}
 }
 
@@ -159,11 +165,14 @@ type CompleteGoogleInput struct {
 	OTP   string
 }
 
-// RequestOTPInput — body of POST /auth/google/request-otp.
+// RequestOTPInput — body of POST /auth/google/request-otp. No Name field
+// (review finding #10) — the display name is only ever needed/used by
+// Complete(), which already has its own fallback to the Google profile name
+// carried on the handoff code; accepting-but-ignoring it here a second time
+// was dead input with no documented purpose.
 type RequestOTPInput struct {
 	Code  string
 	Phone string
-	Name  string
 }
 
 // RequestOTPOutput — response contract for POST /auth/google/request-otp.
@@ -322,9 +331,10 @@ func (s *GoogleOAuthService) issueSessionHandoff(ctx context.Context, userID uui
 
 // Exchange consumes a handoff code: 'session' codes are marked used
 // immediately and turned into a real access token; 'registration' codes are
-// deliberately LEFT UNUSED (the frontend still needs to submit it again to
-// RequestOTP/Complete) and just echoed back with the Google identity data
-// needed to render the "enter your phone number" step.
+// claimed AND ROTATED (review finding #8, see exchangeRegistrationCode) — a
+// brand-new code carrying the same Google identity is returned, which the
+// frontend must use for the subsequent RequestOTP/Complete calls to render
+// the "enter your phone number" step.
 func (s *GoogleOAuthService) Exchange(ctx context.Context, handoffCode string) (*GoogleExchangeOutput, error) {
 	rec, err := s.lookupActiveCode(ctx, handoffCode)
 	if err != nil {
@@ -334,13 +344,7 @@ func (s *GoogleOAuthService) Exchange(ctx context.Context, handoffCode string) (
 	case model.OAuthLoginCodeKindSession:
 		return s.exchangeSessionCode(ctx, rec)
 	case model.OAuthLoginCodeKindRegistration:
-		return &GoogleExchangeOutput{
-			Status:       "need_phone",
-			Code:         handoffCode,
-			Email:        derefStr(rec.Email),
-			Name:         derefStr(rec.Name),
-			RedirectPath: derefStr(rec.RedirectPath),
-		}, nil
+		return s.exchangeRegistrationCode(ctx, rec)
 	default:
 		return nil, fmt.Errorf("google oauth exchange: unknown handoff code kind %q", rec.Kind)
 	}
@@ -360,11 +364,73 @@ func (s *GoogleOAuthService) exchangeSessionCode(ctx context.Context, rec *model
 		}
 		return nil, fmt.Errorf("google oauth exchange: load user %s: %w", *rec.UserID, err)
 	}
+	// Re-check IsActive at consumption time (review finding #9) — an admin
+	// could have deactivated the account in the up-to-2-minute window between
+	// HandleCallback issuing this handoff and the frontend calling Exchange.
+	// Every other resolution branch in this file already checks this; this
+	// one didn't.
+	if !u.IsActive {
+		return nil, authapi.ErrUserInactive
+	}
 	pair, err := issueTokenFor(s.issuer, u)
 	if err != nil {
 		return nil, err
 	}
 	return &GoogleExchangeOutput{Status: "session", Token: pair, User: u, RedirectPath: derefStr(rec.RedirectPath)}, nil
+}
+
+// exchangeRegistrationCode rotates the registration handoff (review finding
+// #8): the raw code arrives in the browser's URL query string and survives
+// in history/Referer headers for the code's entire 15-minute TTL, even
+// though the code itself was previously left un-consumed here on purpose (so
+// the SPA could submit it again to RequestOTP/Complete). Immediately
+// claiming the OLD code and minting a NEW one — same Google identity, fresh
+// TTL — means anything scraped from browser history/Referer stops working
+// the instant the legitimate SPA calls this endpoint (normally within a
+// second of landing on the page), instead of remaining valid for up to 15
+// minutes.
+func (s *GoogleOAuthService) exchangeRegistrationCode(ctx context.Context, rec *model.OAuthLoginCode) (*GoogleExchangeOutput, error) {
+	if rec.Subject == nil || rec.Email == nil {
+		return nil, fmt.Errorf("google oauth exchange: registration handoff code %s missing subject/email", rec.ID)
+	}
+	if err := s.claimHandoffCode(ctx, rec.ID); err != nil {
+		return nil, err
+	}
+	newCode, err := s.reissueRegistrationHandoff(ctx, rec)
+	if err != nil {
+		return nil, err
+	}
+	return &GoogleExchangeOutput{
+		Status:       "need_phone",
+		Code:         newCode,
+		Email:        derefStr(rec.Email),
+		Name:         derefStr(rec.Name),
+		RedirectPath: derefStr(rec.RedirectPath),
+	}, nil
+}
+
+// reissueRegistrationHandoff mints a brand-new registration handoff code
+// carrying the SAME Google identity as `rec` — used by exchangeRegistrationCode
+// to rotate the code exposed in the browser URL.
+func (s *GoogleOAuthService) reissueRegistrationHandoff(ctx context.Context, rec *model.OAuthLoginCode) (string, error) {
+	newRec := &model.OAuthLoginCode{
+		Kind:         model.OAuthLoginCodeKindRegistration,
+		Provider:     rec.Provider,
+		Subject:      rec.Subject,
+		Email:        rec.Email,
+		Name:         rec.Name,
+		RedirectPath: rec.RedirectPath,
+		ExpiresAt:    time.Now().UTC().Add(googleRegistrationCodeTTL),
+	}
+	raw, hash, err := generateToken()
+	if err != nil {
+		return "", fmt.Errorf("google oauth exchange: generate rotated handoff code: %w", err)
+	}
+	newRec.CodeHash = hash
+	if err := s.codes.Create(ctx, newRec); err != nil {
+		return "", fmt.Errorf("google oauth exchange: create rotated registration handoff: %w", err)
+	}
+	return raw, nil
 }
 
 // RequestOTP sends a WhatsApp OTP to prove ownership of the phone number
@@ -385,6 +451,16 @@ func (s *GoogleOAuthService) RequestOTP(ctx context.Context, in RequestOTPInput)
 	normalizedPhone, err := phone.Normalize(in.Phone)
 	if err != nil {
 		return nil, fmt.Errorf("phone invalid: %w", err)
+	}
+
+	// Cross-handoff, per-phone cap (review finding #2) — checked BEFORE the
+	// per-handoff cooldown below: without this, an attacker who opens a fresh
+	// registration handoff for every request gets a fresh (handoff, phone)
+	// cooldown bucket every time, so the per-handoff check alone never
+	// engages no matter how many WhatsApp messages get fired at the same
+	// victim number.
+	if err := s.checkPerPhoneIssueCap(ctx, normalizedPhone); err != nil {
+		return nil, err
 	}
 
 	if err := s.checkResendCooldown(ctx, rec.ID, normalizedPhone); err != nil {
@@ -468,6 +544,55 @@ func (s *GoogleOAuthService) checkResendCooldown(ctx context.Context, handoffID 
 	return &authapi.OTPCooldownError{ResendAvailableIn: secs}
 }
 
+// checkPerPhoneIssueCap enforces OTP_MAX_PER_PHONE_HOUR — how many OTP
+// challenges may be ISSUED to one WhatsApp number per hour, across every
+// registration handoff (review finding #2). Distinct from
+// checkResendCooldown above, which only throttles resends WITHIN a single
+// handoff — that alone does nothing to stop an attacker from opening a new
+// handoff per request to reset the cooldown clock.
+func (s *GoogleOAuthService) checkPerPhoneIssueCap(ctx context.Context, normalizedPhone string) error {
+	since := time.Now().UTC().Add(-time.Hour)
+	count, oldest, err := s.otps.CountAndOldestSince(ctx, normalizedPhone, since)
+	if err != nil {
+		return fmt.Errorf("google oauth request otp: check per-phone issue cap: %w", err)
+	}
+	if count < int64(s.otpCfg.MaxPerPhoneHour) {
+		return nil
+	}
+	// The cap clears exactly one hour after the oldest challenge in the
+	// window ages out — report that as the resend hint.
+	var resendIn int
+	if oldest != nil {
+		remaining := time.Hour - time.Since(*oldest)
+		if remaining < 0 {
+			remaining = 0
+		}
+		resendIn = int(remaining.Seconds())
+		if remaining%time.Second != 0 {
+			resendIn++
+		}
+	}
+	return &authapi.OTPCooldownError{ResendAvailableIn: resendIn}
+}
+
+// checkPerPhoneFailedCap enforces OTP_MAX_FAILED_PER_PHONE_HOUR — the total
+// number of verify attempts logged against one WhatsApp number per hour,
+// across every registration handoff (review finding #2). Without this, an
+// attacker could open several handoffs for the same victim phone, each
+// carrying its own full OTP_MAX_ATTEMPTS budget, and keep guessing the code
+// far past what any single handoff's ceiling allows.
+func (s *GoogleOAuthService) checkPerPhoneFailedCap(ctx context.Context, normalizedPhone string) error {
+	since := time.Now().UTC().Add(-time.Hour)
+	total, err := s.otps.SumAttemptsSince(ctx, normalizedPhone, since)
+	if err != nil {
+		return fmt.Errorf("google oauth complete: check per-phone attempt cap: %w", err)
+	}
+	if total >= int64(s.otpCfg.MaxFailedPerPhoneHour) {
+		return authapi.ErrOTPTooManyAttempts
+	}
+	return nil
+}
+
 // Complete finishes the registration flow: verifies the OTP sent by
 // RequestOTP, claims the handoff code, resolves the phone number against
 // `users` (create new, or upgrade a matching guest — §11: 1 nomor WA = 1
@@ -490,11 +615,13 @@ func (s *GoogleOAuthService) Complete(ctx context.Context, in CompleteGoogleInpu
 		return nil, fmt.Errorf("phone invalid: %w", err)
 	}
 
-	pv, err := s.verifyOTP(ctx, rec.ID, normalizedPhone, in.OTP)
-	if err != nil {
-		return nil, err
-	}
-
+	// Resolve + validate the display name BEFORE touching the OTP challenge.
+	// This can't move all the way out to the HTTP handler (§23 edge
+	// validation) — the fallback source, rec.Name (the name Google supplied
+	// at /exchange time), is only known once the handoff code has been
+	// looked up above — but doing it here, before verifyOTP's DB round-trip,
+	// means a request that was always going to be rejected for a missing
+	// name doesn't also burn an OTP attempt on the way to that rejection.
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
 		name = strings.TrimSpace(derefStr(rec.Name))
@@ -503,24 +630,44 @@ func (s *GoogleOAuthService) Complete(ctx context.Context, in CompleteGoogleInpu
 		return nil, fmt.Errorf("name required: %w", errBadInput)
 	}
 
-	// Claim the handoff code BEFORE mutating the user (review finding #4) —
-	// atomic single-use, so two concurrent Complete() calls for the same
-	// code can never both create/upgrade a user.
-	if err := s.claimHandoffCode(ctx, rec.ID); err != nil {
-		return nil, err
-	}
-
-	u, err := s.resolveUserForCompletion(ctx, normalizedPhone, name, *rec.Subject, *rec.Email)
+	// verifyOTP is deliberately OUTSIDE the transaction below: its attempts
+	// counter must stay incremented even if everything after it rolls back
+	// (that's the entire point of counting attempts — see verifyOTP's doc).
+	pv, err := s.verifyOTP(ctx, rec.ID, normalizedPhone, in.OTP)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := s.otps.MarkConsumed(ctx, pv.ID); err != nil {
-		return nil, fmt.Errorf("google oauth complete: mark otp consumed: %w", err)
+	// claim handoff + resolve user (create/upgrade) + consume OTP + update
+	// last login all commit or all roll back TOGETHER (review finding #4).
+	// Before this fix, a rejected resolve (ErrPhoneAlreadyUsed /
+	// ErrEmailAlreadyUsed / ErrUserInactive) still left the handoff code
+	// permanently burned — the caller had no way to retry with a corrected
+	// phone number without redoing the entire Google consent screen. Worse,
+	// if Create() succeeded but a later step failed, the user row stuck
+	// around with a dead handoff and no token ever returned.
+	var u *model.User
+	err = s.txRunner.RunInTx(ctx, func(tx googleOAuthCompletionTx) error {
+		if err := claimHandoffCodeWith(ctx, tx.Codes, rec.ID); err != nil {
+			return err
+		}
+		var resolveErr error
+		u, resolveErr = resolveUserForCompletion(ctx, tx.Users, normalizedPhone, name, *rec.Subject, *rec.Email)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if err := tx.OTPs.MarkConsumed(ctx, pv.ID); err != nil {
+			return fmt.Errorf("google oauth complete: mark otp consumed: %w", err)
+		}
+		if err := tx.Users.UpdateLastLogin(ctx, u.ID); err != nil {
+			return fmt.Errorf("google oauth complete: update last login: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	if err := s.users.UpdateLastLogin(ctx, u.ID); err != nil {
-		return nil, fmt.Errorf("google oauth complete: update last login: %w", err)
-	}
+
 	pair, err := issueTokenFor(s.issuer, u)
 	if err != nil {
 		return nil, err
@@ -528,12 +675,19 @@ func (s *GoogleOAuthService) Complete(ctx context.Context, in CompleteGoogleInpu
 	return &GoogleExchangeOutput{Status: "session", Token: pair, User: u, RedirectPath: derefStr(rec.RedirectPath)}, nil
 }
 
-// verifyOTP looks up the active challenge for (handoffID, phone), enforces
-// the attempt ceiling, and constant-time-compares the hash. A wrong guess
-// atomically increments attempts before returning — this is the ONLY place
-// attempts is incremented, so the counter can't be bypassed by racing
-// requests against a stale read.
+// verifyOTP looks up the active challenge for (handoffID, phone) and
+// constant-time-compares the hash. The attempts ceiling is enforced as part
+// of the SAME atomic UPDATE that increments the counter (review finding #1
+// — repository.IncrementAttemptsIfAllowed), so no window exists between
+// reading a stale attempts value and deciding whether a guess is allowed.
+// Every call reaching the increment counts as an attempt, whether the code
+// turns out right or wrong — increment happens BEFORE the hash comparison,
+// unconditionally, not just on the wrong-guess branch.
 func (s *GoogleOAuthService) verifyOTP(ctx context.Context, handoffID uuid.UUID, normalizedPhone, otp string) (*model.PhoneVerification, error) {
+	if err := s.checkPerPhoneFailedCap(ctx, normalizedPhone); err != nil {
+		return nil, err
+	}
+
 	pv, err := s.otps.FindActive(ctx, handoffID, normalizedPhone)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
@@ -541,17 +695,18 @@ func (s *GoogleOAuthService) verifyOTP(ctx context.Context, handoffID uuid.UUID,
 		}
 		return nil, fmt.Errorf("google oauth complete: lookup otp challenge: %w", err)
 	}
-	if pv.Attempts >= s.otpCfg.MaxAttempts {
-		return nil, authapi.ErrOTPTooManyAttempts
+
+	attempts, err := s.otps.IncrementAttemptsIfAllowed(ctx, pv.ID, s.otpCfg.MaxAttempts)
+	if err != nil {
+		if errors.Is(err, repository.ErrAttemptsExceeded) {
+			return nil, authapi.ErrOTPTooManyAttempts
+		}
+		return nil, fmt.Errorf("google oauth complete: increment otp attempts: %w", err)
 	}
 
 	want := []byte(pv.CodeHash)
 	got := []byte(hashOTP(normalizedPhone, otp))
 	if subtle.ConstantTimeCompare(got, want) != 1 {
-		attempts, err := s.otps.IncrementAttempts(ctx, pv.ID)
-		if err != nil {
-			return nil, fmt.Errorf("google oauth complete: increment otp attempts: %w", err)
-		}
 		left := s.otpCfg.MaxAttempts - attempts
 		if left < 0 {
 			left = 0
@@ -565,11 +720,22 @@ func (s *GoogleOAuthService) verifyOTP(ctx context.Context, handoffID uuid.UUID,
 	return pv, nil
 }
 
-// claimHandoffCode wraps codes.MarkUsed, mapping "not found / already used"
-// to the single ErrOAuthCodeInvalid sentinel the handler already knows how
-// to map to a 400 (review finding #4 — MarkUsed is now atomic).
+// claimHandoffCode wraps codes.MarkUsed against the service's own (non-tx)
+// store — used by the two Exchange() paths, which each only ever write to
+// oauth_login_codes and don't need a cross-repository transaction.
 func (s *GoogleOAuthService) claimHandoffCode(ctx context.Context, id uuid.UUID) error {
-	if err := s.codes.MarkUsed(ctx, id); err != nil {
+	return claimHandoffCodeWith(ctx, s.codes, id)
+}
+
+// claimHandoffCodeWith is the store-parameterized version — Complete() calls
+// this with the TRANSACTION-scoped codes store (see googleOAuthCompletionTx)
+// so the claim participates in the same commit/rollback as the rest of that
+// method's writes (review finding #4).
+//
+// Maps "not found / already used" to the single ErrOAuthCodeInvalid sentinel
+// the handler already knows how to map to a 400 (MarkUsed is atomic).
+func claimHandoffCodeWith(ctx context.Context, codes googleOAuthCodeStore, id uuid.UUID) error {
+	if err := codes.MarkUsed(ctx, id); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			return authapi.ErrOAuthCodeInvalid
 		}
@@ -583,11 +749,16 @@ func (s *GoogleOAuthService) claimHandoffCode(ctx context.Context, id uuid.UUID)
 // registered customer → reject (phone is the unique matching key, can't be
 // claimed twice); phone belongs to a guest customer → upgrade in place so
 // existing order history stays attached to the same user_id (§11).
-func (s *GoogleOAuthService) resolveUserForCompletion(ctx context.Context, normalizedPhone, name, subject, email string) (*model.User, error) {
-	existing, err := s.users.FindByPhone(ctx, normalizedPhone)
+//
+// Takes the store as a parameter (rather than a method on *GoogleOAuthService)
+// so Complete() can pass either the service's own store or a
+// transaction-scoped one (review finding #4) — this function has no other
+// dependency on the service.
+func resolveUserForCompletion(ctx context.Context, users googleOAuthUserStore, normalizedPhone, name, subject, email string) (*model.User, error) {
+	existing, err := users.FindByPhone(ctx, normalizedPhone)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return s.createRegisteredCustomer(ctx, normalizedPhone, name, subject, email)
+			return createRegisteredCustomer(ctx, users, normalizedPhone, name, subject, email)
 		}
 		return nil, fmt.Errorf("google oauth complete: lookup phone: %w", err)
 	}
@@ -597,11 +768,11 @@ func (s *GoogleOAuthService) resolveUserForCompletion(ctx context.Context, norma
 		return nil, authapi.ErrPhoneAlreadyUsed
 	}
 
-	return s.upgradeGuestCustomer(ctx, existing, name, subject, email)
+	return upgradeGuestCustomer(ctx, users, existing, name, subject, email)
 }
 
-func (s *GoogleOAuthService) createRegisteredCustomer(ctx context.Context, normalizedPhone, name, subject, email string) (*model.User, error) {
-	if used, err := s.users.ExistsByEmail(ctx, email); err != nil {
+func createRegisteredCustomer(ctx context.Context, users googleOAuthUserStore, normalizedPhone, name, subject, email string) (*model.User, error) {
+	if used, err := users.ExistsByEmail(ctx, email); err != nil {
 		return nil, fmt.Errorf("google oauth complete: check email uniqueness: %w", err)
 	} else if used {
 		return nil, authapi.ErrEmailAlreadyUsed
@@ -619,7 +790,7 @@ func (s *GoogleOAuthService) createRegisteredCustomer(ctx context.Context, norma
 		OAuthSubject:  &subject,
 		IsActive:      true,
 	}
-	if err := s.users.Create(ctx, u); err != nil {
+	if err := users.Create(ctx, u); err != nil {
 		return nil, fmt.Errorf("google oauth complete: create user: %w", err)
 	}
 	return u, nil
@@ -637,14 +808,14 @@ func (s *GoogleOAuthService) createRegisteredCustomer(ctx context.Context, norma
 //     email left NULL (that violates the CHECK and used to bounce as an
 //     opaque 500 — review finding #2) nor steal the other account's email —
 //     reject explicitly instead.
-func (s *GoogleOAuthService) upgradeGuestCustomer(ctx context.Context, existing *model.User, name, subject, email string) (*model.User, error) {
+func upgradeGuestCustomer(ctx context.Context, users googleOAuthUserStore, existing *model.User, name, subject, email string) (*model.User, error) {
 	if !existing.IsActive {
 		return nil, authapi.ErrUserInactive
 	}
 
 	var emailToSet *string
 	if existing.Email == nil {
-		used, err := s.users.ExistsByEmail(ctx, email)
+		used, err := users.ExistsByEmail(ctx, email)
 		if err != nil {
 			return nil, fmt.Errorf("google oauth complete: check email uniqueness: %w", err)
 		}
@@ -654,10 +825,10 @@ func (s *GoogleOAuthService) upgradeGuestCustomer(ctx context.Context, existing 
 		emailToSet = &email
 	}
 
-	if err := s.users.UpgradeGuestToRegistered(ctx, existing.ID, emailToSet, name, "google", subject); err != nil {
+	if err := users.UpgradeGuestToRegistered(ctx, existing.ID, emailToSet, name, "google", subject); err != nil {
 		return nil, fmt.Errorf("google oauth complete: upgrade guest to registered: %w", err)
 	}
-	updated, err := s.users.FindByID(ctx, existing.ID)
+	updated, err := users.FindByID(ctx, existing.ID)
 	if err != nil {
 		return nil, fmt.Errorf("google oauth complete: reload upgraded user %s: %w", existing.ID, err)
 	}

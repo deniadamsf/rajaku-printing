@@ -92,46 +92,65 @@ func TestValidateGoogleOAuth(t *testing.T) {
 // before the server can accept traffic.
 func TestParseOTPConfig(t *testing.T) {
 	t.Run("valid defaults", func(t *testing.T) {
-		cfg, errs := parseOTPConfig("5m", "60s", 5, 6)
+		cfg, errs := parseOTPConfig("5m", "60s", 5, 6, 5, 10)
 		if len(errs) != 0 {
 			t.Fatalf("expected no errors, got %v", errs)
 		}
 		if cfg.TTL != 5*time.Minute || cfg.ResendCooldown != 60*time.Second ||
-			cfg.MaxAttempts != 5 || cfg.CodeLength != 6 {
+			cfg.MaxAttempts != 5 || cfg.CodeLength != 6 ||
+			cfg.MaxPerPhoneHour != 5 || cfg.MaxFailedPerPhoneHour != 10 {
 			t.Fatalf("unexpected cfg: %+v", cfg)
 		}
 	})
 
 	t.Run("invalid TTL duration string", func(t *testing.T) {
-		if _, errs := parseOTPConfig("not-a-duration", "60s", 5, 6); len(errs) == 0 {
+		if _, errs := parseOTPConfig("not-a-duration", "60s", 5, 6, 5, 10); len(errs) == 0 {
 			t.Fatal("expected error for invalid OTP_TTL")
 		}
 	})
 
 	t.Run("zero TTL rejected", func(t *testing.T) {
-		if _, errs := parseOTPConfig("0s", "60s", 5, 6); len(errs) == 0 {
+		if _, errs := parseOTPConfig("0s", "60s", 5, 6, 5, 10); len(errs) == 0 {
 			t.Fatal("expected error for OTP_TTL <= 0")
 		}
 	})
 
 	t.Run("invalid resend cooldown duration string", func(t *testing.T) {
-		if _, errs := parseOTPConfig("5m", "not-a-duration", 5, 6); len(errs) == 0 {
+		if _, errs := parseOTPConfig("5m", "not-a-duration", 5, 6, 5, 10); len(errs) == 0 {
 			t.Fatal("expected error for invalid OTP_RESEND_COOLDOWN")
 		}
 	})
 
 	t.Run("max attempts out of range", func(t *testing.T) {
 		for _, n := range []int{0, -1, 11} {
-			if _, errs := parseOTPConfig("5m", "60s", n, 6); len(errs) == 0 {
+			if _, errs := parseOTPConfig("5m", "60s", n, 6, 5, 10); len(errs) == 0 {
 				t.Fatalf("expected error for OTP_MAX_ATTEMPTS=%d", n)
 			}
 		}
 	})
 
+	// Minimum raised 4 -> 6 (review finding #7) — 4 and 5 must now be
+	// rejected, not just the previous out-of-range boundary of 3.
 	t.Run("code length out of range", func(t *testing.T) {
-		for _, n := range []int{3, 9} {
-			if _, errs := parseOTPConfig("5m", "60s", 5, n); len(errs) == 0 {
+		for _, n := range []int{3, 4, 5, 9} {
+			if _, errs := parseOTPConfig("5m", "60s", 5, n, 5, 10); len(errs) == 0 {
 				t.Fatalf("expected error for OTP_CODE_LENGTH=%d", n)
+			}
+		}
+	})
+
+	t.Run("max per phone hour out of range", func(t *testing.T) {
+		for _, n := range []int{0, -1, 1001} {
+			if _, errs := parseOTPConfig("5m", "60s", 5, 6, n, 10); len(errs) == 0 {
+				t.Fatalf("expected error for OTP_MAX_PER_PHONE_HOUR=%d", n)
+			}
+		}
+	})
+
+	t.Run("max failed per phone hour out of range", func(t *testing.T) {
+		for _, n := range []int{0, -1, 1001} {
+			if _, errs := parseOTPConfig("5m", "60s", 5, 6, 5, n); len(errs) == 0 {
+				t.Fatalf("expected error for OTP_MAX_FAILED_PER_PHONE_HOUR=%d", n)
 			}
 		}
 	})

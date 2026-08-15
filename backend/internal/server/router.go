@@ -141,13 +141,16 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	googleClient := oauth.NewGoogleClient(
 		d.Config.GoogleOAuth.ClientID, d.Config.GoogleOAuth.ClientSecret, d.Config.GoogleOAuth.RedirectURL)
 	googleOAuthSvc := authservice.NewGoogleOAuthService(
-		userRepo, oauthCodeRepo, phoneVerificationRepo, googleClient, jwtIssuer, d.Config.App.FrontendURL,
+		userRepo, oauthCodeRepo, phoneVerificationRepo, googleClient, jwtIssuer,
 		authservice.OTPConfig{
-			TTL:            d.Config.OTP.TTL,
-			MaxAttempts:    d.Config.OTP.MaxAttempts,
-			ResendCooldown: d.Config.OTP.ResendCooldown,
-			CodeLength:     d.Config.OTP.CodeLength,
+			TTL:                   d.Config.OTP.TTL,
+			MaxAttempts:           d.Config.OTP.MaxAttempts,
+			ResendCooldown:        d.Config.OTP.ResendCooldown,
+			CodeLength:            d.Config.OTP.CodeLength,
+			MaxPerPhoneHour:       d.Config.OTP.MaxPerPhoneHour,
+			MaxFailedPerPhoneHour: d.Config.OTP.MaxFailedPerPhoneHour,
 		},
+		d.DB,
 	)
 	// googleOAuthSvc.SetOTPSender(notifSvc) — wired further below, after
 	// notifSvc is built (notification module wired after auth in this
@@ -256,10 +259,11 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	// Tracking URL di template WA (mis. "Lacak di: BASE/lacak/:resi") →
 	// FrontendURL karena URL dibuka pelanggan lewat browser.
 	notifSvc := notifservice.New(notifRepo, orderSvc, customerSvc, notifservice.Config{
-		BaseURL:            d.Config.App.FrontendURL,
-		MaxAttempts:        d.Config.Notification.MaxAttempts,
-		InitialBackoff:     d.Config.Notification.InitialBackoff,
-		InternalAlertPhone: d.Config.Notification.InternalPhone,
+		BaseURL:             d.Config.App.FrontendURL,
+		MaxAttempts:         d.Config.Notification.MaxAttempts,
+		InitialBackoff:      d.Config.Notification.InitialBackoff,
+		InternalAlertPhone:  d.Config.Notification.InternalPhone,
+		SensitiveMessageTTL: d.Config.Notification.SensitiveMessageTTL,
 	})
 	orderSvc.SetNotifier(notifSvc)
 	paymentSvc.SetNotifier(notifSvc)
@@ -370,7 +374,7 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 		settingsH.RegisterRoutes(v1, authSvc)
 	}
 
-	bg, err := buildBackground(d.Config, designSvc)
+	bg, err := buildBackground(d.Config, designSvc, notifSvc)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -386,52 +390,84 @@ type retentionRunner interface {
 	RunRetentionReminder(ctx context.Context) (designservice.ReminderResult, error)
 }
 
+// sensitiveMessageRedactor — kontrak minimal dari notification service untuk
+// sweep job keamanan (review finding #3: redaksi paksa `message` job
+// is_sensitive yang tidak kunjung sampai status terminal). Interface lokal,
+// sama alasannya dengan retentionRunner di atas.
+type sensitiveMessageRedactor interface {
+	RedactStaleSensitiveMessages(ctx context.Context) (int64, error)
+}
+
 // buildBackground mendaftarkan job terjadwal. Spec cron divalidasi di sini —
 // salah ketik = startup gagal (§22 fail-fast), bukan job diam-diam tidak jalan.
-func buildBackground(cfg *config.Config, retention retentionRunner) (*Background, error) {
-	if !cfg.Retention.Enabled {
-		log.Warn().Msg("retention job DISABLED lewat RETENTION_JOB_ENABLED — file desain tidak akan dibersihkan otomatis")
-		return &Background{}, nil
-	}
-
+func buildBackground(cfg *config.Config, retention retentionRunner, notif sensitiveMessageRedactor) (*Background, error) {
+	// Timeout dipakai bersama oleh SEMUA job terjadwal (bukan cuma retention
+	// desain) — cukup satu Runner untuk seluruh proses, tidak perlu goroutine
+	// scheduler terpisah per fitur.
 	runner := jobs.New(cfg.Retention.JobTimeout)
 
-	if err := runner.Register(jobs.Job{
-		Name: "design-retention-reminder",
-		Spec: cfg.Retention.ReminderCron,
-		Run: func(ctx context.Context) error {
-			res, err := retention.RunRetentionReminder(ctx)
-			if err != nil {
-				return err
-			}
-			log.Info().
-				Int("scanned", res.Scanned).
-				Int("notified", res.Notified).
-				Int("skipped", res.Skipped).
-				Int("failed", res.Failed).
-				Int("retention_days", res.RetentionDays).
-				Msg("retention reminder selesai")
-			return nil
-		},
-	}); err != nil {
-		return nil, err
+	if cfg.Retention.Enabled {
+		if err := runner.Register(jobs.Job{
+			Name: "design-retention-reminder",
+			Spec: cfg.Retention.ReminderCron,
+			Run: func(ctx context.Context) error {
+				res, err := retention.RunRetentionReminder(ctx)
+				if err != nil {
+					return err
+				}
+				log.Info().
+					Int("scanned", res.Scanned).
+					Int("notified", res.Notified).
+					Int("skipped", res.Skipped).
+					Int("failed", res.Failed).
+					Int("retention_days", res.RetentionDays).
+					Msg("retention reminder selesai")
+				return nil
+			},
+		}); err != nil {
+			return nil, err
+		}
+
+		if err := runner.Register(jobs.Job{
+			Name: "design-retention-sweep",
+			Spec: cfg.Retention.SweepCron,
+			Run: func(ctx context.Context) error {
+				res, err := retention.RunRetentionSweep(ctx)
+				if err != nil {
+					return err
+				}
+				log.Info().
+					Int("scanned", res.Scanned).
+					Int("purged", res.Purged).
+					Int("failed", res.Failed).
+					Int64("freed_bytes", res.FreedBytes).
+					Int("retention_days", res.RetentionDays).
+					Msg("retention sweep selesai")
+				return nil
+			},
+		}); err != nil {
+			return nil, err
+		}
+	} else {
+		log.Warn().Msg("retention job DISABLED lewat RETENTION_JOB_ENABLED — file desain tidak akan dibersihkan otomatis")
 	}
 
+	// Notification sensitive-message sweep — INDEPENDEN dari
+	// RETENTION_JOB_ENABLED di atas: ini kebersihan keamanan (jangan simpan
+	// kode OTP plaintext lebih lama dari perlu, §3 review keamanan), bukan
+	// soal kapasitas disk. Spec cron hardcode (bukan env var) karena ini
+	// jaring pengaman internal, bukan kebijakan bisnis yang perlu admin
+	// atur — satu-satunya knob yang relevan adalah ambang umurnya
+	// (NOTIFICATION_SENSITIVE_MESSAGE_TTL, dibaca di dalam service).
 	if err := runner.Register(jobs.Job{
-		Name: "design-retention-sweep",
-		Spec: cfg.Retention.SweepCron,
+		Name: "notification-sensitive-message-sweep",
+		Spec: "0 * * * *",
 		Run: func(ctx context.Context) error {
-			res, err := retention.RunRetentionSweep(ctx)
+			n, err := notif.RedactStaleSensitiveMessages(ctx)
 			if err != nil {
 				return err
 			}
-			log.Info().
-				Int("scanned", res.Scanned).
-				Int("purged", res.Purged).
-				Int("failed", res.Failed).
-				Int64("freed_bytes", res.FreedBytes).
-				Int("retention_days", res.RetentionDays).
-				Msg("retention sweep selesai")
+			log.Info().Int64("redacted", n).Msg("notification sensitive-message sweep selesai")
 			return nil
 		},
 	}); err != nil {

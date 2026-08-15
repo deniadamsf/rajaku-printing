@@ -34,4 +34,45 @@ var (
 	ErrInviteAlreadyUsed     = errors.New("authapi: invite token already used")
 	ErrInvalidRoleAssignment = errors.New("authapi: role id list contains invalid entries")
 	ErrInvalidPermissionSet  = errors.New("authapi: permission codes contain invalid entries")
+
+	// Google OAuth (§3, §10)
+	ErrOAuthDisabled        = errors.New("authapi: google oauth not configured")
+	ErrOAuthCodeInvalid     = errors.New("authapi: oauth handoff code invalid, used, or expired")
+	ErrOAuthStaffNotAllowed = errors.New("authapi: staff accounts must log in with email + password")
+	ErrOAuthAccountConflict = errors.New("authapi: google account is already linked to a different user")
+	// ErrOAuthEmailUnverified — Google reported an unverified email for a
+	// registration attempt. Customer accounts require a (unique) email column
+	// per CHECK users_email_required — persisting an unverified address would
+	// let anyone squat someone else's email just by typing it into Google's
+	// consent screen for an account they don't control. Reject the whole login
+	// instead of silently dropping the email.
+	ErrOAuthEmailUnverified = errors.New("authapi: google email not verified")
+
+	// OTP WhatsApp verification (Google OAuth registration — nomor WA bukan
+	// rahasia, jadi kepemilikan wajib dibuktikan lewat kode OTP sebelum akun
+	// dibuat/di-upgrade dari guest). Lihat google_oauth_service.go.
+	ErrOTPInvalid         = errors.New("authapi: otp code invalid")
+	ErrOTPExpired         = errors.New("authapi: otp code not found or expired")
+	ErrOTPTooManyAttempts = errors.New("authapi: otp max attempts exceeded")
+	ErrOTPCooldown        = errors.New("authapi: otp resend cooldown active")
 )
+
+// OTPCooldownError wraps ErrOTPCooldown with the exact remaining wait time
+// (seconds) so the handler can surface `resend_available_in` in the response
+// details without the handler needing to recompute it. errors.Is(err,
+// ErrOTPCooldown) still works via Unwrap — no custom Is() method needed.
+type OTPCooldownError struct {
+	ResendAvailableIn int
+}
+
+func (e *OTPCooldownError) Error() string { return ErrOTPCooldown.Error() }
+func (e *OTPCooldownError) Unwrap() error { return ErrOTPCooldown }
+
+// OTPInvalidError wraps ErrOTPInvalid with how many attempts remain before
+// ErrOTPTooManyAttempts kicks in.
+type OTPInvalidError struct {
+	AttemptsLeft int
+}
+
+func (e *OTPInvalidError) Error() string { return ErrOTPInvalid.Error() }
+func (e *OTPInvalidError) Unwrap() error { return ErrOTPInvalid }

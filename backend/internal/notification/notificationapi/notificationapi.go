@@ -15,15 +15,15 @@ import (
 // (jangan bikin pembayaran gagal cuma karena WA gagal di-enqueue). Notification
 // harus best-effort, tidak boleh block critical path.
 var (
-	ErrOrderNotFound      = errors.New("notificationapi: order not found for enqueue")
-	ErrRecipientMissing   = errors.New("notificationapi: recipient phone unresolved")
+	ErrOrderNotFound    = errors.New("notificationapi: order not found for enqueue")
+	ErrRecipientMissing = errors.New("notificationapi: recipient phone unresolved")
 	// ErrInternalRecipientMissing — NOTIFICATION_INTERNAL_PHONE tidak di-set,
 	// jadi alert internal (mis. reminder retensi §19) tidak punya tujuan.
 	// Bukan fatal: caller log warn & lanjut — alert internal sifatnya bantuan
 	// operasional, bukan jalur kritis.
 	ErrInternalRecipientMissing = errors.New("notificationapi: internal alert phone not configured")
-	ErrUnknownKind        = errors.New("notificationapi: unknown notification kind")
-	ErrDuplicateEnqueue   = errors.New("notificationapi: notification already enqueued (dedup key exists)")
+	ErrUnknownKind              = errors.New("notificationapi: unknown notification kind")
+	ErrDuplicateEnqueue         = errors.New("notificationapi: notification already enqueued (dedup key exists)")
 )
 
 // Kind — enum-like string type. String literal biar mudah persist di DB
@@ -35,22 +35,27 @@ type Kind string
 // sudah bikin trigger + template — jangan pre-declare kind yang tidak ada
 // template-nya (§22 no-silent-stub).
 const (
-	KindOngkirReady          Kind = "ongkir_ready"           // total fix, minta bayar
-	KindPaymentVerified      Kind = "payment_verified"       // bukti disetujui
-	KindPaymentRejected      Kind = "payment_rejected"       // bukti ditolak, upload ulang
-	KindDesignApproved       Kind = "design_approved"        // customer setuju draft desain (§6)
-	KindDesignNeedsRevision  Kind = "design_needs_revision"  // customer minta revisi (§6)
-	KindReadyPickup          Kind = "ready_pickup"           // pickup — siap diambil di toko
-	KindReadyShip            Kind = "ready_ship"             // kirim  — siap dikirim (belum ada resi ekspedisi)
-	KindShipped              Kind = "shipped"                // sudah dikirim, ada courier + tracking
-	KindInvoiceReady         Kind = "invoice_ready"          // invoice PDF siap didownload (§12)
-	KindPOSOrderCreated      Kind = "pos_order_created"      // konfirmasi walk-in order sudah diterima (§11)
+	KindOngkirReady         Kind = "ongkir_ready"          // total fix, minta bayar
+	KindPaymentVerified     Kind = "payment_verified"      // bukti disetujui
+	KindPaymentRejected     Kind = "payment_rejected"      // bukti ditolak, upload ulang
+	KindDesignApproved      Kind = "design_approved"       // customer setuju draft desain (§6)
+	KindDesignNeedsRevision Kind = "design_needs_revision" // customer minta revisi (§6)
+	KindReadyPickup         Kind = "ready_pickup"          // pickup — siap diambil di toko
+	KindReadyShip           Kind = "ready_ship"            // kirim  — siap dikirim (belum ada resi ekspedisi)
+	KindShipped             Kind = "shipped"               // sudah dikirim, ada courier + tracking
+	KindInvoiceReady        Kind = "invoice_ready"         // invoice PDF siap didownload (§12)
+	KindPOSOrderCreated     Kind = "pos_order_created"     // konfirmasi walk-in order sudah diterima (§11)
 
 	// KindDesignRetentionWarning — INTERNAL (ke nomor ops/staff, bukan
 	// customer): file desain akan dihapus otomatis H-3 sementara order-nya
 	// belum `selesai` (§19). Staff diberi kesempatan download manual dulu
 	// kalau masih mungkin ada reprint.
 	KindDesignRetentionWarning Kind = "design_retention_warning"
+
+	// KindOTPVerification — kode verifikasi kepemilikan nomor WA, dipakai
+	// modul auth (pendaftaran via Google OAuth). Tidak terikat order/customer
+	// manapun (dikirim SEBELUM user row dibuat) — lihat OTPSender di bawah.
+	KindOTPVerification Kind = "otp_verification"
 )
 
 // Enqueuer — kontrak untuk trigger notifikasi terkait order. Implementasi
@@ -99,4 +104,19 @@ type InternalAlerter interface {
 	// dedupKey wajib diisi caller (mis. "design_retention_warning:<file_id>")
 	// supaya reminder yang sama tidak dikirim dua kali saat job jalan ulang.
 	EnqueueInternalAlert(ctx context.Context, kind Kind, orderID *uuid.UUID, extras map[string]any, dedupKey string) error
+}
+
+// OTPSender — kontrak khusus untuk mengirim kode verifikasi kepemilikan
+// nomor WA (OTP). Sengaja TERPISAH dari Enqueuer: Enqueuer selalu resolve
+// recipient dari order.customer (butuh order & customer row yang sudah
+// ada), sementara OTP dikirim SEBELUM user row dibuat sama sekali — caller
+// (auth module, alur registrasi Google OAuth) sudah tahu persis nomor tujuan
+// & pesan yang sudah dirender (kode + TTL), jadi tidak ada template/lookup
+// yang perlu dilakukan modul ini.
+//
+// Kontrak untuk caller — sama seperti Enqueuer: NON-BLOCKING (INSERT saja),
+// best-effort. dedupKey wajib diisi supaya retry yang salah tidak
+// menggandakan pesan yang sama.
+type OTPSender interface {
+	EnqueueOTP(ctx context.Context, phone, message, dedupKey string) error
 }

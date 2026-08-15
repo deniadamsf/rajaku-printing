@@ -195,6 +195,15 @@ func (s *Service) VerifyToken(ctx context.Context, raw string) (*authapi.Identit
 }
 
 func (s *Service) issueTokenFor(u *model.User) (*TokenPair, error) {
+	return issueTokenFor(s.issuer, u)
+}
+
+// issueTokenFor is a package-level helper (not a Service method) so both
+// Service (email+password login/register) and GoogleOAuthService (Google
+// login/registration) can share the exact same claim-building logic without
+// GoogleOAuthService needing to embed/depend on Service — avoids a
+// god-service (§22) while keeping token issuance in one place.
+func issueTokenFor(issuer *token.Issuer, u *model.User) (*TokenPair, error) {
 	claims := token.Claims{
 		UserID:      u.ID.String(),
 		UserType:    string(u.UserType),
@@ -206,14 +215,14 @@ func (s *Service) issueTokenFor(u *model.User) (*TokenPair, error) {
 		claims.Email = *u.Email
 	}
 	// Namanya di JWT dihilangkan (bukan info otorisasi; hemat byte).
-	tok, err := s.issuer.Sign(claims)
+	tok, err := issuer.Sign(claims)
 	if err != nil {
 		return nil, fmt.Errorf("sign token: %w", err)
 	}
 	return &TokenPair{
 		AccessToken: tok,
 		TokenType:   "Bearer",
-		ExpiresIn:   s.issuer.TTL(),
+		ExpiresIn:   issuer.TTL(),
 	}, nil
 }
 

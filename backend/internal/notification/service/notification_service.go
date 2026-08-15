@@ -59,6 +59,7 @@ type Config struct {
 var (
 	_ notificationapi.Enqueuer        = (*Service)(nil)
 	_ notificationapi.InternalAlerter = (*Service)(nil)
+	_ notificationapi.OTPSender       = (*Service)(nil)
 )
 
 func New(jobs JobStore, orderCmd orderapi.OrderCommandService, customers authapi.CustomerService, cfg Config) *Service {
@@ -211,6 +212,40 @@ func (s *Service) EnqueueInternalAlert(
 			return nil
 		}
 		return fmt.Errorf("enqueue internal alert: insert job: %w", err)
+	}
+	return nil
+}
+
+// EnqueueOTP implements notificationapi.OTPSender. Unlike EnqueueOrderEvent,
+// there's no order/customer to resolve or template to render — the caller
+// (auth module) already built the exact message (it's the only place that
+// knows the raw OTP code; this module never sees it in plaintext beyond the
+// rendered message string, and never persists it separately).
+func (s *Service) EnqueueOTP(ctx context.Context, phone, message, dedupKey string) error {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return notificationapi.ErrRecipientMissing
+	}
+	if strings.TrimSpace(dedupKey) == "" {
+		return fmt.Errorf("enqueue otp: dedup key required")
+	}
+	job := &model.NotificationJob{
+		Kind:           string(notificationapi.KindOTPVerification),
+		RecipientPhone: phone,
+		Message:        message,
+		Payload:        model.JSONPayload{"otp": true},
+		DedupKey:       &dedupKey,
+		Status:         model.JobPending,
+		Attempts:       0,
+		MaxAttempts:    s.maxAttempts(),
+		NextAttemptAt:  s.nowFn().UTC(),
+	}
+	if err := s.jobs.Create(ctx, job); err != nil {
+		if errors.Is(err, repository.ErrDedupConflict) {
+			// Idempotent: same OTP challenge already enqueued.
+			return nil
+		}
+		return fmt.Errorf("enqueue otp: insert job: %w", err)
 	}
 	return nil
 }

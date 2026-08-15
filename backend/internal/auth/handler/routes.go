@@ -22,6 +22,28 @@ func (h *Handler) RegisterRoutes(v1 *gin.RouterGroup, svc authapi.Service) {
 	}
 }
 
+// RegisterRoutes mounts the Google OAuth login/registration endpoints.
+// `public` gets the general public rate limit (see internal/server/router.go)
+// — /start and /callback are browser navigations reachable by anyone,
+// /exchange accepts a handoff code with no attacker-controlled identifier to
+// brute-force. `otpLimited` MUST carry a much stricter, dedicated limiter
+// (RATE_LIMIT_OTP_*): /request-otp and /complete both accept an arbitrary
+// WhatsApp number / numeric OTP guess in an unauthenticated POST body — the
+// same brute-force shape as POST /lacak/:resi/verify's guestVerify group.
+func (h *GoogleOAuthHandler) RegisterRoutes(public, otpLimited *gin.RouterGroup) {
+	g := public.Group("/auth/google")
+	{
+		g.GET("/start", h.Start)
+		g.GET("/callback", h.Callback)
+		g.POST("/exchange", h.Exchange)
+	}
+	ol := otpLimited.Group("/auth/google")
+	{
+		ol.POST("/request-otp", h.RequestOTP)
+		ol.POST("/complete", h.Complete)
+	}
+}
+
 // RegisterAdminRoutes mounts /admin/staff, /admin/roles, /admin/permissions,
 // dan /invites/*. Terpisah dari RegisterRoutes karena butuh AdminHandler
 // (yg wiring extra service — staff/role/invite). Semua /admin/* butuh

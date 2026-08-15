@@ -86,7 +86,7 @@ const badgeStates = [
   { label: 'pending', tone: 'amber' },
   { label: 'approved', tone: 'green' },
   { label: 'rejected', tone: 'rose' },
-  { label: 'archived', tone: 'slate' },
+  { label: 'archived', tone: 'ink' },
   { label: 'dikirim', tone: 'sky' },
 ]
 
@@ -100,6 +100,15 @@ function triggerSpin() {
 // --- Input demo state ---
 const demoInput = ref('')
 const demoTextarea = ref('')
+
+// --- OTP input demo state (pola dipakai di /auth/google, sub-state otp_form) ---
+const demoOtp = ref('')
+function onDemoOtpInput(e: Event) {
+  const raw = (e.target as HTMLInputElement).value
+  const digits = raw.replace(/\D/g, '').slice(0, 6)
+  demoOtp.value = digits
+  ;(e.target as HTMLInputElement).value = digits
+}
 </script>
 
 <template>
@@ -111,14 +120,14 @@ const demoTextarea = ref('')
 
     <!-- Table of contents -->
     <nav class="mb-10 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-medium">
-      <a href="#palet" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 transition-colors">Palet warna</a>
-      <a href="#typography" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 transition-colors">Tipografi</a>
-      <a href="#buttons" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 transition-colors">Buttons</a>
-      <a href="#inputs" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 transition-colors">Inputs</a>
-      <a href="#badges" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 transition-colors">Badges</a>
-      <a href="#cards" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 transition-colors">Cards</a>
-      <a href="#icons" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 transition-colors">Icons</a>
-      <a href="#motion" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 transition-colors">Motion</a>
+      <a href="#palet" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Palet warna</a>
+      <a href="#typography" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Tipografi</a>
+      <a href="#buttons" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Buttons</a>
+      <a href="#inputs" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Inputs</a>
+      <a href="#badges" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Badges</a>
+      <a href="#cards" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Cards</a>
+      <a href="#icons" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Icons</a>
+      <a href="#motion" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Motion</a>
     </nav>
 
     <!-- ================================= Palet ================================= -->
@@ -137,7 +146,7 @@ const demoTextarea = ref('')
           v-for="s in brand"
           :key="s.name"
           type="button"
-          :class="[s.className, 'group aspect-square rounded-md p-2 text-left text-[10px] font-medium ring-1 ring-inset ring-black/5 hover:ring-black/20 transition-all flex flex-col justify-end']"
+          :class="[s.className, 'group aspect-square rounded-md p-2 text-left text-[10px] font-medium ring-1 ring-black/5 hover:ring-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-all flex flex-col justify-end']"
           @click="copy(s.className, s.name)"
         >
           <span :class="[s.darkFg ? 'text-canvas' : 'text-ink-800']">
@@ -161,7 +170,7 @@ const demoTextarea = ref('')
           v-for="s in gold"
           :key="s.name"
           type="button"
-          :class="[s.className, 'group aspect-square rounded-md p-2 text-left text-[10px] font-medium ring-1 ring-inset ring-black/5 hover:ring-black/20 transition-all flex flex-col justify-end']"
+          :class="[s.className, 'group aspect-square rounded-md p-2 text-left text-[10px] font-medium ring-1 ring-black/5 hover:ring-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-all flex flex-col justify-end']"
           @click="copy(s.className, s.name)"
         >
           <span :class="[s.darkFg ? 'text-canvas' : 'text-ink-800']">{{ s.hex }}</span>
@@ -178,7 +187,7 @@ const demoTextarea = ref('')
           v-for="s in ink"
           :key="s.name"
           type="button"
-          :class="[s.className, 'group aspect-square rounded-md p-2 text-left text-[10px] font-medium ring-1 ring-inset ring-black/5 hover:ring-black/20 transition-all flex flex-col justify-end']"
+          :class="[s.className, 'group aspect-square rounded-md p-2 text-left text-[10px] font-medium ring-1 ring-black/5 hover:ring-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-all flex flex-col justify-end']"
           @click="copy(s.className, s.name)"
         >
           <span :class="[s.darkFg ? 'text-canvas' : 'text-ink-800']">{{ s.hex }}</span>
@@ -275,7 +284,7 @@ const demoTextarea = ref('')
             <button class="inline-flex items-center rounded-md border border-hairline bg-canvas px-4 py-2 text-sm font-semibold text-ink-900 hover:bg-canvas-alt hover:border-ink-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">
               Batal
             </button>
-            <button class="inline-flex items-center rounded-md border border-hairline bg-canvas px-4 py-2 text-sm font-semibold text-ink-500 hover:text-ink-900 transition-colors">
+            <button class="inline-flex items-center rounded-md border border-hairline bg-canvas px-4 py-2 text-sm font-semibold text-ink-500 hover:text-ink-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">
               Ghost link
             </button>
           </div>
@@ -284,10 +293,10 @@ const demoTextarea = ref('')
         <div>
           <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-2">Destructive (pakai brand-500, bukan rose)</p>
           <div class="flex flex-wrap gap-3 items-center">
-            <button class="inline-flex items-center rounded-md border border-brand-200 bg-canvas px-4 py-2 text-sm font-semibold text-brand-700 hover:bg-brand-50 hover:border-brand-300 transition-colors">
+            <button class="inline-flex items-center rounded-md border border-brand-200 bg-canvas px-4 py-2 text-sm font-semibold text-brand-700 hover:bg-brand-50 hover:border-brand-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">
               Hapus
             </button>
-            <button class="inline-flex items-center rounded-md bg-brand-500 px-4 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 transition-colors">
+            <button class="inline-flex items-center rounded-md bg-brand-500 px-4 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">
               Konfirmasi hapus
             </button>
           </div>
@@ -296,11 +305,25 @@ const demoTextarea = ref('')
         <div>
           <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-2">With icon (Lucide monoline)</p>
           <div class="flex flex-wrap gap-3 items-center">
-            <button class="inline-flex items-center gap-2 rounded-md bg-ink-950 px-4 py-2 text-sm font-semibold text-canvas hover:bg-ink-900 transition-colors">
+            <button class="inline-flex items-center gap-2 rounded-md bg-ink-950 px-4 py-2 text-sm font-semibold text-canvas hover:bg-ink-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">
               <CreditCard class="h-4 w-4" :stroke-width="1.75" />
               Verifikasi bukti
             </button>
           </div>
+        </div>
+
+        <div>
+          <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-2">
+            Third-party mark (satu-satunya pengecualian hex hardcode §26 — brand guideline Google)
+          </p>
+          <div class="max-w-xs">
+            <AuthGoogleLoginButton redirect="/akun" />
+          </div>
+          <p class="mt-2 text-xs text-ink-500 leading-relaxed">
+            Dipakai di <span class="font-mono">/login</span> & <span class="font-mono">/register</span> — komponen
+            <span class="font-mono">components/auth/GoogleLoginButton.vue</span>. Style tetap secondary button
+            (border-hairline), warna 4-tone SVG "G" resmi Google adalah satu-satunya pengecualian hex hardcode.
+          </p>
         </div>
       </div>
     </section>
@@ -352,6 +375,27 @@ const demoTextarea = ref('')
             />
           </div>
         </div>
+
+        <div class="rounded-lg border border-hairline bg-canvas p-5 space-y-2 md:col-span-2">
+          <label class="block text-sm font-medium text-ink-900">Kode OTP (verifikasi WhatsApp)</label>
+          <p class="text-xs text-ink-500 leading-relaxed">
+            Dipakai di <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/auth/google</code>
+            sub-state <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">otp_form</code> —
+            input tunggal 6 digit (bukan 6 kotak terpisah), <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">inputmode="numeric"</code>,
+            strip karakter non-digit saat input, <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">autocomplete="one-time-code"</code> untuk auto-fill SMS/WA di mobile.
+          </p>
+          <input
+            :value="demoOtp"
+            type="text"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            maxlength="6"
+            placeholder="000000"
+            class="mt-1 block w-full max-w-xs rounded-md border border-hairline bg-canvas px-3 py-2.5 text-center font-mono text-lg tracking-[0.5em] text-ink-900 placeholder-ink-300 transition-colors focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
+            @input="onDemoOtpInput"
+          />
+          <p class="text-xs text-ink-500">Countdown kedaluwarsa & tombol kirim ulang pakai style link/tombol standar (lihat halaman aslinya) — bukan komponen terpisah di sini.</p>
+        </div>
       </div>
     </section>
 
@@ -375,7 +419,7 @@ const demoTextarea = ref('')
           <p class="mt-1 text-xs text-ink-500 leading-relaxed">Container info yang tidak diklik. Default state — no shadow, hairline border.</p>
         </div>
 
-        <a href="#" class="group rounded-lg border border-hairline bg-canvas p-6 hover:border-ink-300 transition-colors">
+        <a href="#" class="group rounded-lg border border-hairline bg-canvas p-6 hover:border-ink-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas">
           <h3 class="text-sm font-semibold text-ink-900 group-hover:text-brand-500 transition-colors">Interactive link card</h3>
           <p class="mt-1 text-xs text-ink-500 leading-relaxed">Hover: border shift to ink-300, title shift to brand-500.</p>
         </a>
@@ -445,7 +489,7 @@ const demoTextarea = ref('')
           <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-3">Spinner</p>
           <button
             type="button"
-            class="inline-flex items-center gap-2 rounded-md bg-ink-950 px-4 py-2 text-sm font-semibold text-canvas hover:bg-ink-900 transition-colors"
+            class="inline-flex items-center gap-2 rounded-md bg-ink-950 px-4 py-2 text-sm font-semibold text-canvas hover:bg-ink-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
             @click="triggerSpin"
           >
             <span

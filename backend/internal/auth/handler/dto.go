@@ -56,20 +56,23 @@ type googleExchangeRequest struct {
 // falls back to the name Google supplied at the /exchange step. OTP is the
 // WhatsApp code obtained from POST /auth/google/request-otp — mandatory,
 // proves the caller controls `phone` before any user is created/upgraded.
+// OTP min length matches the configured minimum OTP_CODE_LENGTH floor (6,
+// review finding #7) — binding rejects an obviously-too-short guess before
+// it ever reaches the service/DB round-trip.
 type googleCompleteRequest struct {
 	Code  string `json:"code"  binding:"required"`
 	Phone string `json:"phone" binding:"required,min=8,max=20"`
 	Name  string `json:"name"  binding:"max=255"`
-	OTP   string `json:"otp"   binding:"required,min=4,max=8"`
+	OTP   string `json:"otp"   binding:"required,min=6,max=8"`
 }
 
-// googleRequestOTPRequest — POST /auth/google/request-otp body. Name is
-// optional (same fallback rule as googleCompleteRequest) — accepted here too
-// so the frontend can collect it once, on the phone-number screen.
+// googleRequestOTPRequest — POST /auth/google/request-otp body. No Name
+// field (review finding #10) — RequestOTP never used it; the display name is
+// collected/validated by googleCompleteRequest instead, where it's actually
+// consumed.
 type googleRequestOTPRequest struct {
 	Code  string `json:"code"  binding:"required"`
 	Phone string `json:"phone" binding:"required,min=8,max=20"`
-	Name  string `json:"name"  binding:"max=255"`
 }
 
 // googleRequestOTPResponse — POST /auth/google/request-otp response.

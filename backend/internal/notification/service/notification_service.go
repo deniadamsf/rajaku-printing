@@ -27,6 +27,9 @@ type JobStore interface {
 	MarkFailure(ctx context.Context, id uuid.UUID, errMsg string, backoff time.Duration) error
 	FindByID(ctx context.Context, id uuid.UUID) (*model.NotificationJob, error)
 	List(ctx context.Context, f repository.ListFilter) (*repository.ListResult, error)
+	// RedactStaleSensitive — periodic sweep safety net (review finding #3),
+	// see repository.Repository.RedactStaleSensitive.
+	RedactStaleSensitive(ctx context.Context, olderThan time.Time) (int64, error)
 }
 
 // Service — implementasi notificationapi.Enqueuer. Cross-module deps
@@ -54,6 +57,11 @@ type Config struct {
 	// internal (§19 reminder retensi). Kosong = fitur alert internal off;
 	// EnqueueInternalAlert return ErrInternalRecipientMissing.
 	InternalAlertPhone string
+	// SensitiveMessageTTL — dari config.NotificationConfig.SensitiveMessageTTL
+	// (review finding #3). <= 0 menonaktifkan RedactStaleSensitiveMessages
+	// (no-op) — inline redaction di MarkSent/MarkFailure tetap jalan terlepas
+	// dari nilai ini.
+	SensitiveMessageTTL time.Duration
 }
 
 var (
@@ -239,6 +247,10 @@ func (s *Service) EnqueueOTP(ctx context.Context, phone, message, dedupKey strin
 		Attempts:       0,
 		MaxAttempts:    s.maxAttempts(),
 		NextAttemptAt:  s.nowFn().UTC(),
+		// IsSensitive — `message` carries a plaintext WhatsApp OTP code
+		// (review finding #3); flags this row for inline redaction once it
+		// reaches sent/dead, and for the periodic stale-message sweep.
+		IsSensitive: true,
 	}
 	if err := s.jobs.Create(ctx, job); err != nil {
 		if errors.Is(err, repository.ErrDedupConflict) {
@@ -248,6 +260,24 @@ func (s *Service) EnqueueOTP(ctx context.Context, phone, message, dedupKey strin
 		return fmt.Errorf("enqueue otp: insert job: %w", err)
 	}
 	return nil
+}
+
+// RedactStaleSensitiveMessages scrubs `message` for every is_sensitive job
+// older than Config.SensitiveMessageTTL, regardless of status — a safety net
+// for jobs that never reach a terminal state through the normal
+// MarkSent/MarkFailure path (review finding #3). Wired into the periodic job
+// scheduler (see cmd/server composition root). No-op if SensitiveMessageTTL
+// is not configured (<= 0).
+func (s *Service) RedactStaleSensitiveMessages(ctx context.Context) (int64, error) {
+	if s.cfg.SensitiveMessageTTL <= 0 {
+		return 0, nil
+	}
+	cutoff := s.nowFn().UTC().Add(-s.cfg.SensitiveMessageTTL)
+	n, err := s.jobs.RedactStaleSensitive(ctx, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("redact stale sensitive notification messages: %w", err)
+	}
+	return n, nil
 }
 
 func (s *Service) maxAttempts() int {

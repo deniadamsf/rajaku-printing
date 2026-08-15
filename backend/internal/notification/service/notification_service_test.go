@@ -34,6 +34,11 @@ type fakeJobStore struct {
 	}
 	findByIDResult *model.NotificationJob
 	findByIDErr    error
+
+	redactStaleCalls int
+	redactStaleArg   time.Time
+	redactStaleN     int64
+	redactStaleErr   error
 }
 
 func (f *fakeJobStore) Create(_ context.Context, j *model.NotificationJob) error {
@@ -64,6 +69,11 @@ func (f *fakeJobStore) FindByID(_ context.Context, _ uuid.UUID) (*model.Notifica
 }
 func (f *fakeJobStore) List(_ context.Context, _ repository.ListFilter) (*repository.ListResult, error) {
 	return &repository.ListResult{}, nil
+}
+func (f *fakeJobStore) RedactStaleSensitive(_ context.Context, olderThan time.Time) (int64, error) {
+	f.redactStaleCalls++
+	f.redactStaleArg = olderThan
+	return f.redactStaleN, f.redactStaleErr
 }
 
 type fakeOrderCmd struct {
@@ -274,6 +284,12 @@ func TestEnqueueOTP_HappyPath(t *testing.T) {
 	if store.created.DedupKey == nil || *store.created.DedupKey != "otp:abc-1" {
 		t.Errorf("dedup key mismatch, got %v", store.created.DedupKey)
 	}
+	// review finding #3: OTP jobs must be flagged is_sensitive so
+	// MarkSent/MarkFailure (and the stale-message sweep) know to redact the
+	// plaintext code from `message` once it's no longer needed.
+	if !store.created.IsSensitive {
+		t.Error("otp job harus IsSensitive=true (review finding #3)")
+	}
 }
 
 func TestEnqueueOTP_EmptyPhone_ReturnsErrRecipientMissing(t *testing.T) {
@@ -286,6 +302,63 @@ func TestEnqueueOTP_EmptyPhone_ReturnsErrRecipientMissing(t *testing.T) {
 	}
 	if store.createCalls != 0 {
 		t.Error("tidak boleh insert job tanpa nomor tujuan")
+	}
+}
+
+// ---------- sensitive-message sweep (review finding #3) ----------
+
+func TestRedactStaleSensitiveMessages_HappyPath(t *testing.T) {
+	store := &fakeJobStore{redactStaleN: 3}
+	svc := New(store, &fakeOrderCmd{}, &fakeCustomers{}, Config{
+		BaseURL:             "https://rajaku.test",
+		InitialBackoff:      10 * time.Second,
+		SensitiveMessageTTL: time.Hour,
+	})
+
+	n, err := svc.RedactStaleSensitiveMessages(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("want 3 redacted, got %d", n)
+	}
+	if store.redactStaleCalls != 1 {
+		t.Fatalf("expected exactly 1 call to RedactStaleSensitive, got %d", store.redactStaleCalls)
+	}
+}
+
+func TestRedactStaleSensitiveMessages_TTLNotConfigured_IsNoOp(t *testing.T) {
+	store := &fakeJobStore{redactStaleN: 99}
+	svc := New(store, &fakeOrderCmd{}, &fakeCustomers{}, Config{
+		BaseURL:        "https://rajaku.test",
+		InitialBackoff: 10 * time.Second,
+		// SensitiveMessageTTL left zero on purpose.
+	})
+
+	n, err := svc.RedactStaleSensitiveMessages(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("want 0 (no-op) when TTL unset, got %d", n)
+	}
+	if store.redactStaleCalls != 0 {
+		t.Fatalf("must not touch the store when TTL is unset, got %d calls", store.redactStaleCalls)
+	}
+}
+
+func TestRedactStaleSensitiveMessages_RepositoryError_IsWrapped(t *testing.T) {
+	sentinel := errors.New("boom")
+	store := &fakeJobStore{redactStaleErr: sentinel}
+	svc := New(store, &fakeOrderCmd{}, &fakeCustomers{}, Config{
+		BaseURL:             "https://rajaku.test",
+		InitialBackoff:      10 * time.Second,
+		SensitiveMessageTTL: time.Hour,
+	})
+
+	_, err := svc.RedactStaleSensitiveMessages(context.Background())
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected wrapped sentinel error, got %v", err)
 	}
 }
 

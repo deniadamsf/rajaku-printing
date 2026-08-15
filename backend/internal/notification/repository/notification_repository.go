@@ -96,6 +96,12 @@ func (r *Repository) ClaimBatch(ctx context.Context, limit int) ([]model.Notific
 
 // MarkSent finalizes a job. Idempotent: if the row is already sent, returns
 // ErrJobStale so caller can log & ignore.
+//
+// Also redacts `message` INLINE, in the same statement, for jobs flagged
+// is_sensitive (review finding #3) — a terminal "sent" job never needs its
+// plaintext message again (the worker already sent it), so there's no reason
+// to keep a WhatsApp OTP code sitting in the database once it's served its
+// purpose. The CASE WHEN keeps non-sensitive jobs untouched.
 func (r *Repository) MarkSent(ctx context.Context, id uuid.UUID) error {
 	now := time.Now().UTC()
 	res := r.db.WithContext(ctx).
@@ -105,6 +111,7 @@ func (r *Repository) MarkSent(ctx context.Context, id uuid.UUID) error {
 			"status":     model.JobSent,
 			"sent_at":    now,
 			"updated_at": now,
+			"message":    gorm.Expr("CASE WHEN is_sensitive THEN '' ELSE message END"),
 		})
 	if res.Error != nil {
 		return fmt.Errorf("mark sent: %w", res.Error)
@@ -118,6 +125,12 @@ func (r *Repository) MarkSent(ctx context.Context, id uuid.UUID) error {
 // MarkFailure records an error + reschedules per backoff. If attempts ≥
 // max_attempts the job is moved to `dead` and won't be auto-claimed again
 // (admin can manually re-enqueue).
+//
+// When a job lands on `dead` it has exhausted retries — no future send will
+// ever consume `message` again — so, same as MarkSent, a sensitive job's
+// message is redacted inline in that same UPDATE (review finding #3). A job
+// that only moved to `failed` (still retryable) keeps its message; it's not
+// yet at rest in the sense finding #3 cares about.
 func (r *Repository) MarkFailure(ctx context.Context, id uuid.UUID, errMsg string, backoff time.Duration) error {
 	// We need current attempts + max_attempts to decide.
 	var current model.NotificationJob
@@ -140,15 +153,19 @@ func (r *Repository) MarkFailure(ctx context.Context, id uuid.UUID, errMsg strin
 	if len(errMsg) > 2000 {
 		errMsg = errMsg[:2000] + "…(truncated)"
 	}
+	updates := map[string]any{
+		"status":          newStatus,
+		"last_error":      errMsg,
+		"next_attempt_at": next,
+		"updated_at":      now,
+	}
+	if newStatus == model.JobDead {
+		updates["message"] = gorm.Expr("CASE WHEN is_sensitive THEN '' ELSE message END")
+	}
 	res := r.db.WithContext(ctx).
 		Model(&model.NotificationJob{}).
 		Where("id = ? AND status = ?", id, model.JobSending).
-		Updates(map[string]any{
-			"status":           newStatus,
-			"last_error":       errMsg,
-			"next_attempt_at":  next,
-			"updated_at":       now,
-		})
+		Updates(updates)
 	if res.Error != nil {
 		return fmt.Errorf("mark failure: %w", res.Error)
 	}
@@ -156,6 +173,22 @@ func (r *Repository) MarkFailure(ctx context.Context, id uuid.UUID, errMsg strin
 		return ErrJobStale
 	}
 	return nil
+}
+
+// RedactStaleSensitive clears `message` for every is_sensitive job created
+// before `olderThan`, REGARDLESS of status — a safety net for jobs that
+// never reach a terminal status through the normal MarkSent/MarkFailure path
+// (mis. worker down for a long stretch, job stuck pending/sending) — review
+// finding #3. Returns how many rows were redacted, for logging.
+func (r *Repository) RedactStaleSensitive(ctx context.Context, olderThan time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).
+		Model(&model.NotificationJob{}).
+		Where("is_sensitive = TRUE AND message <> '' AND created_at < ?", olderThan).
+		UpdateColumn("message", "")
+	if res.Error != nil {
+		return 0, fmt.Errorf("redact stale sensitive notification_jobs: %w", res.Error)
+	}
+	return res.RowsAffected, nil
 }
 
 // FindByID — for admin/debug inspection.

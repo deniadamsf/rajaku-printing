@@ -175,8 +175,23 @@ type OTPConfig struct {
 	// ResendCooldown — jeda minimum sebelum boleh minta kode baru untuk
 	// (handoff, phone) yang sama.
 	ResendCooldown time.Duration
-	// CodeLength — jumlah digit kode OTP (4-8).
+	// CodeLength — jumlah digit kode OTP (6-8). Minimum dinaikkan dari 4 ke 6
+	// (review keamanan) — 4 digit ditambah TOCTOU pada gate percobaan bisa
+	// ditebak dalam hitungan detik.
 	CodeLength int
+	// MaxPerPhoneHour — batas jumlah tantangan OTP yang boleh DITERBITKAN
+	// untuk satu nomor WA per jam, DILINTASI SEMUA handoff registrasi (bukan
+	// cuma satu handoff) — tanpa ini, satu handoff bisa WA-bomb nomor korban
+	// tanpa cooldown (§13: ini persis penyebab nomor Baileys kena banned),
+	// dan penyerang bisa buka banyak handoff sekaligus untuk melipatgandakan
+	// jatah per-handoff. Dicek di RequestOTP (review finding #2).
+	MaxPerPhoneHour int
+	// MaxFailedPerPhoneHour — batas total percobaan verifikasi (attempts)
+	// untuk satu nomor WA per jam, DILINTASI SEMUA handoff registrasi —
+	// mencegah penyerang membuka banyak handoff, masing-masing dengan jatah
+	// MaxAttempts sendiri, untuk menebak kode yang sama berkali-kali
+	// terhadap satu nomor korban. Dicek di verifyOTP (review finding #2).
+	MaxFailedPerPhoneHour int
 }
 
 type JWTConfig struct {
@@ -221,6 +236,13 @@ type NotificationConfig struct {
 	// reminder retensi file desain (§19). Opsional: kalau kosong, alert
 	// internal tidak dikirim (fitur off), bukan error.
 	InternalPhone string
+	// SensitiveMessageTTL — batas umur `message` mentah (plaintext) untuk job
+	// bertanda is_sensitive (mis. OTP WhatsApp) sebelum job sweeper
+	// (RedactStaleSensitiveMessages) menghapusnya paksa — jaring pengaman
+	// kalau job tidak pernah sampai status terminal (sent/dead) lewat jalur
+	// normal, mis. worker mati lama (review finding #3). Redaksi normal
+	// (job berhasil sent/dead) terjadi lebih cepat, inline di repository.
+	SensitiveMessageTTL time.Duration
 }
 
 // Load reads env vars (optionally seeded from backend/.env) and returns a
@@ -506,8 +528,26 @@ func Load() (*Config, error) {
 	if err != nil {
 		errs = append(errs, err.Error())
 	}
-	otpCfg, otpErrs := parseOTPConfig(otpTTLRaw, otpResendCooldownRaw, otpMaxAttempts, otpCodeLength)
+	otpMaxPerPhoneHour, err := getenvInt("OTP_MAX_PER_PHONE_HOUR", 5)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+	otpMaxFailedPerPhoneHour, err := getenvInt("OTP_MAX_FAILED_PER_PHONE_HOUR", 10)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+	otpCfg, otpErrs := parseOTPConfig(otpTTLRaw, otpResendCooldownRaw, otpMaxAttempts, otpCodeLength, otpMaxPerPhoneHour, otpMaxFailedPerPhoneHour)
 	errs = append(errs, otpErrs...)
+
+	// --- Notification: sensitive message (OTP plaintext) retention safety
+	// net (§13, review finding #3) ---
+	notifSensitiveTTLRaw := getenvDefault("NOTIFICATION_SENSITIVE_MESSAGE_TTL", "1h")
+	notifSensitiveTTL, err := time.ParseDuration(notifSensitiveTTLRaw)
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("NOTIFICATION_SENSITIVE_MESSAGE_TTL invalid duration %q", notifSensitiveTTLRaw))
+	} else if notifSensitiveTTL <= 0 {
+		errs = append(errs, "NOTIFICATION_SENSITIVE_MESSAGE_TTL must be > 0")
+	}
 
 	if len(errs) > 0 {
 		return nil, errors.New("config invalid:\n  - " + strings.Join(errs, "\n  - "))
@@ -553,12 +593,13 @@ func Load() (*Config, error) {
 			RedirectURL:  googleRedirectURL,
 		},
 		Notification: NotificationConfig{
-			WorkerURL:      strings.TrimRight(notifURL, "/"),
-			Timeout:        10 * time.Second,
-			InternalSecret: notifSecret,
-			MaxAttempts:    notifMaxAttempts,
-			InitialBackoff: notifBackoff,
-			InternalPhone:  notifInternalPhone,
+			WorkerURL:           strings.TrimRight(notifURL, "/"),
+			Timeout:             10 * time.Second,
+			InternalSecret:      notifSecret,
+			MaxAttempts:         notifMaxAttempts,
+			InitialBackoff:      notifBackoff,
+			InternalPhone:       notifInternalPhone,
+			SensitiveMessageTTL: notifSensitiveTTL,
 		},
 		Retention: RetentionConfig{
 			Enabled:      retentionEnabled,
@@ -705,7 +746,7 @@ func validateGoogleOAuth(clientID, clientSecret, redirectURL string) []string {
 // parseOTPConfig validates & builds an OTPConfig from raw env inputs. Kept
 // as a pure function (mirrors validateGoogleOAuth above) so it's unit-
 // testable without needing the rest of Load()'s required env vars.
-func parseOTPConfig(ttlRaw, resendCooldownRaw string, maxAttempts, codeLength int) (OTPConfig, []string) {
+func parseOTPConfig(ttlRaw, resendCooldownRaw string, maxAttempts, codeLength, maxPerPhoneHour, maxFailedPerPhoneHour int) (OTPConfig, []string) {
 	var errs []string
 
 	ttl, err := time.ParseDuration(ttlRaw)
@@ -726,14 +767,31 @@ func parseOTPConfig(ttlRaw, resendCooldownRaw string, maxAttempts, codeLength in
 		errs = append(errs, fmt.Sprintf("OTP_MAX_ATTEMPTS out of range [1,10], got %d", maxAttempts))
 	}
 
-	if codeLength < 4 || codeLength > 8 {
-		errs = append(errs, fmt.Sprintf("OTP_CODE_LENGTH out of range [4,8], got %d", codeLength))
+	// Minimum raised 4 -> 6 (review finding #7): a 4-digit code combined with
+	// the pre-fix attempts-gate race (finding #1) was guessable in seconds.
+	if codeLength < 6 || codeLength > 8 {
+		errs = append(errs, fmt.Sprintf("OTP_CODE_LENGTH out of range [6,8], got %d", codeLength))
+	}
+
+	if maxPerPhoneHour < 1 || maxPerPhoneHour > 1000 {
+		errs = append(errs, fmt.Sprintf("OTP_MAX_PER_PHONE_HOUR out of range [1,1000], got %d", maxPerPhoneHour))
+	}
+
+	if maxFailedPerPhoneHour < 1 || maxFailedPerPhoneHour > 1000 {
+		errs = append(errs, fmt.Sprintf("OTP_MAX_FAILED_PER_PHONE_HOUR out of range [1,1000], got %d", maxFailedPerPhoneHour))
 	}
 
 	if len(errs) > 0 {
 		return OTPConfig{}, errs
 	}
-	return OTPConfig{TTL: ttl, MaxAttempts: maxAttempts, ResendCooldown: resend, CodeLength: codeLength}, nil
+	return OTPConfig{
+		TTL:                   ttl,
+		MaxAttempts:           maxAttempts,
+		ResendCooldown:        resend,
+		CodeLength:            codeLength,
+		MaxPerPhoneHour:       maxPerPhoneHour,
+		MaxFailedPerPhoneHour: maxFailedPerPhoneHour,
+	}, nil
 }
 
 func splitCSV(s string) []string {

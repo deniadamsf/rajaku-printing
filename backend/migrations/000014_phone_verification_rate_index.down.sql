@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_phone_verifications_phone_created;

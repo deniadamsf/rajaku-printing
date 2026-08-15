@@ -61,12 +61,21 @@ type NotificationJob struct {
 
 	DedupKey *string `gorm:"size:150;uniqueIndex" json:"dedup_key,omitempty"`
 
-	Status         JobStatus  `gorm:"size:20;not null;default:pending" json:"status"`
-	Attempts       int        `gorm:"not null;default:0"               json:"attempts"`
-	MaxAttempts    int        `gorm:"not null;default:5"               json:"max_attempts"`
-	NextAttemptAt  time.Time  `gorm:"not null;default:now()"           json:"next_attempt_at"`
-	LastError      *string    `gorm:"type:text"                        json:"last_error,omitempty"`
-	SentAt         *time.Time `                                        json:"sent_at,omitempty"`
+	Status        JobStatus  `gorm:"size:20;not null;default:pending" json:"status"`
+	Attempts      int        `gorm:"not null;default:0"               json:"attempts"`
+	MaxAttempts   int        `gorm:"not null;default:5"               json:"max_attempts"`
+	NextAttemptAt time.Time  `gorm:"not null;default:now()"           json:"next_attempt_at"`
+	LastError     *string    `gorm:"type:text"                        json:"last_error,omitempty"`
+	SentAt        *time.Time `                                        json:"sent_at,omitempty"`
+
+	// IsSensitive — job's `message` carries a secret (currently: WhatsApp OTP
+	// codes, review finding #3) that must NOT be kept in plaintext at rest
+	// once the job no longer needs it. Repository.MarkSent/MarkFailure redact
+	// `message` inline the moment a sensitive job reaches a terminal status
+	// (sent/dead); Service.RedactStaleSensitiveMessages is a periodic sweep
+	// safety net for jobs that never reach one. Never exposed to the worker —
+	// not part of the ClaimedJob wire contract.
+	IsSensitive bool `gorm:"not null;default:false" json:"-"`
 
 	OrderID *uuid.UUID `gorm:"type:uuid" json:"order_id,omitempty"`
 

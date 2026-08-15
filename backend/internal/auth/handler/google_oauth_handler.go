@@ -145,7 +145,7 @@ func (h *GoogleOAuthHandler) Exchange(c *gin.Context) {
 	httpx.OK(c, toGoogleExchangeResponse(out))
 }
 
-// RequestOTP — POST /auth/google/request-otp {code, phone, name}. Sends a
+// RequestOTP — POST /auth/google/request-otp {code, phone}. Sends a
 // WhatsApp OTP to `phone` proving the caller controls it — required before
 // Complete() will create/upgrade any user (nomor WA bukan rahasia, security
 // review finding A). Response shape is fixed regardless of whether the phone
@@ -164,7 +164,6 @@ func (h *GoogleOAuthHandler) RequestOTP(c *gin.Context) {
 	out, err := h.svc.RequestOTP(c.Request.Context(), service.RequestOTPInput{
 		Code:  req.Code,
 		Phone: req.Phone,
-		Name:  req.Name,
 	})
 	if err != nil {
 		h.mapOAuthError(c, err)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -39,6 +40,7 @@ type Config struct {
 	Invoice      InvoiceConfig
 	CMS          CMSConfig
 	Retention    RetentionConfig
+	OTP          OTPConfig
 	// TrustedProxies — IP/CIDR entries gin.Engine.SetTrustedProxies() should
 	// trust when reading X-Forwarded-For to compute Context.ClientIP() (used
 	// by rate limiting). nil/empty means "trust nothing" — ClientIP() falls
@@ -150,6 +152,31 @@ type RateLimitConfig struct {
 	// regular public group (spec: brute-force vector).
 	GuestVerifyRPS   float64
 	GuestVerifyBurst int
+	// OTPRPS/OTPBurst — dedicated (stricter) limiter for
+	// POST /auth/google/request-otp and POST /auth/google/complete. Same
+	// brute-force shape as guest-verify above: both endpoints accept an
+	// arbitrary WhatsApp number from an unauthenticated POST body (request-otp
+	// can be used to spam a number with codes; complete can be used to brute-
+	// force a short numeric OTP), so they get their own tight bucket instead
+	// of sharing the general public group.
+	OTPRPS   float64
+	OTPBurst int
+}
+
+// OTPConfig — parameter kode verifikasi WhatsApp untuk pendaftaran Google
+// OAuth (nomor WA wajib dibuktikan kepemilikannya sebelum akun dibuat/
+// di-upgrade dari guest — lihat internal/auth/service/google_oauth_service.go).
+type OTPConfig struct {
+	// TTL — masa berlaku satu kode OTP sejak dibuat.
+	TTL time.Duration
+	// MaxAttempts — batas percobaan salah sebelum kode ditolak permanen
+	// (OTP_TOO_MANY_ATTEMPTS), harus minta kode baru.
+	MaxAttempts int
+	// ResendCooldown — jeda minimum sebelum boleh minta kode baru untuk
+	// (handoff, phone) yang sama.
+	ResendCooldown time.Duration
+	// CodeLength — jumlah digit kode OTP (4-8).
+	CodeLength int
 }
 
 type JWTConfig struct {
@@ -167,6 +194,15 @@ type GoogleOAuthConfig struct {
 	ClientID     string
 	ClientSecret string
 	RedirectURL  string
+}
+
+// Enabled reports whether Google OAuth is fully configured. Load() rejects
+// any PARTIAL configuration at startup (fail-fast, §22) — by the time a
+// caller holds a *Config, GoogleOAuth is guaranteed to be either fully off
+// (all three empty) or fully on (all three set, RedirectURL a valid absolute
+// URL), so this is a simple non-empty check, not a validation.
+func (g GoogleOAuthConfig) Enabled() bool {
+	return g.ClientID != "" && g.ClientSecret != "" && g.RedirectURL != ""
 }
 
 type NotificationConfig struct {
@@ -310,6 +346,24 @@ func Load() (*Config, error) {
 		errs = append(errs, fmt.Sprintf("RATE_LIMIT_GUEST_VERIFY_BURST must be > 0, got %d", guestVerifyBurst))
 	}
 
+	// Dedicated (stricter) limiter for POST /auth/google/request-otp and
+	// POST /auth/google/complete — same brute-force shape as guest-verify
+	// above (arbitrary WhatsApp number in an unauthenticated POST body).
+	otpRateRPS, err := getenvFloat("RATE_LIMIT_OTP_RPS", 0.2)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+	if otpRateRPS <= 0 {
+		errs = append(errs, fmt.Sprintf("RATE_LIMIT_OTP_RPS must be > 0, got %v", otpRateRPS))
+	}
+	otpRateBurst, err := getenvInt("RATE_LIMIT_OTP_BURST", 3)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+	if otpRateBurst <= 0 {
+		errs = append(errs, fmt.Sprintf("RATE_LIMIT_OTP_BURST must be > 0, got %d", otpRateBurst))
+	}
+
 	notifURL := getenvDefault("NOTIFICATION_WORKER_URL", "http://localhost:9090")
 	notifSecret := requireEnv("NOTIFICATION_WORKER_SECRET", &errs)
 	if notifSecret != "" && len(notifSecret) < 32 {
@@ -432,6 +486,29 @@ func Load() (*Config, error) {
 		errs = append(errs, "JWT_GUEST_ORDER_TTL must be > 0")
 	}
 
+	// --- Google OAuth (§3, §10) — OPTIONAL as a whole (dev can run without
+	// it), but MUST be all-or-nothing: a partially-filled config is a config
+	// bug (typo'd env var name, forgot one of the three) that must fail fast
+	// rather than silently disable OAuth or crash later at request time.
+	googleClientID := strings.TrimSpace(os.Getenv("GOOGLE_OAUTH_CLIENT_ID"))
+	googleClientSecret := strings.TrimSpace(os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET"))
+	googleRedirectURL := strings.TrimSpace(os.Getenv("GOOGLE_OAUTH_REDIRECT_URL"))
+	errs = append(errs, validateGoogleOAuth(googleClientID, googleClientSecret, googleRedirectURL)...)
+
+	// --- OTP WhatsApp verification (Google OAuth registration) ---
+	otpTTLRaw := getenvDefault("OTP_TTL", "5m")
+	otpResendCooldownRaw := getenvDefault("OTP_RESEND_COOLDOWN", "60s")
+	otpMaxAttempts, err := getenvInt("OTP_MAX_ATTEMPTS", 5)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+	otpCodeLength, err := getenvInt("OTP_CODE_LENGTH", 6)
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+	otpCfg, otpErrs := parseOTPConfig(otpTTLRaw, otpResendCooldownRaw, otpMaxAttempts, otpCodeLength)
+	errs = append(errs, otpErrs...)
+
 	if len(errs) > 0 {
 		return nil, errors.New("config invalid:\n  - " + strings.Join(errs, "\n  - "))
 	}
@@ -460,7 +537,10 @@ func Load() (*Config, error) {
 			PublicBurst:      rlBurst,
 			GuestVerifyRPS:   guestVerifyRPS,
 			GuestVerifyBurst: guestVerifyBurst,
+			OTPRPS:           otpRateRPS,
+			OTPBurst:         otpRateBurst,
 		},
+		OTP: otpCfg,
 		JWT: JWTConfig{
 			Secret:        jwtSecret,
 			AccessTTL:     jwtTTL,
@@ -468,9 +548,9 @@ func Load() (*Config, error) {
 			GuestOrderTTL: jwtGuestTTL,
 		},
 		GoogleOAuth: GoogleOAuthConfig{
-			ClientID:     os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
-			ClientSecret: os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
-			RedirectURL:  os.Getenv("GOOGLE_OAUTH_REDIRECT_URL"),
+			ClientID:     googleClientID,
+			ClientSecret: googleClientSecret,
+			RedirectURL:  googleRedirectURL,
 		},
 		Notification: NotificationConfig{
 			WorkerURL:      strings.TrimRight(notifURL, "/"),
@@ -590,6 +670,70 @@ func isValidIPOrCIDR(s string) bool {
 		return err == nil
 	}
 	return net.ParseIP(s) != nil
+}
+
+// validateGoogleOAuth enforces the fail-fast rule for the three
+// GOOGLE_OAUTH_* env vars: either all three are empty (OAuth disabled — a
+// valid, supported state for dev) or all three are set, in which case
+// RedirectURL must parse as an absolute http(s) URL. Any other combination
+// (partial fill, or a non-absolute RedirectURL) returns error message(s) to
+// merge into Load()'s errs slice.
+//
+// Kept as a pure function (mirrors isValidIPOrCIDR below) so it's unit-
+// testable without needing the rest of Load()'s required env vars.
+func validateGoogleOAuth(clientID, clientSecret, redirectURL string) []string {
+	filled := 0
+	for _, v := range []string{clientID, clientSecret, redirectURL} {
+		if v != "" {
+			filled++
+		}
+	}
+	switch filled {
+	case 0:
+		return nil
+	case 3:
+		u, err := url.Parse(redirectURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return []string{fmt.Sprintf("GOOGLE_OAUTH_REDIRECT_URL must be an absolute http(s) URL, got %q", redirectURL)}
+		}
+		return nil
+	default:
+		return []string{"GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_OAUTH_REDIRECT_URL must all be set, or all left empty (partial config is not allowed)"}
+	}
+}
+
+// parseOTPConfig validates & builds an OTPConfig from raw env inputs. Kept
+// as a pure function (mirrors validateGoogleOAuth above) so it's unit-
+// testable without needing the rest of Load()'s required env vars.
+func parseOTPConfig(ttlRaw, resendCooldownRaw string, maxAttempts, codeLength int) (OTPConfig, []string) {
+	var errs []string
+
+	ttl, err := time.ParseDuration(ttlRaw)
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("OTP_TTL invalid duration %q", ttlRaw))
+	} else if ttl <= 0 {
+		errs = append(errs, "OTP_TTL must be > 0")
+	}
+
+	resend, err := time.ParseDuration(resendCooldownRaw)
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("OTP_RESEND_COOLDOWN invalid duration %q", resendCooldownRaw))
+	} else if resend <= 0 {
+		errs = append(errs, "OTP_RESEND_COOLDOWN must be > 0")
+	}
+
+	if maxAttempts < 1 || maxAttempts > 10 {
+		errs = append(errs, fmt.Sprintf("OTP_MAX_ATTEMPTS out of range [1,10], got %d", maxAttempts))
+	}
+
+	if codeLength < 4 || codeLength > 8 {
+		errs = append(errs, fmt.Sprintf("OTP_CODE_LENGTH out of range [4,8], got %d", codeLength))
+	}
+
+	if len(errs) > 0 {
+		return OTPConfig{}, errs
+	}
+	return OTPConfig{TTL: ttl, MaxAttempts: maxAttempts, ResendCooldown: resend, CodeLength: codeLength}, nil
 }
 
 func splitCSV(s string) []string {

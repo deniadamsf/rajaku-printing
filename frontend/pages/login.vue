@@ -7,6 +7,7 @@
  */
 import { LogIn, Loader2 } from '@lucide/vue'
 import { ApiError } from '~/composables/useApi'
+import { googleErrorMessage } from '~/composables/useGoogleAuth'
 
 definePageMeta({
   middleware: ['guest'],
@@ -20,6 +21,7 @@ useSeoMeta({
 
 const auth = useAuthStore()
 const route = useRoute()
+const router = useRouter()
 
 const form = reactive({
   email: '',
@@ -27,6 +29,18 @@ const form = reactive({
 })
 const submitting = ref(false)
 const errorMsg = ref('')
+
+// Redirect balik dari /auth/google?... → /login?oauth_error=<slug> (gagal).
+// Tampilkan pesan lalu bersihkan query supaya tidak nempel saat refresh/share.
+onMounted(() => {
+  const slug = route.query.oauth_error
+  if (typeof slug === 'string' && slug) {
+    errorMsg.value = googleErrorMessage(slug)
+    const rest = { ...route.query }
+    delete rest.oauth_error
+    router.replace({ query: rest })
+  }
+})
 
 async function onSubmit() {
   if (submitting.value) return
@@ -62,9 +76,19 @@ async function onSubmit() {
       </p>
     </div>
 
-    <form class="mt-8 space-y-4" novalidate @submit.prevent="onSubmit">
+    <div class="mt-8 space-y-4">
       <AlertMessage :message="errorMsg" variant="error" />
 
+      <AuthGoogleLoginButton redirect="/akun" />
+
+      <div class="flex items-center gap-3">
+        <span class="h-px flex-1 bg-hairline" />
+        <span class="text-xs text-ink-500">atau</span>
+        <span class="h-px flex-1 bg-hairline" />
+      </div>
+    </div>
+
+    <form class="mt-4 space-y-4" novalidate @submit.prevent="onSubmit">
       <BaseInput
         id="email"
         v-model="form.email"
@@ -98,7 +122,7 @@ async function onSubmit() {
         Belum punya akun?
         <NuxtLink
           to="/register"
-          class="font-medium text-brand-500 transition-colors hover:text-brand-600"
+          class="rounded-sm font-medium text-brand-500 transition-colors hover:text-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
         >
           Daftar
         </NuxtLink>

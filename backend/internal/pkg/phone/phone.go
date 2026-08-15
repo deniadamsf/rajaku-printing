@@ -20,10 +20,10 @@ import (
 )
 
 var (
-	ErrEmpty            = errors.New("phone: empty")
-	ErrContainsLetters  = errors.New("phone: contains non-digit characters after cleanup")
-	ErrInvalidPrefix    = errors.New("phone: must start with 0, 62, or +62")
-	ErrInvalidLength    = errors.New("phone: invalid length (expected 10-15 digits)")
+	ErrEmpty           = errors.New("phone: empty")
+	ErrContainsLetters = errors.New("phone: contains non-digit characters after cleanup")
+	ErrInvalidPrefix   = errors.New("phone: must start with 0, 62, or +62")
+	ErrInvalidLength   = errors.New("phone: invalid length (expected 10-15 digits)")
 )
 
 // Normalize returns the canonical `62xxxxxxxxxx` form, or an error explaining
@@ -70,6 +70,25 @@ func MustNormalize(raw string) string {
 		panic("phone.MustNormalize: " + err.Error() + " (input=" + raw + ")")
 	}
 	return n
+}
+
+// Mask censors a canonical `62xxxxxxxxxx` number for display in
+// public-facing responses (spec section 5: "0812****678") — e.g. the
+// phone_masked field returned by POST /auth/google/request-otp, or public
+// tracking pages. Returns "" if p62 isn't in the expected canonical shape
+// (don't leak partial data for unexpected input).
+func Mask(p62 string) string {
+	if !strings.HasPrefix(p62, "62") || len(p62) < 6 {
+		return ""
+	}
+	display := "0" + p62[2:] // 62xxx → 0xxx, matches how numbers are shown to Indonesian users
+	n := len(display)
+	if n <= 7 {
+		return display[:2] + strings.Repeat("*", n-2)
+	}
+	head := display[:4]
+	tail := display[n-3:]
+	return head + "****" + tail
 }
 
 func stripSeparators(s string) string {

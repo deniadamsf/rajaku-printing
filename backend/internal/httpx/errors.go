@@ -9,16 +9,29 @@ import (
 // Add new codes here when introducing new failure classes; do NOT invent
 // ad-hoc strings in handlers/services.
 const (
-	CodeBadRequest      = "BAD_REQUEST"
-	CodeValidation      = "VALIDATION_FAILED"
-	CodeUnauthorized    = "UNAUTHORIZED"
-	CodeForbidden       = "FORBIDDEN"
-	CodeNotFound        = "NOT_FOUND"
-	CodeConflict        = "CONFLICT"
-	CodeRateLimited     = "RATE_LIMITED"
-	CodeUnprocessable   = "UNPROCESSABLE"
-	CodeInternal        = "INTERNAL_ERROR"
-	CodeServiceUnavail  = "SERVICE_UNAVAILABLE"
+	CodeBadRequest     = "BAD_REQUEST"
+	CodeValidation     = "VALIDATION_FAILED"
+	CodeUnauthorized   = "UNAUTHORIZED"
+	CodeForbidden      = "FORBIDDEN"
+	CodeNotFound       = "NOT_FOUND"
+	CodeConflict       = "CONFLICT"
+	CodeRateLimited    = "RATE_LIMITED"
+	CodeUnprocessable  = "UNPROCESSABLE"
+	CodeInternal       = "INTERNAL_ERROR"
+	CodeServiceUnavail = "SERVICE_UNAVAILABLE"
+
+	// Google OAuth (§ auth module) — distinct codes so the frontend can show
+	// a specific message instead of a generic CONFLICT/BAD_REQUEST.
+	CodeOAuthNotConfigured = "OAUTH_NOT_CONFIGURED"
+	CodeOAuthCodeInvalid   = "OAUTH_CODE_INVALID"
+	CodePhoneAlreadyUsed   = "PHONE_ALREADY_USED"
+	CodeEmailAlreadyUsed   = "EMAIL_ALREADY_USED"
+
+	// OTP WhatsApp verification (Google OAuth registration).
+	CodeOTPInvalid         = "OTP_INVALID"
+	CodeOTPExpired         = "OTP_EXPIRED"
+	CodeOTPTooManyAttempts = "OTP_TOO_MANY_ATTEMPTS"
+	CodeOTPCooldown        = "OTP_COOLDOWN"
 )
 
 // DomainError is the shared error type crossing service → handler layers.

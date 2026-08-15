@@ -73,6 +73,74 @@ func (r *UserRepository) FindByID(ctx context.Context, id uuid.UUID) (*model.Use
 	return &u, nil
 }
 
+// FindByOAuth returns the user linked to the given provider+subject, or
+// ErrNotFound.
+func (r *UserRepository) FindByOAuth(ctx context.Context, provider, subject string) (*model.User, error) {
+	var u model.User
+	err := r.db.WithContext(ctx).
+		Preload("Roles.Permissions").
+		Where("oauth_provider = ? AND oauth_subject = ?", provider, subject).
+		First(&u).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("find user by oauth %s/%s: %w", provider, subject, err)
+	}
+	return &u, nil
+}
+
+// LinkOAuth attaches provider+subject to an existing user — used when a
+// customer's verified Google email matches an account that doesn't have a
+// linked Google identity yet. Return ErrNotFound kalau row tidak ada.
+func (r *UserRepository) LinkOAuth(ctx context.Context, id uuid.UUID, provider, subject string) error {
+	res := r.db.WithContext(ctx).
+		Model(&model.User{}).
+		Where("id = ?", id).
+		Updates(map[string]any{"oauth_provider": provider, "oauth_subject": subject})
+	if res.Error != nil {
+		return fmt.Errorf("link oauth for user %s: %w", id, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpgradeGuestToRegistered promotes a guest customer (created e.g. via POS,
+// §11) to a registered customer with a linked OAuth identity — §11: nomor WA
+// adalah matching key tunggal, jadi upgrade ini menyambung riwayat transaksi
+// yang sudah ada ke akun baru, bukan membuat identitas terpisah.
+//
+// `email` and `name` are only written when the existing column is empty
+// (email IS NULL / name = ”) — the phone number is the durable matching
+// key; Google login must never clobber data that's already on file. Pass
+// email=nil to leave the email column untouched entirely (caller already
+// determined the Google email is taken by a different user).
+func (r *UserRepository) UpgradeGuestToRegistered(ctx context.Context, id uuid.UUID, email *string, name, provider, subject string) error {
+	var emailArg any
+	if email != nil {
+		emailArg = *email
+	}
+	res := r.db.WithContext(ctx).Exec(`
+		UPDATE users SET
+			customer_type  = 'registered',
+			oauth_provider = ?,
+			oauth_subject  = ?,
+			email          = CASE WHEN email IS NULL THEN ? ELSE email END,
+			name           = CASE WHEN name = ''    THEN ? ELSE name  END,
+			updated_at     = NOW()
+		WHERE id = ?
+	`, provider, subject, emailArg, name, id)
+	if res.Error != nil {
+		return fmt.Errorf("upgrade guest to registered for user %s: %w", id, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Create inserts a new user. `u.ID` is populated by DB default (gen_random_uuid).
 func (r *UserRepository) Create(ctx context.Context, u *model.User) error {
 	if err := r.db.WithContext(ctx).Create(u).Error; err != nil {

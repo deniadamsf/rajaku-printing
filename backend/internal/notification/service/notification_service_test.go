@@ -252,6 +252,43 @@ func TestEnqueueOrderEvent_UnknownKind(t *testing.T) {
 	}
 }
 
+// ---------- OTP sender (auth module — Google OAuth registration) ----------
+
+func TestEnqueueOTP_HappyPath(t *testing.T) {
+	store := &fakeJobStore{}
+	svc := newSvc(store, &fakeOrderCmd{}, &fakeCustomers{})
+
+	err := svc.EnqueueOTP(context.Background(), "6281234500001", "Kode verifikasi Rajaku Printing: 123456.", "otp:abc-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store.created == nil {
+		t.Fatal("job tidak dibuat")
+	}
+	if store.created.RecipientPhone != "6281234500001" {
+		t.Errorf("recipient mismatch, got %q", store.created.RecipientPhone)
+	}
+	if store.created.Kind != string(notificationapi.KindOTPVerification) {
+		t.Errorf("kind mismatch, got %q", store.created.Kind)
+	}
+	if store.created.DedupKey == nil || *store.created.DedupKey != "otp:abc-1" {
+		t.Errorf("dedup key mismatch, got %v", store.created.DedupKey)
+	}
+}
+
+func TestEnqueueOTP_EmptyPhone_ReturnsErrRecipientMissing(t *testing.T) {
+	store := &fakeJobStore{}
+	svc := newSvc(store, &fakeOrderCmd{}, &fakeCustomers{})
+
+	err := svc.EnqueueOTP(context.Background(), "  ", "pesan", "otp:abc-2")
+	if !errors.Is(err, notificationapi.ErrRecipientMissing) {
+		t.Fatalf("want ErrRecipientMissing, got %v", err)
+	}
+	if store.createCalls != 0 {
+		t.Error("tidak boleh insert job tanpa nomor tujuan")
+	}
+}
+
 func TestFormatIDR(t *testing.T) {
 	cases := []struct {
 		in   int64
@@ -278,9 +315,9 @@ func TestComputeBackoff_Exponential(t *testing.T) {
 		want     time.Duration
 	}{
 		{0, 10 * time.Second},
-		{1, 10 * time.Second}, // shift=0
-		{2, 20 * time.Second}, // shift=1
-		{3, 40 * time.Second}, // shift=2
+		{1, 10 * time.Second},  // shift=0
+		{2, 20 * time.Second},  // shift=1
+		{3, 40 * time.Second},  // shift=2
 		{12, 30 * time.Minute}, // capped (2^11 * 10s = 5h+ → cap 30m)
 	}
 	for _, c := range cases {

@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	authhandler "github.com/rajaku-printing/backend/internal/auth/handler"
+	"github.com/rajaku-printing/backend/internal/auth/oauth"
 	authrepo "github.com/rajaku-printing/backend/internal/auth/repository"
 	authservice "github.com/rajaku-printing/backend/internal/auth/service"
 	"github.com/rajaku-printing/backend/internal/auth/token"
@@ -131,6 +132,35 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	guestOrderSvc := authservice.NewGuestOrderService(userRepo, guestOrderIssuer)
 	guestOrderH := authhandler.NewGuestOrderHandler(guestOrderSvc)
 
+	// --- Google OAuth login/registration ---
+	// Route is ALWAYS mounted (even when disabled) so the frontend gets an
+	// explicit 503 OAUTH_NOT_CONFIGURED instead of a bare 404 when
+	// GOOGLE_OAUTH_* env vars are empty (dev without Google credentials).
+	oauthCodeRepo := authrepo.NewOAuthLoginCodeRepository(d.DB)
+	phoneVerificationRepo := authrepo.NewPhoneVerificationRepository(d.DB)
+	googleClient := oauth.NewGoogleClient(
+		d.Config.GoogleOAuth.ClientID, d.Config.GoogleOAuth.ClientSecret, d.Config.GoogleOAuth.RedirectURL)
+	googleOAuthSvc := authservice.NewGoogleOAuthService(
+		userRepo, oauthCodeRepo, phoneVerificationRepo, googleClient, jwtIssuer, d.Config.App.FrontendURL,
+		authservice.OTPConfig{
+			TTL:            d.Config.OTP.TTL,
+			MaxAttempts:    d.Config.OTP.MaxAttempts,
+			ResendCooldown: d.Config.OTP.ResendCooldown,
+			CodeLength:     d.Config.OTP.CodeLength,
+		},
+	)
+	// googleOAuthSvc.SetOTPSender(notifSvc) — wired further below, after
+	// notifSvc is built (notification module wired after auth in this
+	// composition root, same setter-injection pattern as SetNotifier
+	// elsewhere in this file).
+	googleOAuthH := authhandler.NewGoogleOAuthHandler(
+		googleOAuthSvc, d.Config.GoogleOAuth.Enabled(), d.Config.App.FrontendURL, d.Config.App.Env != config.EnvDevelopment)
+	if d.Config.GoogleOAuth.Enabled() {
+		log.Info().Msg("Google OAuth aktif")
+	} else {
+		log.Info().Msg("Google OAuth nonaktif (kredensial kosong)")
+	}
+
 	// --- Admin panel: staff & role management (§10) ---
 	inviteSvc := authservice.NewInviteService(inviteRepo, userRepo, authservice.InviteConfig{})
 	// Invite URL yg di-forward ke calon staff HARUS mengarah ke halaman Nuxt
@@ -237,6 +267,9 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	productionSvc.SetNotifier(notifSvc)
 	invoiceSvc.SetNotifier(notifSvc)
 	posSvc.SetNotifier(notifSvc)
+	// Google OAuth registration OTP (WA number ownership proof) — best-effort
+	// enqueue via the same job-queue mechanism as every other WA trigger.
+	googleOAuthSvc.SetOTPSender(notifSvc)
 	// Alert internal (ke nomor ops, bukan customer) — dipakai reminder retensi.
 	designSvc.SetInternalAlerter(notifSvc)
 	notifH := notifhandler.New(notifSvc, d.Config.Notification.InternalSecret)
@@ -285,6 +318,17 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 			guestVerify.Use(middleware.RateLimitPublic(
 				d.Config.RateLimit.GuestVerifyRPS, d.Config.RateLimit.GuestVerifyBurst))
 			guestVerify.POST("/verify", guestOrderH.VerifyOwnership)
+
+			// Google OAuth login/registration — /auth/google/{start,callback,
+			// exchange} on the general public limiter, /request-otp and
+			// /complete on their OWN much stricter limiter (RATE_LIMIT_OTP_*) —
+			// both accept an arbitrary WhatsApp number / OTP guess in an
+			// unauthenticated POST body, same brute-force shape as the
+			// guestVerify group above.
+			googleOTPLimited := public.Group("")
+			googleOTPLimited.Use(middleware.RateLimitPublic(
+				d.Config.RateLimit.OTPRPS, d.Config.RateLimit.OTPBurst))
+			googleOAuthH.RegisterRoutes(public, googleOTPLimited)
 
 			public.GET("/ping", func(c *gin.Context) {
 				httpx.OK(c, gin.H{"pong": true})

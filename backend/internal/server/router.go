@@ -296,9 +296,11 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 			cmsH.RegisterRoutes(v1, public, authSvc)
 		}
 
-		// Modul payment — POST /orders/:resi/payment-proof (auth req) + admin
-		// group. Mount di v1 (bukan public) supaya rate-limit publik tidak
-		// mengganggu multipart upload.
+		// Modul payment — POST /orders/:resi/payment-proof, GET
+		// /orders/:resi/payment-proofs, GET /payment-proofs/:id/file (semua
+		// terima sesi penuh ATAU token guest_order ber-scope, lihat
+		// payment/handler/routes.go) + admin group. Mount di v1 (bukan
+		// public) supaya rate-limit publik tidak mengganggu multipart upload.
 		paymentH.RegisterRoutes(v1, authSvc)
 
 		// Modul design — upload/list customer files, staff verify/draft/walkin,

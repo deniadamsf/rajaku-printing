@@ -23,10 +23,15 @@ import {
   Upload,
   FileText,
   FileWarning,
+  Wallet,
+  Receipt,
+  XCircle,
 } from '@lucide/vue'
 import { ApiError } from '~/composables/useApi'
 import type { PublicTracking } from '~/types/tracking'
 import type { DesignFile } from '~/types/design'
+import type { PaymentProofCustomer } from '~/types/payment'
+import { bankInfo } from '~/utils/payment'
 
 definePageMeta({ layout: 'default' })
 
@@ -70,6 +75,7 @@ onMounted(load)
 // cuma header Authorization pakai token guest ini (lihat useDesign override).
 const guestSession = useGuestOrderSession(() => resi.value)
 const guestDesignApi = useDesign({ token: () => guestSession.token.value })
+const guestPaymentApi = usePayment({ token: () => guestSession.token.value })
 
 const guestPhone = ref('')
 
@@ -119,8 +125,13 @@ async function loadGuestDesignFiles() {
 watch(
   () => guestSession.isVerified.value,
   (verified) => {
-    if (verified) loadGuestDesignFiles()
-    else guestDesignFiles.value = []
+    if (verified) {
+      loadGuestDesignFiles()
+      loadGuestProofs()
+    } else {
+      guestDesignFiles.value = []
+      guestProofs.value = []
+    }
   },
 )
 
@@ -131,6 +142,96 @@ const guestUploadedFiles = computed(() =>
 function guestLogout() {
   guestSession.logout()
   guestDesignFiles.value = []
+  guestProofs.value = []
+}
+
+// -------------------- guest payment proof upload (§7) --------------------
+// Aturan gating identik dengan `canUploadProof` di /akun/pesanan/[resi].vue —
+// kalau backend UploadProof mengubah status yg diizinkan, sinkronkan di sini juga.
+const canUploadGuestProof = computed(() => {
+  if (!guestSession.isVerified.value || !data.value) return false
+  const s = data.value.status
+  return s === 'menunggu_pembayaran' || s === 'ditolak'
+})
+
+const guestProofs = ref<PaymentProofCustomer[]>([])
+const loadingGuestProofs = ref(false)
+
+async function loadGuestProofs() {
+  if (!guestSession.isVerified.value) return
+  loadingGuestProofs.value = true
+  try {
+    const res = await guestPaymentApi.listProofsForOrder(resi.value)
+    guestProofs.value = res.items ?? []
+  } catch (e) {
+    guestProofs.value = []
+  } finally {
+    loadingGuestProofs.value = false
+  }
+}
+
+const guestProofFile = ref<File | null>(null)
+const guestProofMetode = ref<'transfer' | 'qris'>('transfer')
+const guestProofAmount = ref<number | null>(null)
+const guestProofUploading = ref(false)
+const guestProofFileInput = ref<HTMLInputElement | null>(null)
+const guestProofError = ref<string | null>(null)
+const guestProofSuccess = ref<string | null>(null)
+
+function onGuestProofFilePick(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  guestProofFile.value = input.files?.[0] ?? null
+}
+
+async function submitGuestProof() {
+  guestProofError.value = null
+  guestProofSuccess.value = null
+  if (!guestProofFile.value) {
+    guestProofError.value = 'Pilih file bukti transfer dulu.'
+    return
+  }
+  guestProofUploading.value = true
+  try {
+    await guestPaymentApi.uploadProof(resi.value, {
+      file: guestProofFile.value,
+      metodeBayar: guestProofMetode.value,
+      amountClaimed: guestProofAmount.value ?? undefined,
+    })
+    guestProofSuccess.value = 'Bukti transfer diupload. Tim kami akan verifikasi segera.'
+    guestProofFile.value = null
+    if (guestProofFileInput.value) guestProofFileInput.value.value = ''
+    guestProofAmount.value = null
+    // Upload bukti bisa memindahkan status order (mis. menunggu_pembayaran →
+    // menunggu_verifikasi) — reload timeline + daftar bukti supaya UI sinkron.
+    await Promise.all([load(), loadGuestProofs()])
+  } catch (e) {
+    guestProofError.value = e instanceof ApiError ? e.message : 'Gagal upload bukti transfer'
+  } finally {
+    guestProofUploading.value = false
+  }
+}
+
+const proofStatusLabelMap: Record<string, string> = {
+  pending: 'Menunggu verifikasi',
+  approved: 'Terverifikasi',
+  rejected: 'Ditolak',
+}
+function proofStatusLabel(s: string): string {
+  return proofStatusLabelMap[s] ?? s
+}
+function proofStatusBadgeClass(s: string): string {
+  if (s === 'approved') return 'bg-emerald-50 text-emerald-800 ring-emerald-200'
+  if (s === 'rejected') return 'bg-brand-50 text-brand-700 ring-brand-200'
+  return 'bg-amber-50 text-amber-800 ring-amber-200'
+}
+
+function fmtIDR(n?: number | null): string {
+  if (n == null) return '—'
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    maximumFractionDigits: 0,
+  }).format(n)
 }
 
 // -------------------- guest design upload form --------------------
@@ -509,6 +610,167 @@ async function copyResi() {
             <LogOut class="h-3.5 w-3.5" :stroke-width="1.75" />
             Keluar dari sesi ini
           </button>
+        </div>
+
+        <!-- Upload bukti pembayaran -->
+        <div
+          v-if="canUploadGuestProof"
+          class="rounded-lg border-2 border-brand-500 bg-brand-50/40 p-6"
+        >
+          <div class="flex items-start gap-3">
+            <Wallet class="h-5 w-5 text-brand-700 flex-none mt-0.5" :stroke-width="1.75" />
+            <div class="flex-1">
+              <h2 class="font-serif text-lg font-semibold text-ink-950">
+                {{ currentStatus === 'ditolak' ? 'Upload ulang bukti transfer' : 'Silakan upload bukti transfer' }}
+              </h2>
+              <p class="mt-1 text-sm text-ink-700 leading-relaxed">
+                Nominal tagihan sudah kami konfirmasi via WhatsApp. Transfer sesuai nominal tersebut, lalu
+                upload buktinya di bawah ini.
+              </p>
+
+              <!-- Bank info -->
+              <div class="mt-4 rounded-md border border-hairline bg-canvas p-4 text-sm">
+                <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-2">Transfer ke</p>
+                <div class="space-y-1">
+                  <p class="text-ink-900"><strong>{{ bankInfo.bankName }}</strong> — {{ bankInfo.accountName }}</p>
+                  <p class="font-mono text-base text-ink-950 font-semibold tracking-wider">{{ bankInfo.accountNumber }}</p>
+                </div>
+                <p class="mt-2 text-xs text-ink-500">{{ bankInfo.qrisNote }}</p>
+              </div>
+
+              <!-- Upload form -->
+              <form class="mt-4 space-y-3" @submit.prevent="submitGuestProof">
+                <div>
+                  <label class="text-sm font-medium text-ink-900">Metode bayar</label>
+                  <div class="mt-1 inline-flex rounded-md border border-hairline overflow-hidden text-sm">
+                    <button
+                      type="button"
+                      :class="[
+                        'px-3 py-1.5 border-r border-hairline transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-inset',
+                        guestProofMetode === 'transfer' ? 'bg-ink-950 text-canvas' : 'bg-canvas text-ink-700 hover:bg-canvas-alt',
+                      ]"
+                      @click="guestProofMetode = 'transfer'"
+                    >
+                      Transfer bank
+                    </button>
+                    <button
+                      type="button"
+                      :class="[
+                        'px-3 py-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-inset',
+                        guestProofMetode === 'qris' ? 'bg-ink-950 text-canvas' : 'bg-canvas text-ink-700 hover:bg-canvas-alt',
+                      ]"
+                      @click="guestProofMetode = 'qris'"
+                    >
+                      QRIS
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label class="text-sm font-medium text-ink-900">Nominal yang Anda transfer (opsional)</label>
+                  <input
+                    v-model.number="guestProofAmount"
+                    type="number"
+                    min="0"
+                    step="1000"
+                    placeholder="Contoh: 250000"
+                    class="mt-1 block w-full max-w-xs rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                  >
+                  <p class="mt-1 text-xs text-ink-500">Bantu tim verifikasi lebih cepat.</p>
+                </div>
+
+                <div>
+                  <label class="text-sm font-medium text-ink-900">File bukti <span class="text-brand-500">*</span></label>
+                  <input
+                    ref="guestProofFileInput"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,application/pdf"
+                    required
+                    class="mt-1 block w-full text-sm text-ink-700 file:mr-3 file:rounded-md file:border-0 file:bg-ink-950 file:px-3 file:py-1.5 file:text-canvas file:font-medium hover:file:bg-ink-900 file:transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+                    @change="onGuestProofFilePick"
+                  >
+                  <p class="mt-1 text-xs text-ink-500">Format: JPG / PNG / WebP / PDF. Max 5 MB.</p>
+                </div>
+
+                <button
+                  type="button"
+                  :disabled="guestProofUploading || !guestProofFile"
+                  class="inline-flex items-center gap-2 rounded-md bg-brand-500 px-4 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  @click="submitGuestProof"
+                >
+                  <Loader2 v-if="guestProofUploading" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
+                  <Upload v-else class="h-4 w-4" :stroke-width="1.75" />
+                  {{ guestProofUploading ? 'Mengupload…' : 'Upload bukti' }}
+                </button>
+              </form>
+
+              <AlertMessage v-if="guestProofError" variant="error" :message="guestProofError" class="mt-3" />
+              <AlertMessage v-if="guestProofSuccess" variant="success" :message="guestProofSuccess" class="mt-3" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Daftar bukti pembayaran -->
+        <div v-if="loadingGuestProofs" class="rounded-lg border border-hairline bg-canvas p-6 text-center">
+          <Loader2 class="mx-auto h-4 w-4 animate-spin text-ink-500" :stroke-width="1.75" />
+        </div>
+        <div v-else-if="guestProofs.length" class="rounded-lg border border-hairline bg-canvas p-6">
+          <div class="flex items-center gap-2 mb-3">
+            <Receipt class="h-4 w-4 text-ink-500" :stroke-width="1.75" />
+            <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Bukti pembayaran</p>
+          </div>
+          <ul class="space-y-3">
+            <li
+              v-for="p in guestProofs"
+              :key="p.id"
+              class="rounded-md border border-hairline bg-canvas-alt/40 p-3"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2">
+                    <FileText class="h-3.5 w-3.5 text-ink-500 flex-none" :stroke-width="1.75" />
+                    <p class="text-xs text-ink-900 truncate font-mono">{{ p.file_original_name }}</p>
+                  </div>
+                  <p class="mt-1 text-[10px] text-ink-500">
+                    {{ formatBytes(p.file_size_bytes) }} · {{ p.metode_bayar }} · diupload {{ fmtDateTime(p.uploaded_at) }}
+                  </p>
+                  <p v-if="p.amount_claimed != null" class="mt-1 text-xs text-ink-700">
+                    Nominal diklaim: <span class="font-medium text-ink-900">{{ fmtIDR(p.amount_claimed) }}</span>
+                  </p>
+                </div>
+                <span
+                  :class="[
+                    'inline-flex flex-none items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset',
+                    proofStatusBadgeClass(p.status),
+                  ]"
+                >
+                  <Clock v-if="p.status === 'pending'" class="h-3 w-3" :stroke-width="1.75" />
+                  <CheckCircle2 v-else-if="p.status === 'approved'" class="h-3 w-3" :stroke-width="1.75" />
+                  <XCircle v-else-if="p.status === 'rejected'" class="h-3 w-3" :stroke-width="1.75" />
+                  {{ proofStatusLabel(p.status) }}
+                </span>
+              </div>
+
+              <!-- Rejected: alasan penolakan + ajakan upload ulang, wajib menonjol -->
+              <div
+                v-if="p.status === 'rejected'"
+                class="mt-3 rounded-md border border-brand-200 bg-brand-50/60 p-3"
+              >
+                <div class="flex items-start gap-2">
+                  <AlertTriangle class="h-4 w-4 text-brand-700 flex-none mt-0.5" :stroke-width="1.75" />
+                  <div>
+                    <p class="text-xs font-semibold text-brand-700">Alasan ditolak</p>
+                    <p class="mt-0.5 text-xs text-ink-700 leading-relaxed">
+                      {{ p.reject_reason || 'Bukti transfer tidak dapat diverifikasi. Silakan hubungi kami jika perlu penjelasan lebih lanjut.' }}
+                    </p>
+                    <p class="mt-1.5 text-[10px] text-ink-500">
+                      Silakan upload ulang bukti transfer yang valid menggunakan formulir di atas.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </li>
+          </ul>
         </div>
 
         <!-- Upload desain -->

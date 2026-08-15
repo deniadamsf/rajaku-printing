@@ -15,9 +15,9 @@ import (
 )
 
 var (
-	ErrNotFound          = errors.New("payment/repository: not found")
-	ErrPendingConflict   = errors.New("payment/repository: another pending proof exists for this order")
-	ErrAlreadyReviewed   = errors.New("payment/repository: proof already reviewed (status not pending)")
+	ErrNotFound        = errors.New("payment/repository: not found")
+	ErrPendingConflict = errors.New("payment/repository: another pending proof exists for this order")
+	ErrAlreadyReviewed = errors.New("payment/repository: proof already reviewed (status not pending)")
 )
 
 const pgUniqueViolationCode = "23505"
@@ -114,6 +114,22 @@ func (r *ProofRepository) List(ctx context.Context, f ListFilter) (*ListResult, 
 		return nil, fmt.Errorf("list proofs: %w", err)
 	}
 	return &ListResult{Items: items, Total: total, Page: f.Page, PageSize: f.PageSize}, nil
+}
+
+// ListByOrder returns all proofs for one order, newest first. No pagination —
+// unlike List (staff dashboard, all orders), a single order only ever
+// accumulates a handful of proofs, so a bounded Count()+Offset()+Limit()
+// query would be pure overhead. Dipakai oleh customer-facing
+// GET /orders/:resi/payment-proofs.
+func (r *ProofRepository) ListByOrder(ctx context.Context, orderID uuid.UUID) ([]model.PaymentProof, error) {
+	var items []model.PaymentProof
+	if err := r.db.WithContext(ctx).
+		Where("order_id = ?", orderID).
+		Order("uploaded_at DESC").
+		Find(&items).Error; err != nil {
+		return nil, fmt.Errorf("list proofs by order %s: %w", orderID, err)
+	}
+	return items, nil
 }
 
 // ReviewParams — payload for approve/reject.

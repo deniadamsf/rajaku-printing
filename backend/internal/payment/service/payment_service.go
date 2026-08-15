@@ -27,6 +27,7 @@ type ProofStore interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*paymodel.PaymentProof, error)
 	FindPendingByOrder(ctx context.Context, orderID uuid.UUID) (*paymodel.PaymentProof, error)
 	List(ctx context.Context, f payrepo.ListFilter) (*payrepo.ListResult, error)
+	ListByOrder(ctx context.Context, orderID uuid.UUID) ([]paymodel.PaymentProof, error)
 	Review(ctx context.Context, p payrepo.ReviewParams) error
 	DeleteRow(ctx context.Context, id uuid.UUID) error
 }
@@ -92,24 +93,52 @@ func New(proofs ProofStore, files FileSaver, orderCmd orderapi.OrderCommandServi
 // UploadProof stores a customer's bukti transfer/QRIS and advances the order to
 // menunggu_verifikasi. Ordering:
 //
-//  1. Lookup order (must be menunggu_pembayaran or ditolak).
-//  2. Verify caller is the order owner (unless staff).
-//  3. Ensure no pending proof exists yet for the order.
-//  4. Validate file (mime type + size).
-//  5. Save file to disk (temp+rename via filestore).
-//  6. Insert proof row (status=pending).
-//  7. Trigger order.MarkPendingVerification.
+//  1. Lookup order.
+//  2. Enforce scope-to-one-order restriction for guest_order tokens (§7/§6).
+//  3. Verify caller is the order owner (unless staff).
+//  4. Status guard (must be menunggu_pembayaran or ditolak).
+//  5. Ensure no pending proof exists yet for the order.
+//  6. Validate file (mime type + size).
+//  7. Save file to disk (temp+rename via filestore).
+//  8. Insert proof row (status=pending).
+//  9. Trigger order.MarkPendingVerification.
 //
-// If step 7 fails, we roll back (delete proof row + file). File is on disk BEFORE
+// If step 9 fails, we roll back (delete proof row + file). File is on disk BEFORE
 // row insert only because we need bytes to persist before referencing them. If
-// step 6 fails the file is orphaned — caller sees the error, and an eventual
+// step 8 fails the file is orphaned — caller sees the error, and an eventual
 // cleanup job (out of scope for MVP) can sweep unreferenced files.
 func (s *Service) UploadProof(ctx context.Context, in UploadProofInput) (*paymodel.PaymentProof, error) {
-	// 1. Order lookup + status guard
+	// 1. Order lookup
 	order, err := s.orderCmd.FindSummaryByResi(ctx, in.Resi)
 	if err != nil {
 		return nil, err // orderapi errors bubble as-is (handler maps to HTTP)
 	}
+
+	// 2. Scope guard — enforced unconditionally (not nested in !in.IsStaff),
+	// same invariant as ListForOrder/GetProofFile below (checkScopedOrder
+	// doc). A guest_order token minted for resi A must never touch resi B,
+	// even though the token's uid is the real (shared) customer_id and would
+	// otherwise pass the ownership check below.
+	if err := checkScopedOrder(in.ScopedOrderID, order.ID); err != nil {
+		return nil, err
+	}
+
+	// 3. Ownership
+	if !in.IsStaff && order.CustomerID != in.CallerID {
+		return nil, paymentapi.ErrNotOrderOwner
+	}
+
+	// 4. Status guard — deliberately placed AFTER scope+ownership (not fused
+	// into the lookup above): this endpoint is mounted on v1 without a rate
+	// limiter (that protection lives on the public GET /lacak/:resi, §23 poin
+	// 6), so any caller holding SOME valid token could otherwise probe an
+	// arbitrary resi and tell 404/409/422 apart from 403 purely by HTTP
+	// status, without ever touching the rate-limited endpoint. Checking
+	// authorization first collapses "not yours" and "wrong status on someone
+	// else's order" into the same 403. Honest framing: this is a hardening,
+	// not closing a major leak — the coarse order status is already public
+	// via GET /lacak/:resi (§5); what's withheld here is only the
+	// fine-grained 404/409/422 distinction for orders the caller doesn't own.
 	switch order.Status {
 	case "menunggu_pembayaran", "ditolak":
 		// OK — customer can upload initial or replacement proof
@@ -119,19 +148,14 @@ func (s *Service) UploadProof(ctx context.Context, in UploadProofInput) (*paymod
 		return nil, paymentapi.ErrOrderNotPayable
 	}
 
-	// 2. Ownership
-	if !in.IsStaff && order.CustomerID != in.CallerID {
-		return nil, paymentapi.ErrNotOrderOwner
-	}
-
-	// 3. No dup pending
+	// 5. No dup pending
 	if _, err := s.proofs.FindPendingByOrder(ctx, order.ID); err == nil {
 		return nil, paymentapi.ErrPendingProofExists
 	} else if !errors.Is(err, payrepo.ErrNotFound) {
 		return nil, fmt.Errorf("check pending proof: %w", err)
 	}
 
-	// 4. Validate metode_bayar + file meta
+	// 6. Validate metode_bayar + file meta
 	if in.MetodeBayar != paymodel.MetodeBayarTransfer && in.MetodeBayar != paymodel.MetodeBayarQRIS {
 		return nil, paymentapi.ErrInvalidMetodeBayar
 	}
@@ -146,7 +170,7 @@ func (s *Service) UploadProof(ctx context.Context, in UploadProofInput) (*paymod
 		return nil, paymentapi.ErrFileTooLarge
 	}
 
-	// 5. Save file. Deterministic path so re-uploads for same proof (unused)
+	// 7. Save file. Deterministic path so re-uploads for same proof (unused)
 	// don't collide with each other's dirs.
 	now := s.nowFn().UTC()
 	proofID := uuid.New()
@@ -166,7 +190,7 @@ func (s *Service) UploadProof(ctx context.Context, in UploadProofInput) (*paymod
 		return nil, fmt.Errorf("declared size %d != written %d", in.FileSize, written)
 	}
 
-	// 6. Insert row
+	// 8. Insert row
 	proof := &paymodel.PaymentProof{
 		ID:               proofID,
 		OrderID:          order.ID,
@@ -188,7 +212,7 @@ func (s *Service) UploadProof(ctx context.Context, in UploadProofInput) (*paymod
 		return nil, fmt.Errorf("create proof row: %w", err)
 	}
 
-	// 7. Advance order to menunggu_verifikasi
+	// 9. Advance order to menunggu_verifikasi
 	actor := in.CallerID
 	if err := s.orderCmd.MarkPendingVerification(ctx, order.ID, &actor, "customer uploaded proof"); err != nil {
 		// Roll back the proof row + file so the system is consistent — customer
@@ -356,14 +380,26 @@ type ProofFileHandle struct {
 //   - Otherwise: caller must be the owner of the order the proof belongs to.
 //
 // Returns paymentapi.ErrProofNotFound if the proof doesn't exist, or
-// paymentapi.ErrNotOrderOwner if the customer doesn't own the parent order.
-func (s *Service) GetProofFile(ctx context.Context, proofID uuid.UUID, callerID uuid.UUID, isStaff bool) (*ProofFileHandle, error) {
+// paymentapi.ErrNotOrderOwner if the customer doesn't own the parent order
+// (or a scope-limited token is used outside the one order it was verified
+// for — see checkScopedOrder).
+//
+// scopedOrderID — non-nil kalau caller memakai token guest_order
+// (authapi.Identity.OrderID); lihat dokumentasi checkScopedOrder.
+func (s *Service) GetProofFile(ctx context.Context, proofID uuid.UUID, callerID uuid.UUID, isStaff bool, scopedOrderID *uuid.UUID) (*ProofFileHandle, error) {
 	proof, err := s.proofs.FindByID(ctx, proofID)
 	if err != nil {
 		if errors.Is(err, payrepo.ErrNotFound) {
 			return nil, paymentapi.ErrProofNotFound
 		}
 		return nil, fmt.Errorf("lookup proof: %w", err)
+	}
+
+	// Batas scope token ditegakkan TANPA syarat, sebelum cabang isStaff — kalau
+	// suatu saat ada token ber-scope milik user bertipe staff, jalur ini tetap
+	// menutup akses ke order lain. Mirrors internal/design/service GetFile.
+	if err := checkScopedOrder(scopedOrderID, proof.OrderID); err != nil {
+		return nil, err
 	}
 
 	if !isStaff {
@@ -388,6 +424,49 @@ func (s *Service) GetProofFile(ctx context.Context, proofID uuid.UUID, callerID 
 		return nil, fmt.Errorf("resolve file path: %w", err)
 	}
 	return &ProofFileHandle{Proof: proof, AbsPath: abs}, nil
+}
+
+// ListForOrder returns every payment proof for one order, newest first —
+// customer-facing counterpart to ListProofs (which is staff/admin-only).
+// Customer sees own order's proofs, staff sees any order's proofs.
+//
+// scopedOrderID — non-nil kalau caller memakai token guest_order
+// (authapi.Identity.OrderID); lihat dokumentasi checkScopedOrder.
+func (s *Service) ListForOrder(ctx context.Context, resi string, callerID uuid.UUID, isStaff bool, scopedOrderID *uuid.UUID) ([]paymodel.PaymentProof, error) {
+	order, err := s.orderCmd.FindSummaryByResi(ctx, resi)
+	if err != nil {
+		return nil, fmt.Errorf("list proofs for order %s: %w", resi, err)
+	}
+	if !isStaff && order.CustomerID != callerID {
+		return nil, paymentapi.ErrNotOrderOwner
+	}
+	if err := checkScopedOrder(scopedOrderID, order.ID); err != nil {
+		return nil, err
+	}
+	items, err := s.proofs.ListByOrder(ctx, order.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list proofs for order %s: %w", resi, err)
+	}
+	return items, nil
+}
+
+// checkScopedOrder enforces that a caller using a scope-limited token (mis.
+// authapi.ScopeGuestOrder, minted by POST /lacak/:resi/verify) only ever
+// touches the ONE order that token was verified against. scopedOrderID is
+// authapi.Identity.OrderID, threaded through from the handler — nil means a
+// full session, which has no extra restriction beyond the ownership check
+// already performed at the call site.
+//
+// Without this, a guest token issued for resi A would still pass the plain
+// `order.CustomerID == callerID` ownership check for resi B, C, … — every
+// OTHER order owned by the same phone number — because the token's uid is
+// the real (shared) customer_id, not something scoped per-order. Mirrors
+// internal/design/service/design_service.go#checkScopedOrder.
+func checkScopedOrder(scopedOrderID *uuid.UUID, orderID uuid.UUID) error {
+	if scopedOrderID != nil && *scopedOrderID != orderID {
+		return paymentapi.ErrNotOrderOwner
+	}
+	return nil
 }
 
 // ListProofs paginated for staff dashboard.

@@ -8,18 +8,25 @@ import (
 
 // RegisterRoutes wires payment endpoints:
 //
-//   - POST /orders/:resi/payment-proof — auth required (customer OR staff); no
-//     public rate limit (upload is per-order, natural throttle).
+//   - POST /orders/:resi/payment-proof, GET /orders/:resi/payment-proofs, and
+//     GET /payment-proofs/:id/file — all accept BOTH full customer/staff
+//     sessions AND scope-limited guest-order tokens minted by
+//     POST /lacak/:resi/verify (authapi.ScopeGuestOrder). A guest checkout
+//     (§6) has no account, so it has no other way to reach
+//     menunggu_verifikasi — without this it upload buktinya buntu total
+//     (§7). Ownership + the token's scope-to-one-order restriction are
+//     enforced in service (checkScopedOrder), not here. Mounted on v1 (not
+//     public) so no rate-limit body cap interferes with multipart upload.
 //   - Admin group /admin/payment-proofs — staff-only + per-endpoint permission.
 func (h *Handler) RegisterRoutes(v1 *gin.RouterGroup, auth authapi.Service) {
-	// Customer/staff upload — mounted on v1 (not public) so no rate-limit body cap
-	// interferes with multipart upload.
-	customer := v1.Group("")
-	customer.Use(authapi.RequireAuth(auth))
-	customer.POST("/orders/:resi/payment-proof", h.UploadProof)
+	guestAllowed := v1.Group("")
+	guestAllowed.Use(authapi.RequireAuthAllowScope(auth, authapi.ScopeGuestOrder))
+	guestAllowed.POST("/orders/:resi/payment-proof", h.UploadProof)
+	guestAllowed.GET("/orders/:resi/payment-proofs", h.ListForOrder)
 	// Serve proof file — auth guarantees identity; service enforces ownership
-	// (staff bypass). Same endpoint used by admin dashboard preview.
-	customer.GET("/payment-proofs/:id/file", h.GetFile)
+	// (staff bypass) + scope-to-order restriction. Same endpoint used by admin
+	// dashboard preview.
+	guestAllowed.GET("/payment-proofs/:id/file", h.GetFile)
 
 	admin := v1.Group("/admin/payment-proofs")
 	admin.Use(authapi.RequireAuth(auth), authapi.RequireUserType(authapi.UserTypeStaff))

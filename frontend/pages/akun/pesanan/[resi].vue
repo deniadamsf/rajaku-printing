@@ -13,7 +13,8 @@
  * View-only sections:
  *   - Timeline status
  *   - Ringkasan produk + nominal
- *   - Payment proofs status
+ *   - Daftar bukti pembayaran yang sudah diupload beserta status verifikasinya
+ *     (pending/approved/rejected) — GET /orders/:resi/payment-proofs
  *   - Daftar file desain yang sudah diupload customer
  *
  * Design: patuh CLAUDE.md §26.
@@ -34,11 +35,15 @@ import {
   FileText,
   FileWarning,
   AlertTriangle,
+  Receipt,
+  Clock,
+  XCircle,
 } from '@lucide/vue'
 import type { Order } from '~/types/order'
-import type { PaymentProof } from '~/types/payment'
+import type { PaymentProofCustomer } from '~/types/payment'
 import type { DesignFile } from '~/types/design'
 import { ApiError } from '~/composables/useApi'
+import { bankInfo } from '~/utils/payment'
 
 definePageMeta({
   middleware: ['customer-only'],
@@ -59,7 +64,7 @@ useSeoMeta({
 
 // -------------------- state --------------------
 const order = ref<Order | null>(null)
-const proofs = ref<PaymentProof[]>([])
+const proofs = ref<PaymentProofCustomer[]>([])
 const designFiles = ref<DesignFile[]>([])
 const loading = ref(true)
 const errorMsg = ref<string | null>(null)
@@ -93,13 +98,10 @@ async function loadAll() {
 async function loadProofs() {
   if (!order.value) return
   try {
-    // Customer tidak boleh akses /admin/payment-proofs — pakai lookup by order
-    // membutuhkan admin perm, jadi frontend skip fetch untuk customer.
-    // Instead: kita tampilkan status dari order.status + optional proofs tetap
-    // via /admin route → error 403 → biarkan proofs kosong.
-    // Untuk MVP, tampilkan hanya bukti terakhir dari upload flow (state local).
-    proofs.value = []
+    const res = await paymentApi.listProofsForOrder(resi.value)
+    proofs.value = res.items ?? []
   } catch (e) {
+    console.error('Gagal load payment proofs', e)
     proofs.value = []
   }
 }
@@ -345,14 +347,20 @@ function statusLabel(s: string): string {
   return statusLabelMap[s] ?? s
 }
 
-// Bank info — hardcoded sesuai spec §7 (no gateway). Di prod dibaca dari config
-// admin (task lanjutan).
-const bankInfo = {
-  bankName: 'BCA',
-  accountName: 'PT Rajaku Printing',
-  accountNumber: '1234567890',
-  qrisNote: 'QRIS statis: scan di toko fisik, minta ke admin via WA.',
+const proofStatusLabelMap: Record<string, string> = {
+  pending: 'Menunggu verifikasi',
+  approved: 'Terverifikasi',
+  rejected: 'Ditolak',
 }
+function proofStatusLabel(s: string): string {
+  return proofStatusLabelMap[s] ?? s
+}
+function proofStatusBadgeClass(s: string): string {
+  if (s === 'approved') return 'bg-emerald-50 text-emerald-800 ring-emerald-200'
+  if (s === 'rejected') return 'bg-brand-50 text-brand-700 ring-brand-200'
+  return 'bg-amber-50 text-amber-800 ring-amber-200'
+}
+
 </script>
 
 <template>
@@ -509,6 +517,66 @@ const bankInfo = {
             </form>
           </div>
         </div>
+      </div>
+
+      <!-- ============ VIEW: Payment proofs status ============ -->
+      <div v-if="proofs.length" class="rounded-lg border border-hairline bg-canvas p-6">
+        <div class="flex items-center gap-2 mb-3">
+          <Receipt class="h-4 w-4 text-ink-500" :stroke-width="1.75" />
+          <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Bukti pembayaran</p>
+        </div>
+        <ul class="space-y-3">
+          <li
+            v-for="p in proofs"
+            :key="p.id"
+            class="rounded-md border border-hairline bg-canvas-alt/40 p-3"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <FileText class="h-3.5 w-3.5 text-ink-500 flex-none" :stroke-width="1.75" />
+                  <p class="text-xs text-ink-900 truncate font-mono">{{ p.file_original_name }}</p>
+                </div>
+                <p class="mt-1 text-[10px] text-ink-500">
+                  {{ formatBytes(p.file_size_bytes) }} · {{ p.metode_bayar }} · diupload {{ fmtDate(p.uploaded_at) }}
+                </p>
+                <p v-if="p.amount_claimed != null" class="mt-1 text-xs text-ink-700">
+                  Nominal diklaim: <span class="font-medium text-ink-900">{{ fmtIDR(p.amount_claimed) }}</span>
+                </p>
+              </div>
+              <span
+                :class="[
+                  'inline-flex flex-none items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset',
+                  proofStatusBadgeClass(p.status),
+                ]"
+              >
+                <Clock v-if="p.status === 'pending'" class="h-3 w-3" :stroke-width="1.75" />
+                <CheckCircle2 v-else-if="p.status === 'approved'" class="h-3 w-3" :stroke-width="1.75" />
+                <XCircle v-else-if="p.status === 'rejected'" class="h-3 w-3" :stroke-width="1.75" />
+                {{ proofStatusLabel(p.status) }}
+              </span>
+            </div>
+
+            <!-- Rejected: alasan penolakan + ajakan upload ulang, wajib menonjol -->
+            <div
+              v-if="p.status === 'rejected'"
+              class="mt-3 rounded-md border border-brand-200 bg-brand-50/60 p-3"
+            >
+              <div class="flex items-start gap-2">
+                <AlertTriangle class="h-4 w-4 text-brand-700 flex-none mt-0.5" :stroke-width="1.75" />
+                <div>
+                  <p class="text-xs font-semibold text-brand-700">Alasan ditolak</p>
+                  <p class="mt-0.5 text-xs text-ink-700 leading-relaxed">
+                    {{ p.reject_reason || 'Bukti transfer tidak dapat diverifikasi. Silakan hubungi kami jika perlu penjelasan lebih lanjut.' }}
+                  </p>
+                  <p class="mt-1.5 text-[10px] text-ink-500">
+                    Silakan upload ulang bukti transfer yang valid menggunakan formulir di atas.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </li>
+        </ul>
       </div>
 
       <!-- ============ ACTION AREA: Approve design ============ -->

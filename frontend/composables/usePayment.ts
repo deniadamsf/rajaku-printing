@@ -1,13 +1,30 @@
 /**
  * usePayment — API wrapper untuk verifikasi bukti pembayaran (§7).
  * Semua endpoint admin membutuhkan permission payment.verify / payment.reject.
+ *
+ * Endpoint yg dipakai customer:
+ *   GET /orders/:resi/payment-proofs — list bukti milik order (§7), bentuk
+ *   response dipangkas (`PaymentProofCustomer`, tanpa `reviewed_by`) — dipanggil
+ *   listProofsForOrder.
+ *
+ * Sama seperti useDesign, composable ini mendukung override token supaya bisa
+ * dipakai sesi guest terverifikasi (bukan cuma cookie `rajaku_token`). Panggil
+ * `usePayment({ token: () => guestToken.value })` untuk kasus itu; default
+ * `usePayment()` tanpa argumen tetap pakai cookie seperti biasa.
  */
-import type { PaymentProof, PaymentProofListResponse, ProofStatus } from '~/types/payment'
+import type {
+  PaymentProof,
+  PaymentProofCustomerListResponse,
+  PaymentProofListResponse,
+  ProofStatus,
+} from '~/types/payment'
+import type { UseApiOptions } from '~/composables/useApi'
 
-export function usePayment() {
-  const api = useApi()
+export function usePayment(options: UseApiOptions = {}) {
+  const api = useApi(options)
   const config = useRuntimeConfig()
   const tokenCookie = useAuthTokenCookie()
+  const getToken = options.token ?? (() => tokenCookie.value)
 
   // -------- Customer upload --------
   async function uploadProof(
@@ -19,6 +36,14 @@ export function usePayment() {
     form.append('metode_bayar', body.metodeBayar)
     if (body.amountClaimed != null) form.append('amount_claimed', String(body.amountClaimed))
     return api.post<PaymentProof>(`/orders/${resi}/payment-proof`, form)
+  }
+
+  /**
+   * listProofsForOrder — bukti pembayaran milik satu order, untuk pelanggan
+   * memantau status verifikasi (bukan endpoint admin). Terurut terbaru dulu.
+   */
+  function listProofsForOrder(resi: string): Promise<PaymentProofCustomerListResponse> {
+    return api.get<PaymentProofCustomerListResponse>(`/orders/${resi}/payment-proofs`)
   }
 
   function listProofs(params: {
@@ -61,8 +86,9 @@ export function usePayment() {
    * proof supaya tidak leak memory.
    */
   async function proofFilePreviewURL(id: string): Promise<string> {
+    const token = getToken()
     const res = await fetch(proofFileURL(id), {
-      headers: tokenCookie.value ? { Authorization: `Bearer ${tokenCookie.value}` } : {},
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
     if (!res.ok) throw new Error(`preview fetch gagal: ${res.status}`)
     const blob = await res.blob()
@@ -72,6 +98,7 @@ export function usePayment() {
   return {
     uploadProof,
     listProofs,
+    listProofsForOrder,
     approveProof,
     rejectProof,
     proofFileURL,

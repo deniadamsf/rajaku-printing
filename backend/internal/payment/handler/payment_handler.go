@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -17,11 +18,27 @@ import (
 	"github.com/rajaku-printing/backend/internal/payment/service"
 )
 
-type Handler struct {
-	svc *service.Service
+// paymentService is the narrow slice of *service.Service this handler
+// actually calls. Declared as an interface (rather than depending on the
+// concrete struct) purely so handler tests can inject a fake and assert on
+// what gets passed through — in particular that id.OrderID really reaches
+// the service call for every scope-restricted endpoint (see
+// payment_handler_test.go). *service.Service satisfies this implicitly; no
+// change needed at the wiring site (internal/server/router.go).
+type paymentService interface {
+	UploadProof(ctx context.Context, in service.UploadProofInput) (*paymodel.PaymentProof, error)
+	ListForOrder(ctx context.Context, resi string, callerID uuid.UUID, isStaff bool, scopedOrderID *uuid.UUID) ([]paymodel.PaymentProof, error)
+	ListProofs(ctx context.Context, in service.ListInput) (*service.ListPage, error)
+	GetProofFile(ctx context.Context, proofID uuid.UUID, callerID uuid.UUID, isStaff bool, scopedOrderID *uuid.UUID) (*service.ProofFileHandle, error)
+	ApproveProof(ctx context.Context, in service.ReviewInput) (*paymodel.PaymentProof, error)
+	RejectProof(ctx context.Context, in service.ReviewInput) (*paymodel.PaymentProof, error)
 }
 
-func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
+type Handler struct {
+	svc paymentService
+}
+
+func New(svc paymentService) *Handler { return &Handler{svc: svc} }
 
 // POST /orders/:resi/payment-proof
 // Content-Type: multipart/form-data
@@ -31,7 +48,10 @@ func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
 //	metode_bayar    (required, "transfer" | "qris")
 //	amount_claimed  (optional, integer)
 //
-// Auth: RequireAuth (customer OR staff). Staff bypasses ownership check.
+// Auth: RequireAuthAllowScope(ScopeGuestOrder) — full customer/staff session
+// OR a scope-limited guest-order token (POST /lacak/:resi/verify). Staff
+// bypasses ownership check. Guest tokens are restricted to the one order they
+// were verified for (checkScopedOrder in service) — see §6/§7.
 func (h *Handler) UploadProof(c *gin.Context) {
 	resi := c.Param("resi")
 	if resi == "" {
@@ -94,12 +114,61 @@ func (h *Handler) UploadProof(c *gin.Context) {
 		FileSize:      fh.Size,
 		OriginalName:  fh.Filename,
 		MimeType:      mime,
+		ScopedOrderID: id.OrderID,
 	})
 	if err != nil {
 		h.mapErr(c, err)
 		return
 	}
-	httpx.Created(c, toProofResponse(proof))
+	// customerProofResponse, NOT toProofResponse (admin DTO) — this endpoint
+	// is reachable by guest_order tokens (§6/§7), so it must never carry
+	// order_id / reviewed_by. See dto_test.go for the regression lock on the
+	// DTO itself; using the wrong constructor here would silently bypass it.
+	httpx.Created(c, toCustomerProofResponse(proof))
+}
+
+// GET /orders/:resi/payment-proofs
+// Auth: RequireAuthAllowScope(ScopeGuestOrder) — full customer/staff session
+// OR a scope-limited guest-order token (POST /lacak/:resi/verify). Lets a
+// pembeli tanpa akun cek status bukti transfer/QRIS yang sudah mereka
+// unggah (pending/approved/rejected) — ditolak WAJIB terlihat karena itu
+// satu-satunya sinyal mereka harus upload ulang (§4/§7). Ownership + batas
+// scope token ditegakkan sepenuhnya di service.
+//
+// Staff bypass ONLY applies with permission "payment.verify" (checked here,
+// not delegated to service) — a staff account without it is ownership-checked
+// like any customer. §10: this data is financial, so "staff verifikasi
+// pembayaran" is a role of its own, not a blanket staff privilege.
+func (h *Handler) ListForOrder(c *gin.Context) {
+	resi := c.Param("resi")
+	if resi == "" {
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeBadRequest, "resi required")
+		return
+	}
+	id, err := authapi.IdentityFromContext(c.Request.Context())
+	if err != nil || id == nil {
+		httpx.Error(c, http.StatusUnauthorized, httpx.CodeUnauthorized, "authentication required")
+		return
+	}
+	// isStaff here bypasses the ownership check below (any staff account would
+	// see any customer's proof list). Gate it on the "payment.verify"
+	// permission, NOT merely on UserType==staff: this endpoint is reachable
+	// by every staff role (kasir, admin artikel, staff produksi, ...) as long
+	// as they know a resi, and section §10 deliberately separates "staff
+	// verifikasi pembayaran" as its own role precisely because this data is
+	// financial. A staff account without the permission is treated exactly
+	// like a customer — ownership-checked, 403 if it's not their order.
+	isStaff := id.UserType == authapi.UserTypeStaff && id.HasPermission("payment.verify")
+	items, err := h.svc.ListForOrder(c.Request.Context(), resi, id.UserID, isStaff, id.OrderID)
+	if err != nil {
+		h.mapErr(c, err)
+		return
+	}
+	out := make([]customerProofResponse, 0, len(items))
+	for i := range items {
+		out = append(out, toCustomerProofResponse(&items[i]))
+	}
+	httpx.OK(c, gin.H{"items": out})
 }
 
 // GET /admin/payment-proofs?status=pending&order_id=…&page=…&page_size=…
@@ -138,10 +207,13 @@ func (h *Handler) AdminList(c *gin.Context) {
 	})
 }
 
-// GET /payment-proofs/:id/file — stream the proof file. Auth required.
+// GET /payment-proofs/:id/file — stream the proof file.
+// Auth: RequireAuthAllowScope(ScopeGuestOrder) — full customer/staff session
+// OR a scope-limited guest-order token, same as UploadProof/ListForOrder.
+// Lets a guest re-view the bukti they just uploaded (§6/§7).
 //
-//	Staff: can view any proof.
-//	Customer: only proofs on their own orders.
+//	Staff WITH "payment.verify": can view any proof.
+//	Staff WITHOUT it, or customer: only proofs on their own orders.
 //	?download=1 forces Content-Disposition: attachment (default: inline so
 //	browsers preview images/PDF).
 func (h *Handler) GetFile(c *gin.Context) {
@@ -154,8 +226,12 @@ func (h *Handler) GetFile(c *gin.Context) {
 		httpx.Error(c, http.StatusUnauthorized, httpx.CodeUnauthorized, "authentication required")
 		return
 	}
-	handle, err := h.svc.GetProofFile(c.Request.Context(), proofID, caller.UserID,
-		caller.UserType == authapi.UserTypeStaff)
+	// Same permission gate as ListForOrder above — a staff account without
+	// "payment.verify" must not be able to download ANY order's bukti transfer
+	// just by knowing a proof id (which, absent the gate here, ListForOrder
+	// would have handed them).
+	isStaff := caller.UserType == authapi.UserTypeStaff && caller.HasPermission("payment.verify")
+	handle, err := h.svc.GetProofFile(c.Request.Context(), proofID, caller.UserID, isStaff, caller.OrderID)
 	if err != nil {
 		h.mapErr(c, err)
 		return
@@ -288,8 +364,12 @@ func (h *Handler) mapErr(c *gin.Context, err error) {
 	case errors.Is(err, paymentapi.ErrFileEmpty):
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "file kosong")
 	case errors.Is(err, paymentapi.ErrNotOrderOwner):
+		// Sentinel ini dipakai bersama oleh upload, daftar bukti, dan stream
+		// file — pesannya harus netral. Sebelumnya berbunyi "tidak boleh
+		// upload bukti…", yang salah dan membingungkan saat muncul di operasi
+		// baca.
 		httpx.Error(c, http.StatusForbidden, httpx.CodeForbidden,
-			"tidak boleh upload bukti untuk order milik orang lain")
+			"pesanan ini bukan milik Anda")
 	case errors.Is(err, paymentapi.ErrRejectReasonRequired):
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "reason wajib diisi")
 	case errors.Is(err, orderapi.ErrOrderNotFound):

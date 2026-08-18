@@ -19,6 +19,7 @@ import (
 	"github.com/rajaku-printing/backend/internal/cms/cmsapi"
 	"github.com/rajaku-printing/backend/internal/cms/model"
 	cmsrepo "github.com/rajaku-printing/backend/internal/cms/repository"
+	"github.com/rajaku-printing/backend/internal/pkg/webp"
 )
 
 // FileStore — narrowed filestore contract (sama shape dengan modul lain).
@@ -353,15 +354,15 @@ func (s *Service) UploadImage(ctx context.Context, in UploadImageInput) (*model.
 	if in.FileSize > s.maxImgBytes {
 		return nil, cmsapi.ErrImageTooLarge
 	}
-	if !isAllowedImageMime(in.MimeType) {
+	if !webp.IsAllowedMime(in.MimeType) {
 		return nil, cmsapi.ErrImageInvalidType
 	}
 
 	// Batasi read agar tidak overshoot (defense terhadap MIME lie).
 	limitedR := io.LimitReader(in.FileReader, s.maxImgBytes+1)
-	encoded, err := encodeToWebP(limitedR)
+	encoded, err := webp.Encode(limitedR)
 	if err != nil {
-		if errors.Is(err, errImageDecode) {
+		if errors.Is(err, webp.ErrDecodeFailed) {
 			return nil, cmsapi.ErrImageDecodeFailed
 		}
 		return nil, fmt.Errorf("encode webp: %w", err)

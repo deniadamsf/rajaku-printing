@@ -48,6 +48,9 @@ import (
 	settingshandler "github.com/rajaku-printing/backend/internal/settings/handler"
 	settingsrepo "github.com/rajaku-printing/backend/internal/settings/repository"
 	settingsservice "github.com/rajaku-printing/backend/internal/settings/service"
+	sitemediahandler "github.com/rajaku-printing/backend/internal/sitemedia/handler"
+	sitemediarepo "github.com/rajaku-printing/backend/internal/sitemedia/repository"
+	sitemediaservice "github.com/rajaku-printing/backend/internal/sitemedia/service"
 
 	"github.com/rajaku-printing/backend/internal/httpx"
 	"github.com/rajaku-printing/backend/internal/middleware"
@@ -307,6 +310,16 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	})
 	cmsH := cmshandler.New(cmsSvc)
 
+	// --- Wiring modul sitemedia ---
+	// Gambar landing page yang bisa diganti admin panel tanpa deploy ulang
+	// (bukan artikel CMS). Share filestore (root sama, subdir site_media).
+	// URL file publik dibangun dari BaseURL (§2 satu sumber base URL).
+	sitemediaRepo := sitemediarepo.NewRepository(d.DB)
+	sitemediaSvc := sitemediaservice.New(sitemediaRepo, fs, sitemediaservice.Config{
+		BaseURL: d.Config.App.BaseURL,
+	})
+	sitemediaH := sitemediahandler.New(sitemediaSvc)
+
 	// v1 API group.
 	v1 := r.Group("/api/v1")
 	{
@@ -375,6 +388,10 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 			// Admin routes di-mount di v1 (bukan public) supaya rate-limit
 			// publik tidak mengganggu admin CRUD.
 			cmsH.RegisterRoutes(v1, public, authSvc)
+
+			// Modul sitemedia — GET /site-media + /site-media/file/:slot
+			// public (dipanggil landing SSR). Admin routes di-mount di v1.
+			sitemediaH.RegisterRoutes(v1, public, authSvc)
 		}
 
 		// Modul payment — POST /orders/:resi/payment-proof, GET

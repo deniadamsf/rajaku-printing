@@ -42,11 +42,15 @@ menolak jalan dan menyebutkan var mana. Itu perilaku yang benar, bukan bug.
 cd backend && make migrate-up
 ```
 
-Dua migration baru di rilis ini:
+Tiga migration baru di rilis ini:
 - `000016` — meredaksi kode OTP plaintext yang terlanjur tersimpan di
   `notification_jobs`. Tidak bisa di-rollback (data memang dihapus).
 - `000017` — nomor pelanggan jadi nullable + partial unique index
   `WHERE phone IS NOT NULL`, dan tabel OTP kini melayani dua jalur.
+- `000018` — tabel `site_media` + permission `sitemedia.manage` untuk
+  super admin (pengelola gambar landing page).
+
+Ketiganya sudah diuji apply ke Postgres lokal, bukan cuma dibaca.
 
 ## 4. Frontend
 
@@ -86,6 +90,12 @@ WhatsApp → Perangkat Tertaut → Tautkan Perangkat.
 5. Tambah nomor yang sudah dipakai pelanggan lain → muncul tawaran verifikasi
    dan OTP masuk ke WA.
 6. `/lacak/RESI` publik bisa dibuka tanpa login.
+7. Login sebagai super admin -> **Kelola -> Media Landing Page**. Unggah satu
+   gambar ke slot mana pun, buka landing, pastikan gambarnya berganti. Lalu
+   tekan "kembalikan ke bawaan" dan pastikan gambar statis kembali muncul.
+8. Buka halaman pesanan pelanggan dan pastikan rekening yang tampil
+   **BCA - CV WANSHOU NIAGA UTAMA - 3245070777**. Salah satu nilai keliru di
+   sini berarti uang pelanggan salah alamat, jadi periksa dengan mata sendiri.
 
 ## Diketahui, belum dikerjakan
 
@@ -93,6 +103,14 @@ WhatsApp → Perangkat Tertaut → Tautkan Perangkat.
   menu tambah-nomor di akun; hanya matching key-nya yang berpindah. Registrasi
   Google yang langsung menyerap guest tetap menggabungkan riwayat seperti
   biasa. Perlu dirapikan agar sesuai janji §11 (satu pelanggan, satu riwayat).
-- Slot gambar landing & halaman pairing WhatsApp di admin panel belum dibuat —
-  gambar masih file statis, pairing masih lewat terminal.
+- Halaman pairing WhatsApp di admin panel belum dibuat — pairing masih lewat
+  QR di terminal / `http://localhost:9090/qr`.
+- Rekening masih hardcode di `frontend/utils/payment.ts`; menggantinya berarti
+  deploy ulang. Belum dipindah ke modul settings.
+- QRIS belum tersedia. Catatan ke pembeli sudah berbunyi "segera hadir", TAPI
+  tombol pilihan metode "QRIS" di form unggah bukti bayar MASIH bisa dipilih.
+  Pertimbangkan menonaktifkannya sampai QRIS benar-benar ada.
 - Scan `design-drift-auditor` untuk UI baru belum dijalankan (kosmetik).
+- Unggah gambar via admin belum pernah dicoba ujung-ke-ujung dengan sesi staff
+  sungguhan (butuh login admin). Endpoint & UI-nya lolos build dan cadangan
+  statisnya terverifikasi; langkah 7 di atas yang membuktikan sisanya.

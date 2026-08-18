@@ -7,6 +7,9 @@ import QRCode from 'qrcode-terminal';
 import { config } from './config.js';
 import { startWA, isReady, getLastQR } from './wa.js';
 import { startDispatcher, stopDispatcher } from './dispatcher.js';
+import { quotaSnapshot } from './quota.js';
+import { circuitSnapshot } from './circuit.js';
+import { pacingSnapshot } from './pacing.js';
 
 const log = pino({ level: config.logLevel, base: undefined });
 
@@ -15,7 +18,11 @@ async function main() {
     backendURL: config.backendURL,
     pollIntervalMs: config.pollIntervalMs,
     batchSize: config.batchSize,
-    minSendIntervalMs: config.minSendIntervalMs,
+    sendIntervalMs: [config.minSendIntervalMs, config.maxSendIntervalMs],
+    warmupRamp: config.warmupRamp,
+    dailyCap: config.dailyCap,
+    timezone: config.timezone,
+    stateFile: config.stateFile,
     port: config.workerPort,
   }, 'starting notification-worker');
 
@@ -25,8 +32,16 @@ async function main() {
 
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/healthz') {
+      // Sertakan status kuota/circuit — operator perlu tahu kalau worker
+      // sedang diam karena cap harian atau circuit terbuka, bukan karena mati.
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, wa_ready: isReady() }));
+      res.end(JSON.stringify({
+        ok: true,
+        wa_ready: isReady(),
+        quota: quotaSnapshot(),
+        circuit: circuitSnapshot(),
+        pacing: pacingSnapshot(),
+      }));
       return;
     }
     if (req.method === 'GET' && req.url === '/qr') {

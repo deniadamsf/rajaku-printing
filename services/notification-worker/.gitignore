@@ -1,4 +1,7 @@
 node_modules/
 .env
 session/
+# State cap harian & warmup (runtime, per-mesin) — lihat WA_STATE_FILE.
+wa-state.json
+wa-state.json.tmp
 *.log

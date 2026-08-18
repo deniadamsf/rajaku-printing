@@ -1,7 +1,10 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   compatibilityDate: '2025-01-01',
-  devtools: { enabled: true },
+  // Tombol melayang DevTools mengganggu saat menata tampilan. Ini hanya
+  // pernah muncul di mode dev — build produksi tidak pernah memuatnya, jadi
+  // mematikannya murni soal kenyamanan kerja, bukan keamanan.
+  devtools: { enabled: false },
 
   modules: [
     '@nuxtjs/tailwindcss',

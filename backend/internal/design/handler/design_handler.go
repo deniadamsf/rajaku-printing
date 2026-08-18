@@ -77,7 +77,11 @@ func (h *Handler) UploadCustomerFile(c *gin.Context) {
 		httpx.Error(c, http.StatusInternalServerError, httpx.CodeInternal, "gagal buka file upload")
 		return
 	}
-	defer f.Close()
+	// Close diabaikan sengaja: f adalah file upload yang hanya DIBACA, jadi
+	// tidak ada buffer tulis yang bisa gagal ter-flush. Ditulis eksplisit
+	// supaya errcheck lolos tanpa mematikan linter, dan supaya jelas ini
+	// keputusan, bukan kelalaian (CLAUDE.md 22).
+	defer func() { _ = f.Close() }()
 
 	saved, err := h.svc.UploadCustomerFile(c.Request.Context(), service.UploadInput{
 		Resi:          resi,
@@ -115,7 +119,11 @@ func (h *Handler) StaffUploadDraft(c *gin.Context) {
 		httpx.Error(c, http.StatusInternalServerError, httpx.CodeInternal, "gagal buka file upload")
 		return
 	}
-	defer f.Close()
+	// Close diabaikan sengaja: f adalah file upload yang hanya DIBACA, jadi
+	// tidak ada buffer tulis yang bisa gagal ter-flush. Ditulis eksplisit
+	// supaya errcheck lolos tanpa mematikan linter, dan supaya jelas ini
+	// keputusan, bukan kelalaian (CLAUDE.md 22).
+	defer func() { _ = f.Close() }()
 
 	saved, err := h.svc.StaffUploadDraft(c.Request.Context(), service.UploadInput{
 		Resi:          c.Param("resi"),

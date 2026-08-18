@@ -57,8 +57,15 @@ func (r *Repository) ClaimBatch(ctx context.Context, limit int) ([]model.Notific
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.
 			Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-			Where("status IN ? AND next_attempt_at <= ?",
-				[]model.JobStatus{model.JobPending, model.JobFailed}, time.Now().UTC()).
+			// message <> '' — second-layer guard (review finding #4): a job
+			// whose message was redacted by RedactStaleSensitive should
+			// already have been moved out of pending/failed into `dead` by
+			// that same sweep, so this should never match in practice. Kept
+			// as a belt-and-suspenders check anyway so an empty-message job
+			// can NEVER be claimed and sent, even if some future code path
+			// redacts a message without also moving the status.
+			Where("status IN ? AND next_attempt_at <= ? AND message <> ?",
+				[]model.JobStatus{model.JobPending, model.JobFailed}, time.Now().UTC(), "").
 			Order("next_attempt_at ASC").
 			Limit(limit).
 			Find(&jobs).Error; err != nil {
@@ -180,11 +187,38 @@ func (r *Repository) MarkFailure(ctx context.Context, id uuid.UUID, errMsg strin
 // never reach a terminal status through the normal MarkSent/MarkFailure path
 // (mis. worker down for a long stretch, job stuck pending/sending) — review
 // finding #3. Returns how many rows were redacted, for logging.
+//
+// Review finding #4: clearing `message` alone is NOT enough for a job that's
+// still in a non-terminal status (pending/sending/failed) — ClaimBatch's
+// WHERE (status IN ('pending','failed') AND next_attempt_at <= NOW()) still
+// selects it. If the worker that stalled long enough to trigger this sweep
+// comes back online afterward, it would claim the now-EMPTY message, "send"
+// it via Baileys, and MarkSent would record that as a successful delivery —
+// i.e. an empty WhatsApp message sent to a real customer, logged as sent.
+// So in the SAME statement, every non-terminal row swept here is ALSO moved
+// to `dead` (no further auto-retry; matches what MarkFailure already does
+// once a job exhausts its retries) — this makes it fall out of ClaimBatch's
+// eligibility outright, not just rely on the message<>” guard added there
+// as a second layer. Terminal rows (sent/dead) are left in their existing
+// status; only `message` is touched for them, same as before.
 func (r *Repository) RedactStaleSensitive(ctx context.Context, olderThan time.Time) (int64, error) {
+	now := time.Now().UTC()
 	res := r.db.WithContext(ctx).
 		Model(&model.NotificationJob{}).
 		Where("is_sensitive = TRUE AND message <> '' AND created_at < ?", olderThan).
-		UpdateColumn("message", "")
+		Updates(map[string]any{
+			"message":    "",
+			"updated_at": now,
+			"status": gorm.Expr(
+				"CASE WHEN status IN (?, ?, ?) THEN ? ELSE status END",
+				model.JobPending, model.JobSending, model.JobFailed, model.JobDead,
+			),
+			"last_error": gorm.Expr(
+				"CASE WHEN status IN (?, ?, ?) THEN ? ELSE last_error END",
+				model.JobPending, model.JobSending, model.JobFailed,
+				"redacted by stale-sensitive sweep before delivery (TTL exceeded); moved to dead so it can never be claimed and sent with an empty message",
+			),
+		})
 	if res.Error != nil {
 		return 0, fmt.Errorf("redact stale sensitive notification_jobs: %w", res.Error)
 	}

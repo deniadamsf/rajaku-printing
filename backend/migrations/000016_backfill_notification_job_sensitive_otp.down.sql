@@ -1,0 +1,7 @@
+-- Deliberately a no-op: the plaintext OTP `message` values this migration's
+-- up.sql redacted are NOT recoverable from anywhere in the database (they
+-- were only ever stored in this one column, already hashed on the
+-- phone_verifications side — see migration 000013). A down migration that
+-- pretended to "restore" the original message would have to fabricate data
+-- it doesn't have; writing nothing here is the honest choice, per
+-- CLAUDE.md §22 (no silent stubs pretending to do something they can't).

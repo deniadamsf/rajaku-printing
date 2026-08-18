@@ -40,6 +40,8 @@ const (
 	SlotProses6 SlotKey = "proses_6"
 
 	SlotOGImage SlotKey = "og_image"
+
+	SlotQRIS SlotKey = "qris_code"
 )
 
 // Registry — daftar SEMUA slot yang dikenal sistem, urut tampil di admin
@@ -128,6 +130,13 @@ var Registry = []SlotDef{
 		Description:       "Gambar preview saat link website dibagikan ke WhatsApp/Facebook/Twitter (meta og:image).",
 		SuggestedWidthPx:  1200,
 		SuggestedHeightPx: 630,
+	},
+	{
+		Key:               SlotQRIS,
+		Label:             "Kode QRIS Pembayaran",
+		Description:       "Gambar QRIS statis yang dipindai pembeli (section 7). Unggah cetakan QRIS resmi apa adanya — jangan dipotong sampai mengenai pola sudut, karena kode jadi gagal dipindai.",
+		SuggestedWidthPx:  800,
+		SuggestedHeightPx: 1130,
 	},
 }
 

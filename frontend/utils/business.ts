@@ -47,13 +47,13 @@ export const business: BusinessInfo = {
   legalName: 'Rajaku Printing',
   description:
     'Percetakan banner dan digital printing large-format untuk usaha, event, dan kebutuhan pribadi di Trenggalek, Jawa Timur.',
-  streetAddress: 'Jl. Contoh Raya No. 1', // TODO(rajaku): alamat asli
+  streetAddress: 'Jl. Panglima Sudirman No. 88, Dobangsan, Ngantru',
   addressLocality: 'Trenggalek',
   addressRegion: 'Jawa Timur',
   postalCode: '66312', // TODO(rajaku): kode pos asli
   addressCountry: 'ID',
-  telephone: '+6281234567890', // TODO(rajaku): nomor telepon asli
-  whatsapp: '6281234567890', // TODO(rajaku): nomor WA asli, format 62xxx tanpa "+"
+  telephone: '+6282146343549',
+  whatsapp: '6282146343549',
   email: 'halo@rajakuprinting.example', // TODO(rajaku): email asli
   openingHours: [
     {

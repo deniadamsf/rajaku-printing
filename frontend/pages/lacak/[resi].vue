@@ -33,6 +33,10 @@ import type { DesignFile } from '~/types/design'
 import type { PaymentProofCustomer } from '~/types/payment'
 import { bankInfo } from '~/utils/payment'
 
+// Slot QRIS dikelola admin lewat /admin/site-media. Tidak ada fallback
+// statis: kalau belum diunggah, panel QRIS memang tidak ditampilkan.
+const qrisUrl = computed(() => useSiteMedia().resolve('qris_code'))
+
 definePageMeta({ layout: 'default' })
 
 const route = useRoute()
@@ -636,6 +640,26 @@ async function copyResi() {
                   <p class="font-mono text-base text-ink-950 font-semibold tracking-wider">{{ bankInfo.accountNumber }}</p>
                 </div>
                 <p class="mt-2 text-xs text-ink-500">{{ bankInfo.qrisNote }}</p>
+
+                <!-- QRIS hanya tampil kalau admin sudah mengunggahnya ke slot
+                     `qris_code`; tidak ada gambar bawaan, jadi tanpa unggahan
+                     blok ini tidak dirender sama sekali. -->
+                <div v-if="qrisUrl" class="mt-4 border-t border-hairline pt-4">
+                  <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-2">
+                    Atau pindai QRIS
+                  </p>
+                  <img
+                    :src="qrisUrl"
+                    alt="Kode QRIS untuk pembayaran"
+                    class="w-full max-w-[260px] rounded-md border border-hairline bg-canvas"
+                    loading="lazy"
+                  />
+                  <p class="mt-2 text-xs text-ink-500">
+                    Nama merchant yang muncul:
+                    <span class="font-medium text-ink-700">{{ bankInfo.qrisMerchantName }}</span>
+                    &middot; NMID <span class="font-mono">{{ bankInfo.qrisNmid }}</span>
+                  </p>
+                </div>
               </div>
 
               <!-- Upload form -->

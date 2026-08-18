@@ -18,11 +18,18 @@ export interface BankInfo {
   accountName: string
   accountNumber: string
   qrisNote: string
+  /** Nama merchant yang TAMPIL di aplikasi pembayaran saat QRIS dipindai. */
+  qrisMerchantName: string
+  qrisNmid: string
 }
 
 export const bankInfo: BankInfo = {
   bankName: 'BCA',
   accountName: 'CV WANSHOU NIAGA UTAMA',
   accountNumber: '3245070777',
-  qrisNote: 'Pembayaran QRIS segera hadir — untuk saat ini gunakan transfer bank.',
+  qrisNote: 'Pindai QRIS dengan aplikasi apa pun berlogo QRIS, lalu unggah bukti bayarnya.',
+  // Ditampilkan supaya pembeli tidak ragu saat aplikasinya memunculkan nama
+  // merchant yang berbeda dari nama rekening bank di atas.
+  qrisMerchantName: 'EVENT WOWINFOOD',
+  qrisNmid: 'ID2026569993978',
 }

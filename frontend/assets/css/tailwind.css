@@ -1,3 +1,58 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * Transisi antar halaman (§26.6: 150-250ms ease-out, fade singkat saja —
+ * bukan slide/scale). Dipasangkan dengan `app.pageTransition` di
+ * nuxt.config.ts. Hanya opacity, tidak memicu layout reflow.
+ */
+.page-enter-active,
+.page-leave-active {
+  transition: opacity 200ms ease-out;
+}
+.page-enter-from,
+.page-leave-to {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter-active,
+  .page-leave-active {
+    transition: none;
+  }
+}
+
+/*
+ * Jaring pengaman reveal tanpa JS — pasangan dari skrip inline di
+ * nuxt.config.ts dan plugins/motion-ready.client.ts.
+ *
+ * Elemen scroll-reveal dirender SERVER dengan inline `opacity:0`. Kalau JS
+ * tidak pernah jalan (dimatikan, bundle gagal termuat, koneksi putus di
+ * tengah), tanpa aturan ini pengunjung hanya melihat hero lalu halaman
+ * praktis kosong — begitu juga crawler yang tidak mengeksekusi JS (§15).
+ *
+ * Kelas `motion-ready` dipasang skrip inline di <head>, jadi pada kondisi
+ * normal aturan ini sudah tidak berlaku sebelum paint pertama — tidak ada
+ * kedipan. Watchdog di skrip itu MELEPAS kelasnya kalau hydration tidak
+ * pernah selesai, sehingga bundle yang gagal termuat tetap tertolong.
+ */
+/*
+ * Selector sengaja menyertakan `;transform:translateY(` — itu bentuk persis
+ * yang diserialisasi Vue untuk elemen reveal saat SSR. Mencocokkan
+ * `opacity:0` saja BERBAHAYA: substring itu juga cocok dengan `opacity:0.5`,
+ * sehingga elemen yang memang sengaja semi-transparan ikut dipaksa penuh.
+ */
+html:not(.motion-ready) [style*="opacity:0;transform:translateY("] {
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+/*
+ * Slide carousel dikecualikan: semuanya bertumpuk absolut, jadi kalau semua
+ * dipaksa terlihat teksnya saling menimpa. Tanpa JS, tampilkan slide pertama
+ * saja — carousel jadi gambar statis, bukan tumpukan kacau.
+ */
+html:not(.motion-ready) [data-carousel-slide]:not([data-carousel-slide='0']) {
+  display: none !important;
+}

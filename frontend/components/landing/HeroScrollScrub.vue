@@ -18,7 +18,11 @@
 import { ArrowRight, Search } from '@lucide/vue'
 
 const TOTAL_FRAMES = 100
-const POSTER = '/hero/poster.webp'
+// Poster fallback bisa diganti admin (/admin/site-media, slot hero_poster_desktop)
+// tanpa deploy ulang. Frame sequence (di bawah) tetap aset statis — tidak ada di
+// slot registry, cuma poster yang overridable.
+const { resolve: resolveMedia } = useSiteMedia()
+const POSTER = computed(() => resolveMedia('hero_poster_desktop'))
 const framePath = (i: number) => `/hero/frames/f_${String(i).padStart(3, '0')}.webp`
 
 const sectionRef = ref<HTMLElement | null>(null)

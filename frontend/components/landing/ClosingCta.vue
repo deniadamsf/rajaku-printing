@@ -18,6 +18,12 @@ import { motion } from 'motion-v'
 import { business } from '~/utils/business'
 
 const prefersReduced = usePrefersReducedMotion()
+
+// Bisa diganti admin (/admin/site-media, slot brand_logo_mark) tanpa deploy
+// ulang. `await ready` — komponen ini SSR normal (tidak di dalam <ClientOnly>).
+const { resolve: resolveMedia, ready: siteMediaReady } = useSiteMedia()
+await siteMediaReady
+const logoMark = computed(() => resolveMedia('brand_logo_mark'))
 </script>
 
 <template>
@@ -32,7 +38,7 @@ const prefersReduced = usePrefersReducedMotion()
       <div class="grid gap-10 md:grid-cols-[1.3fr_1fr] md:items-center">
         <div class="text-center md:text-left">
           <img
-            src="/brand/logo-mark.webp"
+            :src="logoMark"
             alt=""
             aria-hidden="true"
             width="512"

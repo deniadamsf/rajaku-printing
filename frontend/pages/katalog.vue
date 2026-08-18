@@ -11,6 +11,11 @@
  *   tipe kalkulasi yang ditampilkan di grid produk, sesuai catatan di brief.
  *
  * Design: patuh CLAUDE.md §26 (Fraunces + Inter + Lucide, brand/gold/ink).
+ *
+ * Motion: reveal stagger disiplin di grid produk (`useRevealVariants()`,
+ * `once: true`, sama pola dengan `LandingServicesSection`) — momen utama
+ * halaman ini. Grid bahan & kartu kalkulator cuma fade tunggal tanpa stagger,
+ * supaya halaman tetap tenang (bukan tiap section beranimasi).
  */
 import {
   Calculator,
@@ -21,6 +26,7 @@ import {
   Package as PackageIcon,
   ArrowRight,
 } from '@lucide/vue'
+import { motion } from 'motion-v'
 import type { CatalogProduct, CatalogProductDetail, CatalogQuote } from '~/types/catalog'
 import { ApiError } from '~/composables/useApi'
 
@@ -29,6 +35,12 @@ definePageMeta({ layout: 'default' })
 const catalog = useCatalog()
 const config = useRuntimeConfig()
 const canonical = `${config.public.appBaseUrl.replace(/\/$/, '')}/katalog`
+
+const { container, item } = useRevealVariants()
+const prefersReducedMotion = usePrefersReducedMotion()
+const fadeTransition = computed(() =>
+  prefersReducedMotion.value ? { duration: 0 } : { duration: 0.5, ease: [0.22, 1, 0.36, 1] as const },
+)
 
 // -------------------- SSR fetch: produk + bahan --------------------
 const {
@@ -258,11 +270,19 @@ useHead({
         </NuxtLink>
       </div>
 
-      <ul v-else class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-        <li
+      <motion.ul
+        v-else
+        class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3"
+        :variants="container"
+        initial="hidden"
+        while-in-view="show"
+        :in-view-options="{ once: true, margin: '-100px' }"
+      >
+        <motion.li
           v-for="p in products"
           :id="`produk-${p.slug}`"
           :key="p.id"
+          :variants="item"
           class="scroll-mt-24 rounded-lg border border-hairline bg-canvas p-6 md:p-8 transition-colors hover:border-ink-300"
         >
           <component :is="pricingIcon(p)" class="h-6 w-6 text-brand-500" :stroke-width="1.5" />
@@ -300,8 +320,8 @@ useHead({
               <ArrowRight class="h-3.5 w-3.5" :stroke-width="1.75" />
             </NuxtLink>
           </div>
-        </li>
-      </ul>
+        </motion.li>
+      </motion.ul>
     </section>
 
     <!-- Materials -->
@@ -327,7 +347,14 @@ useHead({
         <p v-else-if="materials.length === 0" class="mt-8 text-sm text-ink-500">
           Data bahan sedang disiapkan tim kami.
         </p>
-        <ul v-else class="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <motion.ul
+          v-else
+          class="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+          :initial="{ opacity: 0, y: 16 }"
+          :while-in-view="{ opacity: 1, y: 0 }"
+          :in-view-options="{ once: true, margin: '-100px' }"
+          :transition="fadeTransition"
+        >
           <li
             v-for="m in materials"
             :key="m.id"
@@ -341,7 +368,7 @@ useHead({
               </p>
             </div>
           </li>
-        </ul>
+        </motion.ul>
       </div>
     </section>
 
@@ -358,7 +385,13 @@ useHead({
         </p>
       </div>
 
-      <div class="mt-8 rounded-lg border border-hairline bg-canvas p-6 md:p-8">
+      <motion.div
+        class="mt-8 rounded-lg border border-hairline bg-canvas p-6 md:p-8"
+        :initial="{ opacity: 0, y: 16 }"
+        :while-in-view="{ opacity: 1, y: 0 }"
+        :in-view-options="{ once: true, margin: '-100px' }"
+        :transition="fadeTransition"
+      >
         <div v-if="products.length === 0" class="text-sm text-ink-500">
           Kalkulator tersedia setelah katalog produk siap.
         </div>
@@ -470,7 +503,7 @@ useHead({
             </NuxtLink>
           </div>
         </div>
-      </div>
+      </motion.div>
     </section>
   </main>
 </template>

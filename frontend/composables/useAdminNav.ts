@@ -21,6 +21,7 @@ import {
   ShieldCheck,
   Sparkles,
   SlidersHorizontal,
+  Images,
 } from '@lucide/vue'
 
 export interface AdminNavItem {
@@ -126,6 +127,14 @@ export function useAdminNav() {
       description: 'Kebijakan global, mis. retensi file desain',
       icon: SlidersHorizontal,
       permission: 'settings.manage',
+      group: 'kelola',
+    },
+    {
+      label: 'Media Landing Page',
+      to: '/admin/site-media',
+      description: 'Ganti gambar hero, logo, proses tanpa deploy',
+      icon: Images,
+      permission: 'sitemedia.manage',
       group: 'kelola',
     },
     {

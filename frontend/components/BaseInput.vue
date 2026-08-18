@@ -25,6 +25,14 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'update:modelValue', v: string): void
 }>()
+
+// Expose `focus()` supaya parent bisa `templateRef.value?.focus()` pada
+// komponen ini (mis. auto-focus ulang input setelah error/ganti sub-state) —
+// template ref ke komponen custom bukan langsung ke elemen DOM.
+const inputEl = ref<HTMLInputElement | null>(null)
+defineExpose({
+  focus: () => inputEl.value?.focus(),
+})
 </script>
 
 <template>
@@ -35,6 +43,7 @@ const emit = defineEmits<{
     </label>
     <input
       :id="id"
+      ref="inputEl"
       :type="type"
       :value="modelValue"
       :placeholder="placeholder"

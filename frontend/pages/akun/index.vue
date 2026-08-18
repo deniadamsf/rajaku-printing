@@ -142,15 +142,12 @@ function needsAction(status: string): boolean {
     </div>
 
     <!-- Profile card -->
-    <div class="mt-6 grid gap-4 sm:grid-cols-2">
+    <div class="mt-6 grid gap-4 sm:grid-cols-2 sm:items-start">
       <div class="rounded-lg border border-hairline bg-canvas p-4">
         <dt class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Email</dt>
         <dd class="mt-1 text-sm text-ink-900">{{ auth.user?.email || '—' }}</dd>
       </div>
-      <div class="rounded-lg border border-hairline bg-canvas p-4">
-        <dt class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Nomor WA</dt>
-        <dd class="mt-1 text-sm font-mono text-ink-900">{{ auth.user?.phone }}</dd>
-      </div>
+      <AccountPhonePanel />
     </div>
 
     <!-- Orders section -->

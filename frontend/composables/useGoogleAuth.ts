@@ -8,16 +8,25 @@
  *  2. Backend redirect balik ke `/auth/google?code=...` (sukses) atau
  *     `/login?oauth_error=<slug>` (gagal) — ditangani halaman masing-masing.
  *  3. Halaman `/auth/google` tukar `code` lewat `exchangeCode()` → langsung
- *     dapat sesi ATAU `need_phone` (akun baru, minta lengkapi nomor WA).
- *  4. Akun baru WAJIB verifikasi kepemilikan nomor WA lewat OTP sebelum akun
- *     dibuat (security review): `requestOtp()` mengirim kode via WA, lalu
- *     `completeRegistration()` menyertakan `otp` untuk membuat sesi.
+ *     dapat sesi ATAU `need_phone` (akun baru, minta lengkapi nama — nomor
+ *     WA OPSIONAL, boleh dilewati).
+ *  4. Nomor WA **tidak wajib** & OTP HANYA diterbitkan kalau nomor yang
+ *     diisi ternyata sudah dipakai akun lain — owner sengaja batasi kirim
+ *     OTP demi jaga nomor WA gateway (Baileys) tidak diblokir karena kirim
+ *     ke orang asing yang belum tentu butuh verifikasi:
+ *       - `requestOtp()` — cek nomor. `otp_required:false` = bebas, TIDAK
+ *         ada OTP terkirim, langsung `completeRegistration()` tanpa `otp`.
+ *       - `otp_required:true` = nomor tabrakan, OTP terkirim; tawarkan user
+ *         dua jalan: pakai nomor lain, atau verifikasi (isi `otp` di
+ *         `completeRegistration()`).
+ *       - `completeRegistration()` tanpa `phone` = akun jadi tanpa nomor
+ *         (dilewati) — bisa ditambahkan belakangan lewat `useAccountPhone`.
  */
 import type {
   GoogleAuthExchangeResult,
   GoogleAuthSession,
   GoogleOAuthErrorSlug,
-  GoogleOtpRequestResult,
+  GoogleOtpCheckResult,
 } from '~/types/auth'
 
 const OAUTH_ERROR_MESSAGES: Record<GoogleOAuthErrorSlug, string> = {
@@ -56,24 +65,29 @@ export function useGoogleAuth() {
   }
 
   /**
-   * POST /auth/google/request-otp — langkah 1 verifikasi nomor WA: kirim
-   * kode OTP ke nomor yang diinput. Wajib sukses sebelum `completeRegistration()`.
+   * POST /auth/google/request-otp — cek apakah nomor yang diisi bebas atau
+   * sudah dipakai akun lain. TIDAK mengirim OTP kalau nomor bebas.
    */
-  function requestOtp(input: { code: string; phone: string; name: string }): Promise<GoogleOtpRequestResult> {
-    return api.post<GoogleOtpRequestResult>('/auth/google/request-otp', input)
+  function requestOtp(input: { code: string; phone: string }): Promise<GoogleOtpCheckResult> {
+    return api.post<GoogleOtpCheckResult>('/auth/google/request-otp', input)
   }
 
   /**
-   * POST /auth/google/complete — langkah 2: kirim kode OTP bersama data lain
-   * untuk membuat akun + sesi.
+   * POST /auth/google/complete — selesaikan registrasi & buat sesi.
+   * `phone` opsional (kosong = dilewati). `otp` hanya disertakan kalau
+   * `requestOtp()` sebelumnya menjawab `otp_required:true` dan user memilih
+   * memverifikasi nomor tsb (bukan ganti ke nomor lain).
    */
   function completeRegistration(input: {
     code: string
-    phone: string
     name: string
-    otp: string
+    phone?: string
+    otp?: string
   }): Promise<GoogleAuthSession> {
-    return api.post<GoogleAuthSession>('/auth/google/complete', input)
+    const body: Record<string, unknown> = { code: input.code, name: input.name }
+    if (input.phone) body.phone = input.phone
+    if (input.otp) body.otp = input.otp
+    return api.post<GoogleAuthSession>('/auth/google/complete', body)
   }
 
   return { startGoogleLogin, exchangeCode, requestOtp, completeRegistration }

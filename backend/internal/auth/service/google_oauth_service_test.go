@@ -40,8 +40,8 @@ func newFakeGoogleUserStore() *fakeGoogleUserStore {
 
 func (f *fakeGoogleUserStore) index(u *model.User) {
 	f.byID[u.ID] = u
-	if u.Phone != "" {
-		f.byPhone[u.Phone] = u
+	if u.Phone != nil && *u.Phone != "" {
+		f.byPhone[*u.Phone] = u
 	}
 	if u.Email != nil {
 		f.byEmail[*u.Email] = u
@@ -101,6 +101,29 @@ func (f *fakeGoogleUserStore) ExistsByEmail(_ context.Context, email string) (bo
 	return ok, nil
 }
 
+func (f *fakeGoogleUserStore) ExistsByPhone(_ context.Context, phone string) (bool, error) {
+	_, ok := f.byPhone[phone]
+	return ok, nil
+}
+
+// SetPhone mirrors the real repository's overwrite semantics — nil `phone`
+// clears the index entry too, so a subsequent FindByPhone correctly misses.
+func (f *fakeGoogleUserStore) SetPhone(_ context.Context, id uuid.UUID, phone *string, verifiedAt *time.Time) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if u.Phone != nil {
+		delete(f.byPhone, *u.Phone)
+	}
+	u.Phone = phone
+	u.PhoneVerifiedAt = verifiedAt
+	if phone != nil && *phone != "" {
+		f.byPhone[*phone] = u
+	}
+	return nil
+}
+
 func (f *fakeGoogleUserStore) LinkOAuth(_ context.Context, id uuid.UUID, provider, subject string) error {
 	u, ok := f.byID[id]
 	if !ok {
@@ -139,6 +162,11 @@ func (f *fakeGoogleUserStore) UpgradeGuestToRegistered(_ context.Context, id uui
 	if u.Name == "" {
 		u.Name = name
 	}
+	// Mirrors UserRepository.UpgradeGuestToRegistered — ALWAYS stamps
+	// phone_verified_at (this is only ever called after a verified OTP proved
+	// ownership of the guest's phone, migration 000017).
+	now := time.Now().UTC()
+	u.PhoneVerifiedAt = &now
 	return nil
 }
 
@@ -178,6 +206,10 @@ func (f *fakeGoogleUserStore) restore(snap map[uuid.UUID]model.User) {
 // fakeCodeStore is an in-memory stand-in for repository.OAuthLoginCodeRepository.
 type fakeCodeStore struct {
 	byHash map[string]*model.OAuthLoginCode
+	// createErr — test hook (review finding #3): when set, every Create call
+	// fails. Lets tests simulate a reissue that fails AFTER the old handoff
+	// code was already claimed, to prove claim+reissue roll back together.
+	createErr error
 }
 
 func newFakeCodeStore() *fakeCodeStore {
@@ -185,6 +217,9 @@ func newFakeCodeStore() *fakeCodeStore {
 }
 
 func (f *fakeCodeStore) Create(_ context.Context, c *model.OAuthLoginCode) error {
+	if f.createErr != nil {
+		return f.createErr
+	}
 	c.ID = uuid.New()
 	f.byHash[c.CodeHash] = c
 	return nil
@@ -241,6 +276,14 @@ func (f *fakeCodeStore) restore(snap map[string]model.OAuthLoginCode) {
 type fakeOTPStore struct {
 	mu   sync.Mutex
 	byID map[uuid.UUID]*model.PhoneVerification
+	// beforeIncrement — test hook (review finding #5b): if set, invoked right
+	// before IncrementAttemptsIfAllowed's own gated check runs, WITHOUT
+	// holding f.mu (avoids self-deadlock if the hook itself calls back into
+	// this store) — lets a test simulate exactly the race finding #5b closes:
+	// another concurrent write (mis. a fresh RequestOTP's
+	// CancelPendingForHandoff) landing in the window between verifyOTP's
+	// FindActive call and the gated increment that follows it.
+	beforeIncrement func()
 }
 
 func newFakeOTPStore() *fakeOTPStore {
@@ -262,7 +305,7 @@ func (f *fakeOTPStore) FindActive(_ context.Context, handoffID uuid.UUID, phone 
 	var best *model.PhoneVerification
 	now := time.Now().UTC()
 	for _, pv := range f.byID {
-		if pv.OAuthLoginCodeID != handoffID || pv.Phone != phone {
+		if pv.OAuthLoginCodeID == nil || *pv.OAuthLoginCodeID != handoffID || pv.Phone != phone {
 			continue
 		}
 		if pv.ConsumedAt != nil || !now.Before(pv.ExpiresAt) {
@@ -290,7 +333,7 @@ func (f *fakeOTPStore) FindLatest(_ context.Context, handoffID uuid.UUID, phone 
 	defer f.mu.Unlock()
 	var best *model.PhoneVerification
 	for _, pv := range f.byID {
-		if pv.OAuthLoginCodeID != handoffID || pv.Phone != phone {
+		if pv.OAuthLoginCodeID == nil || *pv.OAuthLoginCodeID != handoffID || pv.Phone != phone {
 			continue
 		}
 		if best == nil || pv.CreatedAt.After(best.CreatedAt) {
@@ -309,7 +352,63 @@ func (f *fakeOTPStore) CancelPendingForHandoff(_ context.Context, handoffID uuid
 	defer f.mu.Unlock()
 	now := time.Now().UTC()
 	for _, pv := range f.byID {
-		if pv.OAuthLoginCodeID == handoffID && pv.ConsumedAt == nil {
+		if pv.OAuthLoginCodeID != nil && *pv.OAuthLoginCodeID == handoffID && pv.ConsumedAt == nil {
+			pv.ConsumedAt = &now
+		}
+	}
+	return nil
+}
+
+// FindActiveByUser / FindLatestByUser / CancelPendingForUser — user_id-keyed
+// counterparts used by PhoneClaimService tests.
+func (f *fakeOTPStore) FindActiveByUser(_ context.Context, userID uuid.UUID, phone string) (*model.PhoneVerification, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var best *model.PhoneVerification
+	now := time.Now().UTC()
+	for _, pv := range f.byID {
+		if pv.UserID == nil || *pv.UserID != userID || pv.Phone != phone {
+			continue
+		}
+		if pv.ConsumedAt != nil || !now.Before(pv.ExpiresAt) {
+			continue
+		}
+		if best == nil || pv.CreatedAt.After(best.CreatedAt) {
+			best = pv
+		}
+	}
+	if best == nil {
+		return nil, repository.ErrNotFound
+	}
+	cp := *best
+	return &cp, nil
+}
+
+func (f *fakeOTPStore) FindLatestByUser(_ context.Context, userID uuid.UUID, phone string) (*model.PhoneVerification, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var best *model.PhoneVerification
+	for _, pv := range f.byID {
+		if pv.UserID == nil || *pv.UserID != userID || pv.Phone != phone {
+			continue
+		}
+		if best == nil || pv.CreatedAt.After(best.CreatedAt) {
+			best = pv
+		}
+	}
+	if best == nil {
+		return nil, repository.ErrNotFound
+	}
+	cp := *best
+	return &cp, nil
+}
+
+func (f *fakeOTPStore) CancelPendingForUser(_ context.Context, userID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := time.Now().UTC()
+	for _, pv := range f.byID {
+		if pv.UserID != nil && *pv.UserID == userID && pv.ConsumedAt == nil {
 			pv.ConsumedAt = &now
 		}
 	}
@@ -320,12 +419,22 @@ func (f *fakeOTPStore) CancelPendingForHandoff(_ context.Context, handoffID uuid
 // gated-atomic-UPDATE semantics (review finding #1): the ceiling check and
 // the increment happen as a single indivisible step from the caller's point
 // of view — there is no separate "read attempts, then decide" step a racing
-// caller could observe a stale value from.
+// caller could observe a stale value from. It also mirrors the WHERE clause
+// review finding #5b added — a row that's been consumed or expired since it
+// was loaded via FindActive can never have its attempts bumped, same as
+// FindActive would refuse to return it at all.
 func (f *fakeOTPStore) IncrementAttemptsIfAllowed(_ context.Context, id uuid.UUID, maxAttempts int) (int, error) {
+	if f.beforeIncrement != nil {
+		f.beforeIncrement()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	pv, ok := f.byID[id]
 	if !ok {
+		return 0, repository.ErrNotFound
+	}
+	now := time.Now().UTC()
+	if pv.ConsumedAt != nil || !pv.ExpiresAt.After(now) {
 		return 0, repository.ErrNotFound
 	}
 	if pv.Attempts >= maxAttempts {
@@ -418,7 +527,14 @@ func (f *fakeOTPStore) MarkConsumed(_ context.Context, id uuid.UUID) error {
 // captures the last enqueued message so tests can pull the raw OTP code back
 // out (the code never appears anywhere else — it's hashed at rest, per
 // migration 000013).
+// Pengiriman OTP terjadi DI LUAR transaksi advisory-lock per-nomor (lock
+// dilepas begitu challenge tersimpan — sengaja, supaya lock DB tidak ditahan
+// selama enqueue). Akibatnya test konkurensi memanggil EnqueueOTP dari banyak
+// goroutine sekaligus, jadi fake ini wajib aman-konkurensi. Implementasi
+// aslinya menulis ke Postgres, bukan ke struct bersama, jadi mutex ini murni
+// kebutuhan test double.
 type fakeOTPSender struct {
+	mu          sync.Mutex
 	lastPhone   string
 	lastMessage string
 	lastDedup   string
@@ -427,6 +543,9 @@ type fakeOTPSender struct {
 }
 
 func (f *fakeOTPSender) EnqueueOTP(_ context.Context, phone, message, dedupKey string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	f.calls++
 	if f.err != nil {
 		return f.err
@@ -479,6 +598,43 @@ func (f *fakeTxRunner) RunInTx(ctx context.Context, fn func(tx googleOAuthComple
 	return err
 }
 
+// fakePhoneLockTxRunner is the test stand-in for phoneLockTxRunner (review
+// finding #1). Unlike fakeTxRunner above (which only needs rollback
+// semantics), this one has to actually SERIALIZE concurrent calls for the
+// SAME phone number — that's the entire property under test: without real
+// serialization, a check-then-mutate sequence built on top of fakeOTPStore
+// (whose own methods each lock/unlock f.mu individually, not held across
+// calls) would still be racy, same as the pre-fix production code was
+// against Postgres. A per-phone sync.Mutex is a faithful-enough stand-in for
+// pg_advisory_xact_lock's per-key serialization for test purposes.
+type fakePhoneLockTxRunner struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+	otps  *fakeOTPStore
+}
+
+func newFakePhoneLockTxRunner(otps *fakeOTPStore) *fakePhoneLockTxRunner {
+	return &fakePhoneLockTxRunner{locks: map[string]*sync.Mutex{}, otps: otps}
+}
+
+func (f *fakePhoneLockTxRunner) lockFor(phone string) *sync.Mutex {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	l, ok := f.locks[phone]
+	if !ok {
+		l = &sync.Mutex{}
+		f.locks[phone] = l
+	}
+	return l
+}
+
+func (f *fakePhoneLockTxRunner) RunInTx(_ context.Context, normalizedPhone string, fn func(tx googleOTPStore) error) error {
+	l := f.lockFor(normalizedPhone)
+	l.Lock()
+	defer l.Unlock()
+	return fn(f.otps)
+}
+
 // ---------- helper ----------
 
 // testHarness bundles the fakes so tests can both build the service AND
@@ -527,7 +683,8 @@ func newTestHarness(t *testing.T, exch googleExchanger, otpCfg OTPConfig) *testH
 	svc := &GoogleOAuthService{
 		users: users, codes: codes, otps: otps, google: exch,
 		issuer: iss, otpCfg: otpCfg, otpSender: sender,
-		txRunner: &fakeTxRunner{users: users, codes: codes, otps: otps},
+		txRunner:        &fakeTxRunner{users: users, codes: codes, otps: otps},
+		phoneLockRunner: newFakePhoneLockTxRunner(otps),
 	}
 	return &testHarness{users: users, codes: codes, otps: otps, sender: sender, svc: svc}
 }
@@ -571,7 +728,7 @@ func TestGoogleOAuthService_HandleCallbackThenExchange_ExistingOAuthUser_Returns
 	subject := "sub-existing-1"
 	custType := model.CustomerTypeRegistered
 	existing := &model.User{
-		ID: uuid.New(), Phone: "6281200000001", Name: "Budi Existing",
+		ID: uuid.New(), Phone: strp("6281200000001"), Name: "Budi Existing",
 		UserType: model.UserTypeCustomer, CustomerType: &custType,
 		OAuthProvider: &provider, OAuthSubject: &subject, IsActive: true,
 	}
@@ -616,11 +773,170 @@ func TestGoogleOAuthService_HandleCallbackThenExchange_ExistingOAuthUser_Returns
 // (b) Brand-new Google identity: HandleCallback → need_phone, RequestOTP
 // sends a code, and Complete with the correct code creates a new registered
 // customer. This is the full happy path for the OTP security fix.
+//
+// (b) is now split into several tests matching the business rule (OTP hanya
+// untuk tabrakan identitas, bukan setiap registrasi):
+//   - EmptyPhone: no phone at all → no OTP, ever.
+//   - FreshUnclaimedPhone: phone nobody owns → no OTP, account created
+//     unverified.
+//   - PhoneTaken_NoOTP: phone already claimed, otp omitted →
+//     ErrPhoneVerificationRequired (PHONE_ALREADY_IN_USE).
+//   - PhoneTaken_OTPRoundTrip: phone already claimed (by a guest — the
+//     realistic "identity collision" case), full OTP round-trip completes
+//     registration AND stamps phone_verified_at (§11 upgrade-in-place is
+//     covered separately below by TestGoogleOAuthService_Complete_GuestPhoneMatch...).
+
+func TestGoogleOAuthService_Complete_EmptyPhone_CreatesAccountWithoutOTP(t *testing.T) {
+	exch := &fakeGoogleExchanger{profile: &oauth.GoogleProfile{
+		Subject: "sub-empty-phone", Email: "emptyphone@example.com", EmailVerified: true, Name: "Tanpa Nomor",
+	}}
+	h := newTestHarness(t, exch, OTPConfig{})
+
+	handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
+	if err != nil {
+		t.Fatalf("HandleCallback: unexpected err: %v", err)
+	}
+	out, err := h.svc.Exchange(context.Background(), handoff)
+	if err != nil {
+		t.Fatalf("Exchange: unexpected err: %v", err)
+	}
+
+	completed, err := h.svc.Complete(context.Background(), CompleteGoogleInput{
+		Code: out.Code, Phone: "", Name: "",
+	})
+	if err != nil {
+		t.Fatalf("Complete: unexpected err: %v", err)
+	}
+	if completed.User.Phone != nil {
+		t.Fatalf("expected nil phone, got %q", *completed.User.Phone)
+	}
+	if completed.User.PhoneVerifiedAt != nil {
+		t.Fatalf("expected phone_verified_at nil when no phone given, got %v", *completed.User.PhoneVerifiedAt)
+	}
+	if h.sender.calls != 0 {
+		t.Fatalf("expected NO otp ever sent for an empty-phone registration, got %d calls", h.sender.calls)
+	}
+}
+
+func TestGoogleOAuthService_Complete_FreshUnclaimedPhone_CreatesAccountWithoutOTP(t *testing.T) {
+	exch := &fakeGoogleExchanger{profile: &oauth.GoogleProfile{
+		Subject: "sub-fresh-phone", Email: "freshphone@example.com", EmailVerified: true, Name: "Nomor Baru",
+	}}
+	h := newTestHarness(t, exch, OTPConfig{})
+
+	handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
+	if err != nil {
+		t.Fatalf("HandleCallback: unexpected err: %v", err)
+	}
+	out, err := h.svc.Exchange(context.Background(), handoff)
+	if err != nil {
+		t.Fatalf("Exchange: unexpected err: %v", err)
+	}
+
+	otpOut, err := h.svc.RequestOTP(context.Background(), RequestOTPInput{Code: out.Code, Phone: "081234500001"})
+	if err != nil {
+		t.Fatalf("RequestOTP: unexpected err: %v", err)
+	}
+	if otpOut.OTPRequired {
+		t.Fatalf("expected otp_required=false for an unclaimed phone, got true")
+	}
+	if h.sender.calls != 0 {
+		t.Fatalf("expected RequestOTP to send NOTHING for an unclaimed phone, got %d calls", h.sender.calls)
+	}
+
+	completed, err := h.svc.Complete(context.Background(), CompleteGoogleInput{
+		Code: out.Code, Phone: "081234500001", Name: "",
+	})
+	if err != nil {
+		t.Fatalf("Complete: unexpected err: %v", err)
+	}
+	if completed.Status != "session" {
+		t.Fatalf("expected status=session, got %q", completed.Status)
+	}
+	if completed.User.Phone == nil || *completed.User.Phone != "6281234500001" {
+		t.Fatalf("expected normalized phone, got %+v", completed.User.Phone)
+	}
+	if completed.User.PhoneVerifiedAt != nil {
+		t.Fatalf("expected phone_verified_at nil (claimed but unproven), got %v", *completed.User.PhoneVerifiedAt)
+	}
+	if completed.User.Name != "Nomor Baru" {
+		t.Fatalf("expected name falls back to google profile name, got %q", completed.User.Name)
+	}
+	if completed.User.CustomerType == nil || *completed.User.CustomerType != model.CustomerTypeRegistered {
+		t.Fatalf("expected customer_type=registered, got %+v", completed.User.CustomerType)
+	}
+	if completed.User.OAuthSubject == nil || *completed.User.OAuthSubject != "sub-fresh-phone" {
+		t.Fatalf("expected oauth_subject linked, got %+v", completed.User.OAuthSubject)
+	}
+	if h.sender.calls != 0 {
+		t.Fatalf("expected NO otp ever sent across the whole free-phone flow, got %d calls", h.sender.calls)
+	}
+}
+
+func TestGoogleOAuthService_Complete_PhoneTaken_NoOTP_ReturnsErrPhoneVerificationRequired(t *testing.T) {
+	exch := &fakeGoogleExchanger{profile: &oauth.GoogleProfile{
+		Subject: "sub-taken-no-otp", Email: "takennootp@example.com", EmailVerified: true, Name: "Taken No OTP",
+	}}
+	h := newTestHarness(t, exch, OTPConfig{})
+	seedUserAtPhone(h, "6281234500099")
+
+	handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
+	if err != nil {
+		t.Fatalf("HandleCallback: unexpected err: %v", err)
+	}
+	out, err := h.svc.Exchange(context.Background(), handoff)
+	if err != nil {
+		t.Fatalf("Exchange: unexpected err: %v", err)
+	}
+
+	_, err = h.svc.Complete(context.Background(), CompleteGoogleInput{
+		Code: out.Code, Phone: "081234500099", Name: "Taken No OTP",
+	})
+	if !errors.Is(err, authapi.ErrPhoneVerificationRequired) {
+		t.Fatalf("expected ErrPhoneVerificationRequired, got %v", err)
+	}
+	if h.sender.calls != 0 {
+		t.Fatalf("expected Complete() itself to never send an otp, got %d calls", h.sender.calls)
+	}
+}
+
+func TestGoogleOAuthService_RequestOTP_PhoneAlreadyClaimed_ReturnsOTPRequiredTrue(t *testing.T) {
+	exch := &fakeGoogleExchanger{profile: &oauth.GoogleProfile{
+		Subject: "sub-taken-otp-req", Email: "takenotpreq@example.com", EmailVerified: true, Name: "Taken",
+	}}
+	h := newTestHarness(t, exch, OTPConfig{})
+	seedUserAtPhone(h, "6281234500098")
+
+	handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
+	if err != nil {
+		t.Fatalf("HandleCallback: unexpected err: %v", err)
+	}
+	out, err := h.svc.Exchange(context.Background(), handoff)
+	if err != nil {
+		t.Fatalf("Exchange: unexpected err: %v", err)
+	}
+
+	otpOut, err := h.svc.RequestOTP(context.Background(), RequestOTPInput{Code: out.Code, Phone: "081234500098"})
+	if err != nil {
+		t.Fatalf("RequestOTP: unexpected err: %v", err)
+	}
+	if !otpOut.OTPRequired {
+		t.Fatalf("expected otp_required=true for an already-claimed phone, got false")
+	}
+	if h.sender.calls != 1 {
+		t.Fatalf("expected exactly 1 otp send, got %d", h.sender.calls)
+	}
+}
+
 func TestGoogleOAuthService_NewIdentity_OTPRoundTrip_CompletesRegistration(t *testing.T) {
 	exch := &fakeGoogleExchanger{profile: &oauth.GoogleProfile{
 		Subject: "sub-new-1", Email: "newbie@example.com", EmailVerified: true, Name: "New Person",
 	}}
 	h := newTestHarness(t, exch, OTPConfig{})
+	// Under the business rule, RequestOTP only sends anything when the
+	// number is already claimed — seed a colliding (guest) owner so this
+	// test still exercises the full OTP round trip end to end.
+	seedUserAtPhone(h, "6281234500001")
 
 	handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
 	if err != nil {
@@ -662,11 +978,11 @@ func TestGoogleOAuthService_NewIdentity_OTPRoundTrip_CompletesRegistration(t *te
 	if completed.Status != "session" {
 		t.Fatalf("expected status=session, got %q", completed.Status)
 	}
-	if completed.User.Phone != "6281234500001" {
-		t.Fatalf("expected normalized phone, got %q", completed.User.Phone)
+	if completed.User.Phone == nil || *completed.User.Phone != "6281234500001" {
+		t.Fatalf("expected normalized phone, got %+v", completed.User.Phone)
 	}
-	if completed.User.Name != "New Person" {
-		t.Fatalf("expected name falls back to google profile name, got %q", completed.User.Name)
+	if completed.User.PhoneVerifiedAt == nil {
+		t.Fatal("expected phone_verified_at set after a valid OTP round-trip")
 	}
 	if completed.User.CustomerType == nil || *completed.User.CustomerType != model.CustomerTypeRegistered {
 		t.Fatalf("expected customer_type=registered, got %+v", completed.User.CustomerType)
@@ -689,7 +1005,7 @@ func TestGoogleOAuthService_NewIdentity_OTPRoundTrip_CompletesRegistration(t *te
 func TestGoogleOAuthService_Complete_GuestPhoneMatch_UpgradesInPlace_SameUserID(t *testing.T) {
 	guestType := model.CustomerTypeGuest
 	guest := &model.User{
-		ID: uuid.New(), Phone: "6281234500002", Name: "Guest Existing",
+		ID: uuid.New(), Phone: strp("6281234500002"), Name: "Guest Existing",
 		UserType: model.UserTypeCustomer, CustomerType: &guestType, IsActive: true,
 	}
 	originalID := guest.ID
@@ -733,13 +1049,13 @@ func TestGoogleOAuthService_Complete_GuestPhoneMatch_UpgradesInPlace_SameUserID(
 func TestGoogleOAuthService_Complete_GuestUpgrade_EmailAlreadyUsedByAnotherUser_ReturnsErrEmailAlreadyUsed(t *testing.T) {
 	guestType := model.CustomerTypeGuest
 	guest := &model.User{
-		ID: uuid.New(), Phone: "6281234500003", Name: "Guest Conflict",
+		ID: uuid.New(), Phone: strp("6281234500003"), Name: "Guest Conflict",
 		UserType: model.UserTypeCustomer, CustomerType: &guestType, IsActive: true,
 	}
 	takenEmail := "taken@example.com"
 	registeredType := model.CustomerTypeRegistered
 	otherUser := &model.User{
-		ID: uuid.New(), Phone: "6281200099999", Name: "Sudah Ada Email Ini",
+		ID: uuid.New(), Phone: strp("6281200099999"), Name: "Sudah Ada Email Ini",
 		Email: &takenEmail, UserType: model.UserTypeCustomer, CustomerType: &registeredType, IsActive: true,
 	}
 
@@ -799,7 +1115,7 @@ func TestGoogleOAuthService_Complete_GuestUpgrade_EmailAlreadyUsedByAnotherUser_
 func TestGoogleOAuthService_Complete_GuestUpgrade_InactiveGuest_ReturnsErrUserInactive(t *testing.T) {
 	guestType := model.CustomerTypeGuest
 	guest := &model.User{
-		ID: uuid.New(), Phone: "6281234500004", Name: "Guest Nonaktif",
+		ID: uuid.New(), Phone: strp("6281234500004"), Name: "Guest Nonaktif",
 		UserType: model.UserTypeCustomer, CustomerType: &guestType, IsActive: false,
 	}
 
@@ -847,7 +1163,7 @@ func TestGoogleOAuthService_Exchange_InvalidCode_ReturnsErrOAuthCodeInvalid(t *t
 func TestGoogleOAuthService_HandleCallback_EmailMatchesStaff_ReturnsErrOAuthStaffNotAllowed(t *testing.T) {
 	staffEmail := "staff@rajakuprinting.id"
 	staff := &model.User{
-		ID: uuid.New(), Phone: "6281200000099", Name: "Staff Verifikasi",
+		ID: uuid.New(), Phone: strp("6281200000099"), Name: "Staff Verifikasi",
 		Email: &staffEmail, UserType: model.UserTypeStaff, IsActive: true,
 	}
 
@@ -870,7 +1186,7 @@ func TestGoogleOAuthService_HandleCallback_EmailMatchesStaff_ReturnsErrOAuthStaf
 func TestGoogleOAuthService_Complete_PhoneBelongsToRegisteredCustomer_ReturnsErrPhoneAlreadyUsed(t *testing.T) {
 	registeredType := model.CustomerTypeRegistered
 	other := &model.User{
-		ID: uuid.New(), Phone: "6281234599999", Name: "Sudah Terdaftar",
+		ID: uuid.New(), Phone: strp("6281234599999"), Name: "Sudah Terdaftar",
 		UserType: model.UserTypeCustomer, CustomerType: &registeredType, IsActive: true,
 	}
 
@@ -918,6 +1234,10 @@ func TestGoogleOAuthService_Complete_WrongOTP_IncrementsAttempts(t *testing.T) {
 		Subject: "sub-wrong-otp", Email: "wrongotp@example.com", EmailVerified: true, Name: "Wrong OTP",
 	}}
 	h := newTestHarness(t, exch, OTPConfig{TTL: 5 * time.Minute, MaxAttempts: 3, ResendCooldown: time.Minute, CodeLength: 6})
+	// Business rule: RequestOTP only sends anything for an ALREADY-claimed
+	// phone — seed a colliding owner so this OTP-mechanics test still gets a
+	// real challenge to exercise.
+	seedUserAtPhone(h, "6281234511111")
 
 	handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
 	if err != nil {
@@ -958,6 +1278,7 @@ func TestGoogleOAuthService_Complete_OTPMaxAttemptsExceeded(t *testing.T) {
 		Subject: "sub-max-attempts", Email: "maxattempts@example.com", EmailVerified: true, Name: "Max Attempts",
 	}}
 	h := newTestHarness(t, exch, OTPConfig{TTL: 5 * time.Minute, MaxAttempts: 2, ResendCooldown: time.Minute, CodeLength: 6})
+	seedUserAtPhone(h, "6281234522222")
 
 	handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
 	if err != nil {
@@ -988,6 +1309,9 @@ func TestGoogleOAuthService_Complete_OTPExpired(t *testing.T) {
 		Subject: "sub-expired-otp", Email: "expiredotp@example.com", EmailVerified: true, Name: "Expired OTP",
 	}}
 	h := newTestHarness(t, exch, OTPConfig{})
+	// Phone must already be claimed, otherwise Complete() would treat it as
+	// free and never even look for a challenge (business rule).
+	seedUserAtPhone(h, "6281234533333")
 
 	handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
 	if err != nil {
@@ -1010,6 +1334,7 @@ func TestGoogleOAuthService_RequestOTP_ResendCooldown(t *testing.T) {
 		Subject: "sub-cooldown", Email: "cooldown@example.com", EmailVerified: true, Name: "Cooldown",
 	}}
 	h := newTestHarness(t, exch, OTPConfig{TTL: 5 * time.Minute, MaxAttempts: 5, ResendCooldown: time.Hour, CodeLength: 6})
+	seedUserAtPhone(h, "6281234544444")
 
 	handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
 	if err != nil {
@@ -1038,6 +1363,7 @@ func TestGoogleOAuthService_Complete_OTPScopedToItsOwnHandoff_RejectedForDiffere
 		Subject: "sub-handoff-a", Email: "handoffa@example.com", EmailVerified: true, Name: "Handoff A",
 	}}
 	h := newTestHarness(t, exchA, OTPConfig{})
+	seedUserAtPhone(h, "6281234555555")
 
 	handoffA, err := h.svc.HandleCallback(context.Background(), "any-code", "")
 	if err != nil {
@@ -1084,6 +1410,7 @@ func TestGoogleOAuthService_Complete_ConcurrentWrongGuesses_AttemptsCeilingNever
 		Subject: "sub-concurrent", Email: "concurrent@example.com", EmailVerified: true, Name: "Concurrent",
 	}}
 	h := newTestHarness(t, exch, OTPConfig{TTL: 5 * time.Minute, MaxAttempts: maxAttempts, ResendCooldown: time.Minute, CodeLength: 6})
+	seedUserAtPhone(h, "6281234566666")
 
 	handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
 	if err != nil {
@@ -1136,6 +1463,7 @@ func TestGoogleOAuthService_RequestOTP_PerPhoneIssueCap_CrossHandoff(t *testing.
 	h := newTestHarness(t, &fakeGoogleExchanger{}, OTPConfig{
 		MaxPerPhoneHour: maxPerPhoneHour, MaxFailedPerPhoneHour: 1000,
 	})
+	seedUserAtPhone(h, "6281234577777")
 
 	for i := 0; i < maxPerPhoneHour; i++ {
 		h.svc.google = &fakeGoogleExchanger{profile: &oauth.GoogleProfile{
@@ -1178,6 +1506,7 @@ func TestGoogleOAuthService_Complete_PerPhoneFailedCap_CrossHandoff(t *testing.T
 	h := newTestHarness(t, &fakeGoogleExchanger{}, OTPConfig{
 		MaxAttempts: 10, MaxPerPhoneHour: 1000, MaxFailedPerPhoneHour: maxFailedPerPhoneHour,
 	})
+	seedUserAtPhone(h, "6281234588888")
 
 	// Two separate handoffs, two wrong guesses each — 4 verify calls logged
 	// against the phone in total, hitting the cap exactly.
@@ -1232,7 +1561,7 @@ func TestGoogleOAuthService_ExchangeSessionCode_UserDeactivatedAfterHandoffIssue
 	subject := "sub-deactivated-after-handoff"
 	custType := model.CustomerTypeRegistered
 	existing := &model.User{
-		ID: uuid.New(), Phone: "6281234599990", Name: "Soon Deactivated",
+		ID: uuid.New(), Phone: strp("6281234599990"), Name: "Soon Deactivated",
 		UserType: model.UserTypeCustomer, CustomerType: &custType,
 		OAuthProvider: &provider, OAuthSubject: &subject, IsActive: true,
 	}
@@ -1257,3 +1586,191 @@ func TestGoogleOAuthService_ExchangeSessionCode_UserDeactivatedAfterHandoffIssue
 }
 
 func uuidPtr(id uuid.UUID) *uuid.UUID { return &id }
+
+// strp is a small test helper — model.User.Phone is *string (migration
+// 000017, phone now nullable), so every literal in this file needs an
+// address-of somewhere; this keeps call sites terse.
+func strp(s string) *string { return &s }
+
+// seedUserAtPhone inserts a bare, UNVERIFIED user already occupying
+// `normalizedPhone` directly into the harness's fake store — used by OTP
+// mechanics tests (attempts/cooldown/expiry/concurrency/cross-handoff caps)
+// that, under the business rule (OTP only required when a phone is ALREADY
+// claimed), need a pre-existing owner for RequestOTP to actually issue a
+// challenge at all. Defaults to an active guest customer (the most common
+// "taken" case); pass a different CustomerType/UserType via the returned
+// pointer if a test needs to seed staff/registered instead.
+func seedUserAtPhone(h *testHarness, normalizedPhone string) *model.User {
+	guestType := model.CustomerTypeGuest
+	u := &model.User{
+		ID: uuid.New(), Phone: strp(normalizedPhone), Name: "",
+		UserType: model.UserTypeCustomer, CustomerType: &guestType, IsActive: true,
+	}
+	h.users.index(u)
+	return u
+}
+
+// ---------- security review follow-up tests (finding #1, #3, #5) ----------
+
+// (q) Review finding #1 (issue-cap TOCTOU): many concurrent RequestOTP calls,
+// each carrying its OWN fresh registration handoff (so the per-handoff resend
+// cooldown never engages) but the SAME target phone number, must never let
+// more than OTP_MAX_PER_PHONE_HOUR challenges actually get created. Before
+// the advisory-lock transaction fix, checkPerPhoneIssueCap's COUNT and
+// otps.Create() were two separate statements — under this exact concurrency
+// pattern every goroutine could read the same low count and all pass the
+// gate. fakePhoneLockTxRunner gives per-phone serialization a real mutex
+// enforces (see its doc), so this test is only meaningful because that fake
+// exists — without it (or without the production advisory lock it stands in
+// for), this assertion would be flaky/fail under load.
+func TestGoogleOAuthService_RequestOTP_ConcurrentRequests_PerPhoneIssueCapNeverBypassed(t *testing.T) {
+	const maxPerPhoneHour = 5
+	const concurrency = 40
+	const victimPhone = "081234599222"
+
+	h := newTestHarness(t, &fakeGoogleExchanger{}, OTPConfig{
+		MaxPerPhoneHour: maxPerPhoneHour, MaxFailedPerPhoneHour: 100000,
+	})
+	seedUserAtPhone(h, "6281234599222")
+
+	handoffs := make([]string, concurrency)
+	for i := 0; i < concurrency; i++ {
+		h.svc.google = &fakeGoogleExchanger{profile: &oauth.GoogleProfile{
+			Subject:       fmt.Sprintf("sub-concurrent-issue-%d", i),
+			Email:         fmt.Sprintf("concurrentissue%d@example.com", i),
+			EmailVerified: true, Name: "Concurrent Issue",
+		}}
+		handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
+		if err != nil {
+			t.Fatalf("HandleCallback %d: unexpected err: %v", i, err)
+		}
+		handoffs[i] = handoff
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var successCount, cooldownCount, otherCount int
+	for _, handoff := range handoffs {
+		wg.Add(1)
+		go func(handoff string) {
+			defer wg.Done()
+			_, err := h.svc.RequestOTP(context.Background(), RequestOTPInput{Code: handoff, Phone: victimPhone})
+			mu.Lock()
+			defer mu.Unlock()
+			var cooldownErr *authapi.OTPCooldownError
+			switch {
+			case err == nil:
+				successCount++
+			case errors.As(err, &cooldownErr):
+				cooldownCount++
+			default:
+				otherCount++
+			}
+		}(handoff)
+	}
+	wg.Wait()
+
+	if otherCount != 0 {
+		t.Fatalf("expected every call to resolve to success or *authapi.OTPCooldownError only, got %d other outcomes", otherCount)
+	}
+	if successCount != maxPerPhoneHour {
+		t.Fatalf("expected exactly %d successful OTP issues under the per-phone cap despite %d concurrent requests for the same phone (review finding #1 — TOCTOU), got %d",
+			maxPerPhoneHour, concurrency, successCount)
+	}
+	if cooldownCount != concurrency-maxPerPhoneHour {
+		t.Fatalf("expected %d rejections once the per-phone issue cap is hit, got %d", concurrency-maxPerPhoneHour, cooldownCount)
+	}
+}
+
+// (r) Review finding #3: exchangeRegistrationCode claims the OLD handoff code
+// and mints the NEW one atomically. If the reissue half fails (mis. a
+// transient DB error), the claim of the old code must roll back too — the
+// caller can retry Exchange with the SAME (still-unclaimed) code, instead of
+// the old code being permanently burned with no replacement anyone can use.
+func TestGoogleOAuthService_ExchangeRegistrationCode_ReissueFails_ClaimRolledBack(t *testing.T) {
+	exch := &fakeGoogleExchanger{profile: &oauth.GoogleProfile{
+		Subject: "sub-reissue-fail", Email: "reissuefail@example.com", EmailVerified: true, Name: "Reissue Fail",
+	}}
+	h := newTestHarness(t, exch, OTPConfig{})
+
+	handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
+	if err != nil {
+		t.Fatalf("HandleCallback: unexpected err: %v", err)
+	}
+
+	// Force the SECOND Create call — the rotated replacement code minted
+	// inside exchangeRegistrationCode — to fail.
+	sentinel := errors.New("boom: reissue create failed")
+	h.codes.createErr = sentinel
+
+	if _, err := h.svc.Exchange(context.Background(), handoff); !errors.Is(err, sentinel) {
+		t.Fatalf("expected wrapped sentinel error from failed reissue, got %v", err)
+	}
+
+	// Review finding #3: a failed reissue must roll back the claim too —
+	// the original handoff must remain exactly as usable as it was before
+	// this failed Exchange call.
+	h.codes.createErr = nil
+	out, err := h.svc.Exchange(context.Background(), handoff)
+	if err != nil {
+		t.Fatalf("expected original handoff to remain usable after rolled-back Exchange, got %v", err)
+	}
+	if out.Status != "need_phone" {
+		t.Fatalf("expected status=need_phone on retried exchange, got %q", out.Status)
+	}
+	if out.Code == "" || out.Code == handoff {
+		t.Fatalf("expected a freshly rotated code on the successful retry, got %q", out.Code)
+	}
+}
+
+// (s) Review finding #5 (a+b): a wrong-guess verify's gated increment must
+// distinguish "row no longer active" from "attempts ceiling hit", and the
+// WHERE clause backing it must itself re-check consumed_at/expires_at — not
+// just rely on the caller's earlier FindActive. Simulated here via
+// fakeOTPStore.beforeIncrement: a concurrent write (a fresh RequestOTP
+// cancelling the previous pending challenge) lands in the exact window
+// between verifyOTP's FindActive (which still saw the challenge as active)
+// and the gated increment that follows. Before the fix, the increment
+// statement only checked `attempts < maxAttempts` and would have happily
+// incremented (and compared against) a challenge that's no longer usable,
+// then reported a misleading ErrOTPTooManyAttempts once attempts everntually
+// crossed the ceiling instead of the accurate ErrOTPExpired.
+func TestGoogleOAuthService_Complete_ChallengeCancelledBetweenFindActiveAndIncrement_ReturnsErrOTPExpired(t *testing.T) {
+	exch := &fakeGoogleExchanger{profile: &oauth.GoogleProfile{
+		Subject: "sub-cancel-race", Email: "cancelrace@example.com", EmailVerified: true, Name: "Cancel Race",
+	}}
+	h := newTestHarness(t, exch, OTPConfig{})
+	seedUserAtPhone(h, "6281234599333")
+
+	handoff, err := h.svc.HandleCallback(context.Background(), "any-code", "")
+	if err != nil {
+		t.Fatalf("HandleCallback: unexpected err: %v", err)
+	}
+	code := h.requestAndReadOTP(t, handoff, "081234599333")
+
+	rec, err := h.codes.FindActiveByCode(context.Background(), hashToken(handoff))
+	if err != nil {
+		t.Fatalf("lookup handoff record: %v", err)
+	}
+
+	// Fires exactly once, right before the gated increment runs — simulates
+	// a concurrent RequestOTP for the same handoff cancelling this challenge
+	// in the race window review finding #5b closes.
+	fired := false
+	h.otps.beforeIncrement = func() {
+		if fired {
+			return
+		}
+		fired = true
+		if err := h.otps.CancelPendingForHandoff(context.Background(), rec.ID); err != nil {
+			t.Fatalf("simulate concurrent cancel: %v", err)
+		}
+	}
+
+	_, err = h.svc.Complete(context.Background(), CompleteGoogleInput{
+		Code: handoff, Phone: "081234599333", OTP: code,
+	})
+	if !errors.Is(err, authapi.ErrOTPExpired) {
+		t.Fatalf("expected ErrOTPExpired for a challenge cancelled concurrently mid-verify (review finding #5), got %v", err)
+	}
+}

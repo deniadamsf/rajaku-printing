@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 
+	"github.com/rajaku-printing/backend/internal/auth/authapi"
 	authhandler "github.com/rajaku-printing/backend/internal/auth/handler"
 	"github.com/rajaku-printing/backend/internal/auth/oauth"
 	authrepo "github.com/rajaku-printing/backend/internal/auth/repository"
@@ -164,6 +165,24 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 		log.Info().Msg("Google OAuth nonaktif (kredensial kosong)")
 	}
 
+	// --- Phone claim: authenticated user adds/changes their own WA number ---
+	// Same OTP policy/config as Google OAuth registration (§ business rule —
+	// OTP only for contested numbers). otpSender wired below, same
+	// setter-injection reason as googleOAuthSvc above.
+	phoneClaimSvc := authservice.NewPhoneClaimService(
+		userRepo, phoneVerificationRepo,
+		authservice.OTPConfig{
+			TTL:                   d.Config.OTP.TTL,
+			MaxAttempts:           d.Config.OTP.MaxAttempts,
+			ResendCooldown:        d.Config.OTP.ResendCooldown,
+			CodeLength:            d.Config.OTP.CodeLength,
+			MaxPerPhoneHour:       d.Config.OTP.MaxPerPhoneHour,
+			MaxFailedPerPhoneHour: d.Config.OTP.MaxFailedPerPhoneHour,
+		},
+		d.DB,
+	)
+	phoneClaimH := authhandler.NewPhoneClaimHandler(phoneClaimSvc)
+
 	// --- Admin panel: staff & role management (§10) ---
 	inviteSvc := authservice.NewInviteService(inviteRepo, userRepo, authservice.InviteConfig{})
 	// Invite URL yg di-forward ke calon staff HARUS mengarah ke halaman Nuxt
@@ -274,6 +293,8 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	// Google OAuth registration OTP (WA number ownership proof) — best-effort
 	// enqueue via the same job-queue mechanism as every other WA trigger.
 	googleOAuthSvc.SetOTPSender(notifSvc)
+	// Authenticated phone-claim OTP (same job-queue mechanism).
+	phoneClaimSvc.SetOTPSender(notifSvc)
 	// Alert internal (ke nomor ops, bukan customer) — dipakai reminder retensi.
 	designSvc.SetInternalAlerter(notifSvc)
 	notifH := notifhandler.New(notifSvc, d.Config.Notification.InternalSecret)
@@ -291,6 +312,18 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	{
 		// Modul auth (register/login publik + /me protected — handler yg atur).
 		authH.RegisterRoutes(v1, authSvc)
+
+		// Phone claim — POST /auth/phone/{request-otp,} — authenticated user
+		// menambah/mengganti nomor WA sendiri (§ business rule, counterpart
+		// dari GoogleOAuthHandler untuk registrasi). RequireAuth WAJIB (bukan
+		// endpoint publik) DAN limiter OTP ketat (RATE_LIMIT_OTP_*) — endpoint
+		// ini bisa mengungkap status keterpakaian nomor WA sembarang, sama
+		// seperti POST /auth/google/request-otp.
+		phoneClaimGroup := v1.Group("/auth/phone")
+		phoneClaimGroup.Use(authapi.RequireAuth(authSvc))
+		phoneClaimGroup.Use(middleware.RateLimitPublic(d.Config.RateLimit.OTPRPS, d.Config.RateLimit.OTPBurst))
+		phoneClaimH.RegisterRoutes(phoneClaimGroup)
+
 		// Admin: kelola staff, role, permissions + invite accept (§10).
 		adminH.RegisterRoutes(v1, authSvc)
 		// Admin catalog: kelola bahan/produk/pricing (§9/§10).

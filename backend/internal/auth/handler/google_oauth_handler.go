@@ -170,10 +170,10 @@ func (h *GoogleOAuthHandler) RequestOTP(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, googleRequestOTPResponse{
-		Status:            "otp_sent",
-		PhoneMasked:       out.PhoneMasked,
-		ExpiresIn:         out.ExpiresIn,
-		ResendAvailableIn: out.ResendAvailableIn,
+		OTPRequired:        out.OTPRequired,
+		PhoneMasked:        out.PhoneMasked,
+		ExpiresIn:          out.ExpiresIn,
+		ResendAfterSeconds: out.ResendAfterSeconds,
 	})
 }
 
@@ -235,6 +235,9 @@ func (h *GoogleOAuthHandler) mapOAuthError(c *gin.Context, err error) {
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeOAuthCodeInvalid, "Kode login Google tidak valid atau sudah kedaluwarsa")
 	case errors.Is(err, authapi.ErrPhoneAlreadyUsed):
 		httpx.Error(c, http.StatusConflict, httpx.CodePhoneAlreadyUsed, "Nomor WA sudah terdaftar")
+	case errors.Is(err, authapi.ErrPhoneVerificationRequired):
+		httpx.Error(c, http.StatusConflict, httpx.CodePhoneVerificationRequired,
+			"Nomor sudah digunakan, pakai nomor lain — atau verifikasi kalau ini memang nomormu")
 	case errors.Is(err, authapi.ErrEmailAlreadyUsed):
 		httpx.Error(c, http.StatusConflict, httpx.CodeEmailAlreadyUsed, "Email sudah digunakan akun lain")
 	case errors.Is(err, authapi.ErrOAuthStaffNotAllowed):
@@ -286,6 +289,10 @@ func toGoogleExchangeResponse(out *service.GoogleExchangeOutput) googleExchangeR
 		if out.User.Email != nil {
 			email = *out.User.Email
 		}
+		userPhone := ""
+		if out.User.Phone != nil {
+			userPhone = *out.User.Phone
+		}
 		resp.Token = &tokenResponse{
 			AccessToken: out.Token.AccessToken,
 			TokenType:   out.Token.TokenType,
@@ -294,7 +301,7 @@ func toGoogleExchangeResponse(out *service.GoogleExchangeOutput) googleExchangeR
 		resp.User = &userSummary{
 			ID:       out.User.ID.String(),
 			Email:    email,
-			Phone:    out.User.Phone,
+			Phone:    userPhone,
 			Name:     out.User.Name,
 			UserType: string(out.User.UserType),
 		}

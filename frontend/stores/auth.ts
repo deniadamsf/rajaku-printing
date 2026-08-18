@@ -84,6 +84,7 @@ export const useAuthStore = defineStore('auth', {
           id: me.user_id,
           email: me.email,
           phone: me.phone,
+          phone_verified: me.phone_verified,
           name: me.name,
           user_type: me.user_type,
         }
@@ -116,6 +117,17 @@ export const useAuthStore = defineStore('auth', {
       this.user = null
       this.roles = []
       this.permissions = []
+    },
+
+    /**
+     * Update nomor WA di profile setelah user menambah/verifikasi nomor
+     * lewat `useAccountPhone` (halaman /akun) — hindari round-trip /me,
+     * respons endpoint tambah-nomor sudah cukup buat sinkronkan state lokal.
+     */
+    setPhone(phone: string, verified: boolean) {
+      if (!this.user) return
+      this.user.phone = phone
+      this.user.phone_verified = verified
     },
   },
 })

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 
 	"gorm.io/gorm"
 
@@ -53,3 +54,53 @@ func (r *gormTxRunner) RunInTx(ctx context.Context, fn func(tx googleOAuthComple
 }
 
 var _ googleOAuthTxRunner = (*gormTxRunner)(nil)
+
+// phoneLockTxRunner runs fn inside one DB transaction that starts by
+// acquiring a Postgres advisory lock SCOPED TO `normalizedPhone`
+// (pg_advisory_xact_lock(hashtext(phone)) — see
+// repository.PhoneVerificationRepository.LockPhone) before doing anything
+// else (review finding #1 — TOCTOU between a per-phone COUNT/SUM SELECT and
+// the INSERT/UPDATE that follows it).
+//
+// The lock is transactional: Postgres releases it automatically at COMMIT or
+// ROLLBACK, so it can never leak even if fn panics or returns an error. It
+// serializes concurrent callers ONLY for the same phone number — unrelated
+// phones proceed independently, so this is not a global bottleneck.
+//
+// Used from TWO distinct, INTENTIONALLY SEPARATE call sites (do not merge
+// them into one bigger transaction):
+//   - RequestOTP: lock → checkPerPhoneIssueCap → checkResendCooldown →
+//     CancelPendingForHandoff → Create.
+//   - verifyOTP: lock → checkPerPhoneFailedCap → IncrementAttemptsIfAllowed.
+//     Deliberately NOT folded into googleOAuthTxRunner's Complete() tx — the
+//     attempts counter this increments must survive even if Complete()'s
+//     later claim+resolve+consume steps roll back (see verifyOTP's doc in
+//     google_oauth_service.go).
+type phoneLockTxRunner interface {
+	RunInTx(ctx context.Context, normalizedPhone string, fn func(tx googleOTPStore) error) error
+}
+
+// gormPhoneLockTxRunner is the production phoneLockTxRunner. Like
+// gormTxRunner, it's the only place in this service package that opens a
+// transaction directly — the advisory lock acquisition itself lives in
+// repository.PhoneVerificationRepository.LockPhone (§22 "repository akses DB
+// only"; service code must never embed raw SQL).
+type gormPhoneLockTxRunner struct {
+	db *gorm.DB
+}
+
+func newGormPhoneLockTxRunner(db *gorm.DB) *gormPhoneLockTxRunner {
+	return &gormPhoneLockTxRunner{db: db}
+}
+
+func (r *gormPhoneLockTxRunner) RunInTx(ctx context.Context, normalizedPhone string, fn func(tx googleOTPStore) error) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		otps := repository.NewPhoneVerificationRepository(tx)
+		if err := otps.LockPhone(ctx, normalizedPhone); err != nil {
+			return fmt.Errorf("google oauth: acquire per-phone advisory lock: %w", err)
+		}
+		return fn(otps)
+	})
+}
+
+var _ phoneLockTxRunner = (*gormPhoneLockTxRunner)(nil)

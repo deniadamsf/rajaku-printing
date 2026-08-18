@@ -26,14 +26,19 @@ type TokenPair struct {
 	ExpiresIn   time.Duration // access token TTL
 }
 
+// MeOutput — GET /auth/me response. Phone is nullable/optional (§ phone-claim
+// review) — customers who registered via Google without a WhatsApp number
+// have Phone == "". PhoneVerified derives from phone_verified_at != NULL —
+// the raw timestamp is NEVER exposed to customers, just this boolean.
 type MeOutput struct {
-	UserID      uuid.UUID `json:"user_id"`
-	UserType    string    `json:"user_type"`
-	Email       string    `json:"email,omitempty"`
-	Phone       string    `json:"phone"`
-	Name        string    `json:"name"`
-	Roles       []string  `json:"roles"`
-	Permissions []string  `json:"permissions"`
+	UserID        uuid.UUID `json:"user_id"`
+	UserType      string    `json:"user_type"`
+	Email         string    `json:"email,omitempty"`
+	Phone         string    `json:"phone,omitempty"`
+	PhoneVerified bool      `json:"phone_verified"`
+	Name          string    `json:"name"`
+	Roles         []string  `json:"roles"`
+	Permissions   []string  `json:"permissions"`
 }
 
 // GuestOrderToken is the result of successful guest ownership verification

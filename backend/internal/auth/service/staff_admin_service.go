@@ -19,19 +19,19 @@ import (
 
 // CreateStaffInput — payload dari handler.
 type CreateStaffInput struct {
-	Name    string
-	Email   string
-	Phone   string   // raw, service normalize
-	RoleIDs []uuid.UUID
+	Name      string
+	Email     string
+	Phone     string // raw, service normalize
+	RoleIDs   []uuid.UUID
 	InviterID uuid.UUID
 }
 
 // CreateStaffResult — response ke super admin. Include raw invite token +
 // URL supaya admin bisa forward manual ke staff (email/WA sender akan menyusul).
 type CreateStaffResult struct {
-	Staff      *model.User `json:"staff"`
-	InviteURL  string      `json:"invite_url"`
-	InviteToken string     `json:"invite_token"` // dicetak sekali, tidak bisa dilihat lagi
+	Staff       *model.User `json:"staff"`
+	InviteURL   string      `json:"invite_url"`
+	InviteToken string      `json:"invite_token"` // dicetak sekali, tidak bisa dilihat lagi
 }
 
 // UpdateStaffInput — patch shape untuk update staff. Kosong = tidak diubah.
@@ -99,7 +99,7 @@ func (s *StaffAdminService) CreateStaff(ctx context.Context, in CreateStaffInput
 
 	u := &model.User{
 		Email:    &email,
-		Phone:    phoneNorm,
+		Phone:    &phoneNorm,
 		Name:     name,
 		UserType: model.UserTypeStaff,
 		IsActive: false, // baru aktif setelah accept invite
@@ -169,13 +169,13 @@ func (s *StaffAdminService) UpdateStaff(ctx context.Context, id uuid.UUID, in Up
 	if name == "" {
 		return fmt.Errorf("nama wajib diisi")
 	}
-	phoneNorm := ""
+	var phoneNorm *string
 	if in.Phone != "" {
 		p, err := phone.Normalize(in.Phone)
 		if err != nil {
 			return fmt.Errorf("phone: %w", err)
 		}
-		phoneNorm = p
+		phoneNorm = &p
 	}
 	if err := s.users.UpdateStaffBasic(ctx, id, name, email, phoneNorm); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {

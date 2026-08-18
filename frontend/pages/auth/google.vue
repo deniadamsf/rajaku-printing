@@ -10,17 +10,25 @@
  * Publik — TIDAK boleh kena middleware `guest`/`auth` (user belum tentu
  * punya sesi saat mendarat di sini).
  *
- * Alur akun baru (security review — WAJIB verifikasi kepemilikan nomor WA
- * lewat OTP sebelum akun dibuat):
- *  1. `phone_form` — isi nama + nomor WhatsApp → POST /auth/google/request-otp.
- *  2. `otp_form` — masukkan kode 6 digit yang dikirim via WA → POST
- *     /auth/google/complete (menyertakan `otp`) → sesi terbentuk.
+ * Alur akun baru (nomor WA OPSIONAL — owner batasi kirim OTP demi jaga
+ * nomor WA gateway/Baileys tidak diblokir, lihat `useGoogleAuth`):
+ *  1. `details_form` — isi nama (wajib) + nomor WhatsApp (opsional, bisa
+ *     "Lewati dulu"). Kalau nomor diisi → POST /auth/google/request-otp
+ *     untuk cek nomor bebas/tabrakan.
+ *     - Bebas (`otp_required:false`) → langsung POST /auth/google/complete
+ *       TANPA `otp` — user tidak pernah melihat form OTP.
+ *     - Kosong/dilewati → langsung POST /auth/google/complete tanpa `phone`.
+ *  2. `phone_conflict` — nomor sudah dipakai akun lain (OTP sudah terkirim
+ *     saat request-otp menjawab `otp_required:true`). Tawarkan dua jalan:
+ *     pakai nomor lain (kembali ke `details_form`), atau verifikasi.
+ *  3. `otp_form` — masukkan kode 6 digit → POST /auth/google/complete
+ *     (menyertakan `otp`) → sesi terbentuk.
  *
  * Design: patuh CLAUDE.md §26 (Fraunces + Inter + Lucide, brand/ink/hairline).
  */
-import { Loader2, AlertTriangle, ShieldCheck, ArrowLeft, Mail, KeyRound, RotateCw } from '@lucide/vue'
+import { Loader2, AlertTriangle, ShieldCheck, ArrowLeft, Mail, KeyRound, RotateCw, SkipForward, Info, MessageCircle } from '@lucide/vue'
 import { ApiError } from '~/composables/useApi'
-import { isValidIndonesianPhone } from '~/utils/phone'
+import { isValidIndonesianPhone, maskPhoneDisplay } from '~/utils/phone'
 import type { GoogleAuthSession } from '~/types/auth'
 
 definePageMeta({
@@ -37,7 +45,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const google = useGoogleAuth()
 
-type Phase = 'processing' | 'phone_form' | 'otp_form' | 'error'
+type Phase = 'processing' | 'details_form' | 'phone_conflict' | 'otp_form' | 'error'
 const phase = ref<Phase>('processing')
 const errorMessage = ref('')
 /** Code envelope error dari langkah gagal terakhir — dipakai buat tombol khusus. */
@@ -48,50 +56,32 @@ const pendingCode = ref('')
 const googleEmail = ref('')
 const form = reactive({ name: '', phone: '' })
 
-// -------------------- Sub-state: phone_form --------------------
-const phoneFormError = ref('')
-const requestingOtp = ref(false)
+// -------------------- Sub-state: details_form --------------------
+const formError = ref('')
+const submitting = ref(false)
+/** Ref ke komponen `<BaseInput>` (bukan elemen DOM langsung) — exposes `focus()`. */
+const phoneInputRef = ref<{ focus: () => void } | null>(null)
 
 const phoneError = computed(() => {
   if (!form.phone) return ''
   return isValidIndonesianPhone(form.phone) ? '' : 'Format nomor tidak valid. Contoh: 08xxxxxxxxxx.'
 })
 
-// -------------------- Sub-state: otp_form --------------------
-const phoneMasked = ref('')
+// -------------------- Sub-state: phone_conflict / otp_form --------------------
+// Nomor yang sedang diverifikasi — snapshot terpisah dari `form.phone` supaya
+// tidak ikut berubah kalau user balik ke details_form lalu edit lagi.
+const conflictPhone = ref('')
+const phoneMasked = computed(() => maskPhoneDisplay(conflictPhone.value))
 const otpCode = ref('')
 const otpError = ref('')
 const verifyingOtp = ref(false)
 const attemptsExhausted = ref(false)
-const identityConflict = ref(false)
-const expiresIn = ref(0)
 const resendIn = ref(0)
 const otpInputRef = ref<HTMLInputElement | null>(null)
 
-const otpExpired = computed(() => expiresIn.value <= 0)
 const canResend = computed(() => resendIn.value <= 0)
-const expiresLabel = computed(() => {
-  const total = Math.max(0, expiresIn.value)
-  const m = Math.floor(total / 60)
-  const s = total % 60
-  return `${m}:${s.toString().padStart(2, '0')}`
-})
 
-let expiresTimer: ReturnType<typeof setInterval> | null = null
 let resendTimer: ReturnType<typeof setInterval> | null = null
-
-function restartExpiresCountdown(seconds: number) {
-  expiresIn.value = seconds
-  if (expiresTimer) clearInterval(expiresTimer)
-  expiresTimer = setInterval(() => {
-    if (expiresIn.value > 0) {
-      expiresIn.value -= 1
-    } else if (expiresTimer) {
-      clearInterval(expiresTimer)
-      expiresTimer = null
-    }
-  }, 1000)
-}
 
 function restartResendCountdown(seconds: number) {
   resendIn.value = seconds
@@ -107,10 +97,6 @@ function restartResendCountdown(seconds: number) {
 }
 
 function clearAllTimers() {
-  if (expiresTimer) {
-    clearInterval(expiresTimer)
-    expiresTimer = null
-  }
   if (resendTimer) {
     clearInterval(resendTimer)
     resendTimer = null
@@ -154,11 +140,11 @@ async function runExchange() {
       applySessionAndRedirect(res)
       return
     }
-    // need_phone — akun baru, minta lengkapi nama + nomor WA lalu verifikasi OTP.
+    // need_phone — akun baru, minta lengkapi nama (nomor opsional).
     pendingCode.value = res.code
     googleEmail.value = res.email
     form.name = res.name || ''
-    phase.value = 'phone_form'
+    phase.value = 'details_form'
   } catch (e) {
     phase.value = 'error'
     errorCode.value = e instanceof ApiError ? e.code : null
@@ -168,98 +154,145 @@ async function runExchange() {
 
 onMounted(runExchange)
 
-/** Tangani error POST /auth/google/request-otp — dipakai dari phone_form & tombol kirim ulang. */
-function handleRequestOtpError(e: unknown, target: 'phone_form' | 'otp_form') {
-  const setMessage = target === 'phone_form' ? (v: string) => (phoneFormError.value = v) : (v: string) => (otpError.value = v)
+/**
+ * Alur inti details_form: `phoneValue` kosong = dilewati (baik lewat tombol
+ * "Lewati dulu" maupun field memang dikosongkan) → langsung complete tanpa
+ * nomor. `phoneValue` terisi → cek dulu (request-otp) sebelum simpan.
+ */
+async function trySubmit(phoneValue: string) {
+  if (submitting.value) return
+  formError.value = ''
 
+  if (!form.name.trim()) {
+    formError.value = 'Nama wajib diisi.'
+    return
+  }
+  if (phoneValue && !isValidIndonesianPhone(phoneValue)) {
+    formError.value = 'Format nomor WhatsApp tidak valid.'
+    return
+  }
+
+  submitting.value = true
+  try {
+    if (!phoneValue) {
+      const res = await google.completeRegistration({ code: pendingCode.value, name: form.name.trim() })
+      applySessionAndRedirect(res)
+      return
+    }
+
+    const check = await google.requestOtp({ code: pendingCode.value, phone: phoneValue })
+    if (!check.otp_required) {
+      // Nomor bebas — TIDAK ada OTP terkirim, user tidak pernah melihat form OTP.
+      const res = await google.completeRegistration({
+        code: pendingCode.value,
+        name: form.name.trim(),
+        phone: phoneValue,
+      })
+      applySessionAndRedirect(res)
+      return
+    }
+
+    // Nomor tabrakan — OTP sudah terkirim. Tawarkan dua jalan keluar.
+    conflictPhone.value = phoneValue
+    restartResendCountdown(check.resend_after_seconds ?? 30)
+    phase.value = 'phone_conflict'
+  } catch (e) {
+    await handleSubmitError(e, phoneValue)
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function handleSubmitError(e: unknown, phoneValue: string) {
   if (e instanceof ApiError) {
     if (e.code === 'OAUTH_CODE_INVALID') {
       goToSessionExpired()
       return
     }
-    if (e.code === 'OTP_COOLDOWN') {
-      const details = e.details as { resend_available_in?: number } | undefined
-      const secs = typeof details?.resend_available_in === 'number' ? details.resend_available_in : resendIn.value
-      if (target === 'otp_form') {
-        restartResendCountdown(secs)
-      }
-      setMessage(`Kode verifikasi masih berlaku. Kirim ulang dalam ${secs} detik.`)
+    // Jalan buntu: nomor terikat akun terdaftar/staff. OTP tidak akan bisa
+    // memindahkannya, jadi jangan tawarkan verifikasi — biarkan user langsung
+    // mengganti nomor di form yang masih terbuka.
+    if (e.code === 'PHONE_ALREADY_USED') {
+      formError.value =
+        e.message || 'Nomor ini sudah terikat akun lain dan tidak bisa dipindahkan. Silakan pakai nomor lain.'
       return
     }
-    setMessage(e.message)
+    // Race jarang terjadi: nomor baru saja dipakai orang lain antara
+    // request-otp bebas dan complete. OTP belum tentu sudah terkirim di
+    // titik ini — kirim ulang cek supaya kode benar-benar terkirim sebelum
+    // menawarkan verifikasi.
+    if (e.code === 'PHONE_ALREADY_IN_USE') {
+      try {
+        const check = await google.requestOtp({ code: pendingCode.value, phone: phoneValue })
+        conflictPhone.value = phoneValue
+        restartResendCountdown(check.resend_after_seconds ?? 30)
+        phase.value = 'phone_conflict'
+      } catch (e2) {
+        formError.value = e2 instanceof ApiError ? e2.message : 'Nomor sudah dipakai akun lain. Coba nomor lain.'
+      }
+      return
+    }
+    formError.value = e.message
     return
   }
-  setMessage('Gagal mengirim kode verifikasi. Coba lagi.')
+  formError.value = 'Gagal menyimpan data. Coba lagi.'
 }
 
-async function onSubmitPhone() {
-  if (requestingOtp.value) return
-  phoneFormError.value = ''
+function onSubmitDetails() {
+  trySubmit(form.phone.trim())
+}
 
-  if (!form.name.trim()) {
-    phoneFormError.value = 'Nama wajib diisi.'
-    return
-  }
-  if (!isValidIndonesianPhone(form.phone)) {
-    phoneFormError.value = 'Nomor WhatsApp tidak valid.'
-    return
-  }
+function onSkip() {
+  form.phone = ''
+  trySubmit('')
+}
 
-  requestingOtp.value = true
-  try {
-    const res = await google.requestOtp({
-      code: pendingCode.value,
-      phone: form.phone.trim(),
-      name: form.name.trim(),
-    })
-    phoneMasked.value = res.phone_masked
-    otpCode.value = ''
-    otpError.value = ''
-    attemptsExhausted.value = false
-    identityConflict.value = false
-    restartExpiresCountdown(res.expires_in)
-    restartResendCountdown(res.resend_available_in)
-    phase.value = 'otp_form'
-    await nextTick()
-    otpInputRef.value?.focus()
-  } catch (e) {
-    handleRequestOtpError(e, 'phone_form')
-  } finally {
-    requestingOtp.value = false
-  }
+function onUseAnotherNumber() {
+  clearAllTimers()
+  form.phone = conflictPhone.value
+  formError.value = ''
+  phase.value = 'details_form'
+  nextTick(() => phoneInputRef.value?.focus())
+}
+
+async function onChooseVerify() {
+  phase.value = 'otp_form'
+  otpCode.value = ''
+  otpError.value = ''
+  attemptsExhausted.value = false
+  await nextTick()
+  otpInputRef.value?.focus()
 }
 
 async function onResendOtp() {
-  if (!canResend.value || requestingOtp.value) return
-  requestingOtp.value = true
+  if (!canResend.value || submitting.value) return
+  submitting.value = true
   try {
-    const res = await google.requestOtp({
-      code: pendingCode.value,
-      phone: form.phone.trim(),
-      name: form.name.trim(),
-    })
-    phoneMasked.value = res.phone_masked
+    const check = await google.requestOtp({ code: pendingCode.value, phone: conflictPhone.value })
     otpCode.value = ''
     otpError.value = ''
     attemptsExhausted.value = false
-    restartExpiresCountdown(res.expires_in)
-    restartResendCountdown(res.resend_available_in)
+    restartResendCountdown(check.resend_after_seconds ?? 30)
     await nextTick()
     otpInputRef.value?.focus()
   } catch (e) {
-    handleRequestOtpError(e, 'otp_form')
+    if (e instanceof ApiError && e.code === 'OAUTH_CODE_INVALID') {
+      goToSessionExpired()
+      return
+    }
+    otpError.value = e instanceof ApiError ? e.message : 'Gagal mengirim ulang kode. Coba lagi.'
   } finally {
-    requestingOtp.value = false
+    submitting.value = false
   }
 }
 
 function onChangeNumber() {
   clearAllTimers()
-  phase.value = 'phone_form'
+  form.phone = ''
+  phase.value = 'details_form'
   otpCode.value = ''
   otpError.value = ''
   attemptsExhausted.value = false
-  identityConflict.value = false
 }
 
 function onOtpInput(e: Event) {
@@ -267,7 +300,7 @@ function onOtpInput(e: Event) {
   const digits = raw.replace(/\D/g, '').slice(0, 6)
   otpCode.value = digits
   ;(e.target as HTMLInputElement).value = digits
-  if (digits.length === 6 && !verifyingOtp.value && !attemptsExhausted.value && !otpExpired.value) {
+  if (digits.length === 6 && !verifyingOtp.value && !attemptsExhausted.value) {
     onSubmitOtp()
   }
 }
@@ -298,21 +331,20 @@ function handleCompleteError(e: unknown) {
       otpError.value = 'Percobaan verifikasi sudah habis. Minta kode baru untuk mencoba lagi.'
       return
     case 'OTP_EXPIRED':
-      if (expiresTimer) {
-        clearInterval(expiresTimer)
-        expiresTimer = null
-      }
-      expiresIn.value = 0
       otpCode.value = ''
       otpError.value = 'Kode verifikasi sudah kedaluwarsa. Minta kode baru.'
       return
-    case 'PHONE_ALREADY_USED':
-      identityConflict.value = true
-      otpError.value = 'Nomor ini sudah terdaftar pada akun lain. Ganti nomor, atau masuk dengan email & kata sandi.'
+    case 'PHONE_ALREADY_IN_USE':
+      // Sangat jarang: nomor terpakai orang lain persis di antara verifikasi.
+      otpError.value = 'Nomor ini baru saja terpakai akun lain. Coba nomor lain.'
       return
-    case 'EMAIL_ALREADY_USED':
-      identityConflict.value = true
-      otpError.value = 'Email Google ini sudah terdaftar dengan metode login lain. Masuk dengan email & kata sandi.'
+    case 'PHONE_ALREADY_USED':
+      // Jalan buntu: nomor terikat akun terdaftar/staff. Verifikasi tidak akan
+      // pernah berhasil, jadi kunci form supaya user tidak menebak sia-sia.
+      attemptsExhausted.value = true
+      otpCode.value = ''
+      otpError.value =
+        'Nomor ini terikat akun lain dan tidak bisa dipindahkan. Kembali dan pakai nomor lain.'
       return
     default:
       otpError.value = e.message
@@ -331,8 +363,8 @@ async function onSubmitOtp() {
   try {
     const res = await google.completeRegistration({
       code: pendingCode.value,
-      phone: form.phone.trim(),
       name: form.name.trim(),
+      phone: conflictPhone.value,
       otp: otpCode.value,
     })
     applySessionAndRedirect(res)
@@ -352,8 +384,8 @@ async function onSubmitOtp() {
       <p class="mt-3 text-sm text-ink-500">Menyelesaikan proses masuk…</p>
     </div>
 
-    <!-- Sub-state 1: lengkapi nama + nomor WA -->
-    <template v-else-if="phase === 'phone_form'">
+    <!-- Sub-state 1: lengkapi nama (wajib) + nomor WA (opsional) -->
+    <template v-else-if="phase === 'details_form'">
       <p class="mb-2 flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
         <Mail class="h-3.5 w-3.5" :stroke-width="1.75" />
         Satu langkah lagi
@@ -362,12 +394,12 @@ async function onSubmitOtp() {
         Lengkapi data Anda
       </h1>
       <p class="mt-2 text-sm text-ink-500 leading-relaxed">
-        Nomor WhatsApp dipakai untuk mengirim status pesanan dan menyatukan riwayat order Anda.
-        Kode verifikasi akan dikirim via WhatsApp ke nomor tersebut.
+        Nomor WhatsApp dipakai untuk mengirim notifikasi status pesanan Anda. Bersifat opsional —
+        boleh dilewati dan diisi kapan saja belakangan dari halaman akun.
       </p>
 
-      <form class="mt-8 space-y-4" novalidate @submit.prevent="onSubmitPhone">
-        <AlertMessage :message="phoneFormError" variant="error" />
+      <form class="mt-8 space-y-4" novalidate @submit.prevent="onSubmitDetails">
+        <AlertMessage :message="formError" variant="error" />
 
         <div>
           <span class="block text-sm font-medium text-ink-900">Email Google</span>
@@ -382,34 +414,80 @@ async function onSubmitOtp() {
           label="Nama"
           autocomplete="name"
           required
-          :disabled="requestingOtp"
+          :disabled="submitting"
         />
         <BaseInput
           id="gphone"
+          ref="phoneInputRef"
           v-model="form.phone"
-          label="Nomor WhatsApp"
+          label="Nomor WhatsApp (opsional)"
           type="tel"
           autocomplete="tel"
           placeholder="08xxxxxxxxxx"
           :error="phoneError"
-          helper="Otomatis dikonversi ke format 62xxx."
-          required
-          :disabled="requestingOtp"
+          helper="Otomatis dikonversi ke format 62xxx. Boleh dikosongkan."
+          :disabled="submitting"
         />
 
-        <button
-          type="submit"
-          :disabled="requestingOtp"
-          class="inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand-500 px-4 py-2.5 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <Loader2 v-if="requestingOtp" class="h-4 w-4 animate-spin" :stroke-width="1.5" />
-          <ShieldCheck v-else class="h-4 w-4" :stroke-width="1.5" />
-          <span>{{ requestingOtp ? 'Mengirim kode…' : 'Kirim kode verifikasi' }}</span>
-        </button>
+        <div class="flex flex-col gap-2 pt-1">
+          <button
+            type="submit"
+            :disabled="submitting"
+            class="inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand-500 px-4 py-2.5 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Loader2 v-if="submitting" class="h-4 w-4 animate-spin" :stroke-width="1.5" />
+            <ShieldCheck v-else class="h-4 w-4" :stroke-width="1.5" />
+            <span>{{ submitting ? 'Memproses…' : 'Lanjutkan' }}</span>
+          </button>
+          <button
+            type="button"
+            :disabled="submitting"
+            class="inline-flex w-full items-center justify-center gap-2 rounded-md border border-hairline bg-canvas px-4 py-2.5 text-sm font-semibold text-ink-900 transition-colors hover:bg-canvas-alt focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-60"
+            @click="onSkip"
+          >
+            <SkipForward class="h-4 w-4" :stroke-width="1.5" />
+            <span>Lewati dulu, isi nanti</span>
+          </button>
+        </div>
       </form>
     </template>
 
-    <!-- Sub-state 2: verifikasi OTP -->
+    <!-- Sub-state 2: nomor tabrakan — dua jalan keluar -->
+    <template v-else-if="phase === 'phone_conflict'">
+      <p class="mb-2 flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
+        <Info class="h-3.5 w-3.5" :stroke-width="1.75" />
+        Nomor sudah terpakai
+      </p>
+      <h1 class="font-serif text-2xl md:text-3xl font-semibold tracking-tight text-ink-950">
+        Nomor ini sudah terdaftar
+      </h1>
+      <p class="mt-2 text-sm text-ink-500 leading-relaxed">
+        <span class="font-mono text-xs text-ink-700">{{ phoneMasked }}</span>
+        sudah dipakai di akun lain. Kalau ini nomor Anda sendiri, kami sudah kirim kode verifikasi
+        via WhatsApp — atau pakai nomor lain saja.
+      </p>
+
+      <div class="mt-8 space-y-3">
+        <button
+          type="button"
+          class="inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand-500 px-4 py-2.5 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+          @click="onChooseVerify"
+        >
+          <MessageCircle class="h-4 w-4" :stroke-width="1.5" />
+          <span>Ini nomor saya, verifikasi sekarang</span>
+        </button>
+        <button
+          type="button"
+          class="inline-flex w-full items-center justify-center gap-2 rounded-md border border-hairline bg-canvas px-4 py-2.5 text-sm font-semibold text-ink-900 transition-colors hover:bg-canvas-alt focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+          @click="onUseAnotherNumber"
+        >
+          <ArrowLeft class="h-4 w-4" :stroke-width="1.5" />
+          <span>Pakai nomor lain</span>
+        </button>
+      </div>
+    </template>
+
+    <!-- Sub-state 3: verifikasi OTP -->
     <template v-else-if="phase === 'otp_form'">
       <p class="mb-2 flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
         <KeyRound class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -441,24 +519,11 @@ async function onSubmitOtp() {
             class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2.5 text-center font-mono text-lg tracking-[0.5em] text-ink-900 placeholder-ink-300 transition-colors focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:cursor-not-allowed disabled:bg-canvas-alt disabled:text-ink-500"
             @input="onOtpInput"
           >
-          <p class="mt-1.5 text-xs" :class="otpExpired ? 'text-brand-700' : 'text-ink-500'">
-            <span v-if="!otpExpired">Kode berlaku {{ expiresLabel }}</span>
-            <span v-else>Kode sudah kedaluwarsa. Minta kode baru.</span>
-          </p>
         </div>
-
-        <p v-if="identityConflict" class="text-xs text-ink-500">
-          <NuxtLink
-            to="/login"
-            class="rounded-sm font-medium text-brand-500 transition-colors hover:text-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
-          >
-            Masuk dengan email & kata sandi →
-          </NuxtLink>
-        </p>
 
         <button
           type="submit"
-          :disabled="verifyingOtp || attemptsExhausted || otpCode.length !== 6 || otpExpired"
+          :disabled="verifyingOtp || attemptsExhausted || otpCode.length !== 6"
           class="inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand-500 px-4 py-2.5 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Loader2 v-if="verifyingOtp" class="h-4 w-4 animate-spin" :stroke-width="1.5" />
@@ -469,7 +534,7 @@ async function onSubmitOtp() {
         <div class="flex items-center justify-between pt-1 text-xs">
           <button
             type="button"
-            :disabled="requestingOtp"
+            :disabled="submitting"
             class="rounded-sm text-ink-500 transition-colors hover:text-ink-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-60"
             @click="onChangeNumber"
           >
@@ -479,11 +544,11 @@ async function onSubmitOtp() {
 
           <button
             type="button"
-            :disabled="!canResend || requestingOtp"
+            :disabled="!canResend || submitting"
             class="rounded-sm font-medium text-brand-500 transition-colors hover:text-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:text-ink-400"
             @click="onResendOtp"
           >
-            <span v-if="requestingOtp" class="inline-flex items-center gap-1.5">
+            <span v-if="submitting" class="inline-flex items-center gap-1.5">
               <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="1.5" />
               Mengirim…
             </span>

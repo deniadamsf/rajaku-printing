@@ -94,7 +94,7 @@ func run(email, phoneRaw, name, pass string) error {
 
 	u := &model.User{
 		Email:        &email,
-		Phone:        normalizedPhone,
+		Phone:        &normalizedPhone,
 		Name:         name,
 		PasswordHash: &hash,
 		UserType:     model.UserTypeStaff,

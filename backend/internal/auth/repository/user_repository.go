@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -117,6 +118,12 @@ func (r *UserRepository) LinkOAuth(ctx context.Context, id uuid.UUID, provider, 
 // key; Google login must never clobber data that's already on file. Pass
 // email=nil to leave the email column untouched entirely (caller already
 // determined the Google email is taken by a different user).
+//
+// Always stamps phone_verified_at = NOW() — this method is ONLY ever called
+// after the caller has already proven ownership of the guest's phone number
+// via a verified OTP (§ phone-claim review; a guest's phone is unverified by
+// construction since POS never runs an OTP round-trip), so the upgrade is
+// exactly the moment that number becomes provably owned.
 func (r *UserRepository) UpgradeGuestToRegistered(ctx context.Context, id uuid.UUID, email *string, name, provider, subject string) error {
 	var emailArg any
 	if email != nil {
@@ -124,16 +131,37 @@ func (r *UserRepository) UpgradeGuestToRegistered(ctx context.Context, id uuid.U
 	}
 	res := r.db.WithContext(ctx).Exec(`
 		UPDATE users SET
-			customer_type  = 'registered',
-			oauth_provider = ?,
-			oauth_subject  = ?,
-			email          = CASE WHEN email IS NULL THEN ? ELSE email END,
-			name           = CASE WHEN name = ''    THEN ? ELSE name  END,
-			updated_at     = NOW()
+			customer_type     = 'registered',
+			oauth_provider    = ?,
+			oauth_subject     = ?,
+			email             = CASE WHEN email IS NULL THEN ? ELSE email END,
+			name              = CASE WHEN name = ''    THEN ? ELSE name  END,
+			phone_verified_at = NOW(),
+			updated_at        = NOW()
 		WHERE id = ?
 	`, provider, subject, emailArg, name, id)
 	if res.Error != nil {
 		return fmt.Errorf("upgrade guest to registered for user %s: %w", id, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetPhone overwrites a user's phone number and its verification stamp
+// directly. `phone` nil clears it to NULL (used to release a phone from a
+// guest row being absorbed into an authenticated user's account — §ownership
+// review, PhoneClaimService.Claim). `verifiedAt` nil means "claimed but not
+// proven"; non-nil records when OTP ownership was proven. Return ErrNotFound
+// kalau row tidak ada.
+func (r *UserRepository) SetPhone(ctx context.Context, id uuid.UUID, phone *string, verifiedAt *time.Time) error {
+	res := r.db.WithContext(ctx).
+		Model(&model.User{}).
+		Where("id = ?", id).
+		Updates(map[string]any{"phone": phone, "phone_verified_at": verifiedAt})
+	if res.Error != nil {
+		return fmt.Errorf("set phone for user %s: %w", id, res.Error)
 	}
 	if res.RowsAffected == 0 {
 		return ErrNotFound
@@ -252,9 +280,12 @@ func (r *UserRepository) ListStaff(ctx context.Context, f ListStaffFilter) (*Lis
 }
 
 // UpdateStaffBasic — update field yg boleh diubah super admin (name, email,
-// phone). Password diatur lewat SetPassword. is_active lewat SetActive. Return
+// phone). `phone` nil = clear to NULL (mirrors the pre-existing "not
+// provided in patch" behavior — previously stored as a bogus empty string,
+// now correctly NULL since the column is nullable, migration 000017).
+// Password diatur lewat SetPassword. is_active lewat SetActive. Return
 // ErrNotFound kalau row tidak ada.
-func (r *UserRepository) UpdateStaffBasic(ctx context.Context, id uuid.UUID, name, email, phone string) error {
+func (r *UserRepository) UpdateStaffBasic(ctx context.Context, id uuid.UUID, name, email string, phone *string) error {
 	updates := map[string]any{"name": name, "phone": phone}
 	// Distinguish "" (clear email) dari "tidak diubah" — untuk MVP anggap
 	// email selalu diset (staff wajib email untuk login).

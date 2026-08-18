@@ -53,7 +53,7 @@ func (s *CustomerService) ResolveOrCreateGuest(ctx context.Context, phoneRaw, na
 	// Not found — create guest.
 	guestType := model.CustomerTypeGuest
 	u := &model.User{
-		Phone:        normalized,
+		Phone:        &normalized,
 		Name:         name,
 		UserType:     model.UserTypeCustomer,
 		CustomerType: &guestType,
@@ -86,8 +86,10 @@ func userToIdentity(u *model.User) *authapi.Identity {
 	id := &authapi.Identity{
 		UserID:   u.ID,
 		UserType: authapi.UserType(u.UserType),
-		Phone:    u.Phone,
 		Name:     u.Name,
+	}
+	if u.Phone != nil {
+		id.Phone = *u.Phone
 	}
 	if u.Email != nil {
 		id.Email = *u.Email

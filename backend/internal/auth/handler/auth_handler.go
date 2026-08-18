@@ -43,6 +43,10 @@ func (h *Handler) RegisterCustomer(c *gin.Context) {
 	if user.Email != nil {
 		email = *user.Email
 	}
+	userPhone := ""
+	if user.Phone != nil {
+		userPhone = *user.Phone
+	}
 	httpx.Created(c, registerResponse{
 		Token: tokenResponse{
 			AccessToken: pair.AccessToken,
@@ -52,7 +56,7 @@ func (h *Handler) RegisterCustomer(c *gin.Context) {
 		User: userSummary{
 			ID:       user.ID.String(),
 			Email:    email,
-			Phone:    user.Phone,
+			Phone:    userPhone,
 			Name:     user.Name,
 			UserType: string(user.UserType),
 		},
@@ -81,6 +85,10 @@ func (h *Handler) Login(c *gin.Context) {
 	if user.Email != nil {
 		email = *user.Email
 	}
+	userPhone := ""
+	if user.Phone != nil {
+		userPhone = *user.Phone
+	}
 	httpx.OK(c, registerResponse{
 		Token: tokenResponse{
 			AccessToken: pair.AccessToken,
@@ -90,7 +98,7 @@ func (h *Handler) Login(c *gin.Context) {
 		User: userSummary{
 			ID:       user.ID.String(),
 			Email:    email,
-			Phone:    user.Phone,
+			Phone:    userPhone,
 			Name:     user.Name,
 			UserType: string(user.UserType),
 		},

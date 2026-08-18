@@ -6,17 +6,24 @@ import (
 	"github.com/google/uuid"
 )
 
-// PhoneVerification is a WhatsApp OTP challenge tied to exactly one Google
-// OAuth registration handoff code (see migration 000013 for the "why" —
-// nomor WA bukan rahasia, jadi kepemilikan wajib dibuktikan sebelum akun
-// dibuat/di-upgrade dari guest).
+// PhoneVerification is a WhatsApp OTP challenge proving ownership of a phone
+// number. Tied to EXACTLY ONE of two owners (migration 000017 widened this
+// from handoff-only, see CHECK phone_verifications_owner_check):
+//   - OAuthLoginCodeID — a Google OAuth registration handoff code (migration
+//     000013's original "why": nomor WA bukan rahasia, jadi kepemilikan wajib
+//     dibuktikan sebelum akun dibuat/di-upgrade dari guest).
+//   - UserID — an ALREADY-authenticated user adding/changing their own phone
+//     number (POST /auth/phone/request-otp + /auth/phone) — same proof
+//     requirement, just anchored to a real session instead of a handoff.
 type PhoneVerification struct {
-	ID               uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	OAuthLoginCodeID uuid.UUID `gorm:"column:oauth_login_code_id;type:uuid;not null"   json:"oauth_login_code_id"`
-	Phone            string    `gorm:"size:20;not null"                                json:"phone"`
-	CodeHash         string    `gorm:"column:code_hash;size:64;not null"               json:"-"`
-	Attempts         int       `gorm:"not null;default:0"                              json:"attempts"`
-	ExpiresAt        time.Time `gorm:"not null"                                        json:"expires_at"`
+	ID uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	// OAuthLoginCodeID / UserID — exactly one is non-nil per row.
+	OAuthLoginCodeID *uuid.UUID `gorm:"column:oauth_login_code_id;type:uuid"            json:"oauth_login_code_id,omitempty"`
+	UserID           *uuid.UUID `gorm:"column:user_id;type:uuid"                        json:"user_id,omitempty"`
+	Phone            string     `gorm:"size:20;not null"                                json:"phone"`
+	CodeHash         string     `gorm:"column:code_hash;size:64;not null"               json:"-"`
+	Attempts         int        `gorm:"not null;default:0"                              json:"attempts"`
+	ExpiresAt        time.Time  `gorm:"not null"                                        json:"expires_at"`
 	// VerifiedAt — AUDIT-ONLY (review finding #5): records when the correct
 	// code was entered, but nothing in this codebase gates on it — the
 	// authoritative "this challenge may no longer be used" signal is

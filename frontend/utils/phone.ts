@@ -12,3 +12,18 @@ export function isValidIndonesianPhone(raw: string): boolean {
   const cleaned = raw.trim().replace(/[\s-]/g, '')
   return PHONE_PATTERN.test(cleaned)
 }
+
+/**
+ * Sensor tampilan nomor buat UI (mis. "Kode terkirim ke 0812****678") —
+ * murni kosmetik client-side (user memang baru saja mengetik nomor ini
+ * sendiri), beda dari sensor §5 di backend untuk data punya orang lain.
+ * Nomor pendek/tidak valid dikembalikan apa adanya (tidak ada yang perlu
+ * disembunyikan kalau formatnya sudah aneh).
+ */
+export function maskPhoneDisplay(raw: string): string {
+  const cleaned = raw.trim().replace(/[\s-]/g, '')
+  if (cleaned.length < 8) return cleaned
+  const head = cleaned.slice(0, 4)
+  const tail = cleaned.slice(-3)
+  return `${head}${'*'.repeat(Math.max(4, cleaned.length - head.length - tail.length))}${tail}`
+}

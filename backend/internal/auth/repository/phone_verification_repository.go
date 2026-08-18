@@ -83,10 +83,59 @@ func (r *PhoneVerificationRepository) CancelPendingForHandoff(ctx context.Contex
 	return nil
 }
 
+// FindActiveByUser / FindLatestByUser / CancelPendingForUser — user_id-keyed
+// counterparts of FindActive / FindLatest / CancelPendingForHandoff above
+// (migration 000017), used by an ALREADY-authenticated user proving ownership
+// of a phone number they're adding/changing on their own account rather than
+// a Google OAuth registration handoff. Same semantics, same
+// "never requested"/"consumed"/"expired" → ErrNotFound collapsing.
+
+func (r *PhoneVerificationRepository) FindActiveByUser(ctx context.Context, userID uuid.UUID, phone string) (*model.PhoneVerification, error) {
+	var pv model.PhoneVerification
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND phone = ? AND consumed_at IS NULL AND expires_at > ?",
+			userID, phone, time.Now().UTC()).
+		Order("created_at DESC").
+		First(&pv).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("find active phone_verification for user: %w", err)
+	}
+	return &pv, nil
+}
+
+func (r *PhoneVerificationRepository) FindLatestByUser(ctx context.Context, userID uuid.UUID, phone string) (*model.PhoneVerification, error) {
+	var pv model.PhoneVerification
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND phone = ?", userID, phone).
+		Order("created_at DESC").
+		First(&pv).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("find latest phone_verification for user: %w", err)
+	}
+	return &pv, nil
+}
+
+func (r *PhoneVerificationRepository) CancelPendingForUser(ctx context.Context, userID uuid.UUID) error {
+	if err := r.db.WithContext(ctx).
+		Model(&model.PhoneVerification{}).
+		Where("user_id = ? AND consumed_at IS NULL", userID).
+		UpdateColumn("consumed_at", gorm.Expr("NOW()")).Error; err != nil {
+		return fmt.Errorf("cancel pending phone_verifications for user: %w", err)
+	}
+	return nil
+}
+
 // ErrAttemptsExceeded — returned by IncrementAttemptsIfAllowed when the gated
-// UPDATE matched no row because `attempts` was already >= the caller's
-// maxAttempts at the moment the statement ran (never a stale in-memory read —
-// see that method's doc).
+// UPDATE matched no row SPECIFICALLY because `attempts` was already >= the
+// caller's maxAttempts on an otherwise-active row at the moment the statement
+// ran (never a stale in-memory read — see that method's doc). Distinguished
+// from ErrNotFound (review finding #5a) — see classifyIncrementMiss.
 var ErrAttemptsExceeded = errors.New("repository: phone_verification attempts exceeded")
 
 // IncrementAttemptsIfAllowed atomically bumps attempts by 1 AND enforces
@@ -99,24 +148,40 @@ var ErrAttemptsExceeded = errors.New("repository: phone_verification attempts ex
 // UPDATE time under the row's lock, so two concurrent callers can never both
 // succeed past the ceiling.
 //
-// Returns the NEW attempts value on success, or ErrAttemptsExceeded if the
-// row was already at/over the ceiling (RowsAffected == 0). Callers MUST call
-// this before comparing the guessed code against the hash — every call that
-// reaches this point counts as an attempt, whether the code turns out right
-// or wrong (that's what makes the ceiling meaningful).
+// The WHERE clause also requires `consumed_at IS NULL AND expires_at > now()`
+// (review finding #5b) — mirroring exactly what FindActive uses to select the
+// row in the first place. Without this, a challenge that a CONCURRENT
+// CancelPendingForHandoff consumed (or that expired) in the window between
+// the caller's FindActive and this call would still get its attempts counter
+// incremented and compared against — this statement is documented as THE
+// gate for that scenario, so it needs to be a complete gate, not a partial
+// one relying on callers to have re-checked freshness themselves.
+//
+// Returns the NEW attempts value on success. On failure (RowsAffected == 0)
+// returns one of two DISTINCT sentinels (review finding #5a — the pre-fix
+// code collapsed every miss into ErrAttemptsExceeded, which made an
+// already-consumed/expired/nonexistent row get misreported to the end user
+// as "too many attempts" even though they hadn't made any):
+//   - ErrNotFound — the row doesn't exist, or exists but is no longer active
+//     (consumed or expired). Callers should treat this the same as
+//     FindActive's ErrNotFound (mis. verifyOTP maps both to ErrOTPExpired).
+//   - ErrAttemptsExceeded — the row IS active, but attempts was already at
+//     the ceiling. This is the actual "too many attempts" case.
+//
+// Callers MUST call this before comparing the guessed code against the hash —
+// every call that reaches this point counts as an attempt, whether the code
+// turns out right or wrong (that's what makes the ceiling meaningful).
 func (r *PhoneVerificationRepository) IncrementAttemptsIfAllowed(ctx context.Context, id uuid.UUID, maxAttempts int) (int, error) {
+	now := time.Now().UTC()
 	res := r.db.WithContext(ctx).
 		Model(&model.PhoneVerification{}).
-		Where("id = ? AND attempts < ?", id, maxAttempts).
+		Where("id = ? AND attempts < ? AND consumed_at IS NULL AND expires_at > ?", id, maxAttempts, now).
 		UpdateColumn("attempts", gorm.Expr("attempts + 1"))
 	if res.Error != nil {
 		return 0, fmt.Errorf("increment phone_verification attempts (gated): %w", res.Error)
 	}
 	if res.RowsAffected == 0 {
-		// Either the row doesn't exist (shouldn't happen — caller just loaded
-		// it via FindActive) or attempts was already >= maxAttempts. Either
-		// way the caller wants the same outcome: refuse this attempt.
-		return 0, ErrAttemptsExceeded
+		return 0, classifyIncrementMiss(ctx, r.db, id, maxAttempts, now)
 	}
 	// Read-after-write for reporting ONLY (mis. "attempts_left" in the error
 	// response) — the gate itself already happened, atomically, in the
@@ -126,6 +191,57 @@ func (r *PhoneVerificationRepository) IncrementAttemptsIfAllowed(ctx context.Con
 		return 0, fmt.Errorf("reload phone_verification attempts: %w", err)
 	}
 	return pv.Attempts, nil
+}
+
+// classifyIncrementMiss runs a best-effort follow-up SELECT — the atomicity
+// guarantee already happened in the gated UPDATE above, this exists purely to
+// give the caller (and logs/incident review) an ACCURATE reason the UPDATE
+// matched nothing (review finding #5a), instead of collapsing every miss into
+// ErrAttemptsExceeded. The row can still change between the UPDATE and this
+// SELECT under concurrent writers; that's fine — worst case this reports a
+// slightly stale reason for what is, either way, already a rejected attempt.
+func classifyIncrementMiss(ctx context.Context, db *gorm.DB, id uuid.UUID, maxAttempts int, now time.Time) error {
+	var pv model.PhoneVerification
+	err := db.WithContext(ctx).First(&pv, "id = ?", id).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return ErrNotFound
+	case err != nil:
+		return fmt.Errorf("classify increment miss: reload phone_verification: %w", err)
+	case pv.ConsumedAt != nil || !pv.ExpiresAt.After(now):
+		// Row exists but is no longer active — same "not usable" outcome as
+		// FindActive returning ErrNotFound.
+		return ErrNotFound
+	case pv.Attempts >= maxAttempts:
+		return ErrAttemptsExceeded
+	default:
+		// Row is active and under the ceiling — the UPDATE must have missed
+		// for a reason not modeled above (mis. changed again between the
+		// UPDATE and this SELECT). Report the ceiling case as the safest
+		// default: it never claims fewer attempts remain than reality.
+		return ErrAttemptsExceeded
+	}
+}
+
+// LockPhone acquires a TRANSACTION-SCOPED Postgres advisory lock keyed on
+// `phone` (pg_advisory_xact_lock(hashtext(phone))) — serializes concurrent
+// per-phone rate-limit check-then-mutate sequences (review finding #1: a
+// plain COUNT/SUM SELECT followed by a separate INSERT/UPDATE is racy even at
+// READ COMMITTED, because concurrent transactions don't see each other's
+// uncommitted writes — an `INSERT ... SELECT COUNT(*)` pattern does NOT close
+// this the way a gated `UPDATE ... WHERE` can for a row that already exists).
+//
+// MUST be called from inside an active transaction (`*gorm.DB` bound to a
+// tx, e.g. via db.Transaction(...)) — pg_advisory_xact_lock is released
+// automatically at COMMIT/ROLLBACK of that transaction, never held past it,
+// so there is no leak risk even on panic. Called from
+// service.gormPhoneLockTxRunner — this is the ONLY place in the codebase
+// that should invoke it (service code must not embed raw SQL, §22).
+func (r *PhoneVerificationRepository) LockPhone(ctx context.Context, phone string) error {
+	if err := r.db.WithContext(ctx).Exec("SELECT pg_advisory_xact_lock(hashtext(?))", phone).Error; err != nil {
+		return fmt.Errorf("pg_advisory_xact_lock for phone: %w", err)
+	}
+	return nil
 }
 
 // CountAndOldestSince returns how many phone_verification challenges were

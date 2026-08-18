@@ -76,7 +76,7 @@ func (s *Service) RegisterCustomer(ctx context.Context, in RegisterCustomerInput
 	custType := model.CustomerTypeRegistered
 	u := &model.User{
 		Email:        &email,
-		Phone:        normalizedPhone,
+		Phone:        &normalizedPhone,
 		Name:         name,
 		PasswordHash: &hash,
 		UserType:     model.UserTypeCustomer,
@@ -148,12 +148,15 @@ func (s *Service) GetMe(ctx context.Context, id uuid.UUID) (*MeOutput, error) {
 		return nil, fmt.Errorf("get me: %w", err)
 	}
 	out := &MeOutput{
-		UserID:      u.ID,
-		UserType:    string(u.UserType),
-		Phone:       u.Phone,
-		Name:        u.Name,
-		Roles:       roleNames(u.Roles),
-		Permissions: flattenPermissions(u.Roles),
+		UserID:        u.ID,
+		UserType:      string(u.UserType),
+		Name:          u.Name,
+		Roles:         roleNames(u.Roles),
+		Permissions:   flattenPermissions(u.Roles),
+		PhoneVerified: u.PhoneVerifiedAt != nil,
+	}
+	if u.Phone != nil {
+		out.Phone = *u.Phone
 	}
 	if u.Email != nil {
 		out.Email = *u.Email
@@ -207,9 +210,11 @@ func issueTokenFor(issuer *token.Issuer, u *model.User) (*TokenPair, error) {
 	claims := token.Claims{
 		UserID:      u.ID.String(),
 		UserType:    string(u.UserType),
-		Phone:       u.Phone,
 		Roles:       roleNames(u.Roles),
 		Permissions: flattenPermissions(u.Roles),
+	}
+	if u.Phone != nil {
+		claims.Phone = *u.Phone
 	}
 	if u.Email != nil {
 		claims.Email = *u.Email

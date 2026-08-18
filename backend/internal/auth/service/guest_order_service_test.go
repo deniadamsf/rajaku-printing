@@ -111,7 +111,7 @@ func TestGuestOrderService_VerifyOwnership_HappyPath_AcceptsLocalAndInternationa
 	guest := model.CustomerTypeGuest
 	owner := &model.User{
 		ID:           custID,
-		Phone:        "6281234567890",
+		Phone:        strp("6281234567890"),
 		Name:         "Budi Guest",
 		UserType:     model.UserTypeCustomer,
 		CustomerType: &guest,
@@ -150,7 +150,7 @@ func TestGuestOrderService_VerifyOwnership_HappyPath_AcceptsLocalAndInternationa
 
 func TestGuestOrderService_VerifyOwnership_PhoneMismatch_ReturnsGenericSentinel(t *testing.T) {
 	custID := uuid.New()
-	owner := &model.User{ID: custID, Phone: "6281111111111", UserType: model.UserTypeCustomer}
+	owner := &model.User{ID: custID, Phone: strp("6281111111111"), UserType: model.UserTypeCustomer}
 	users := &fakeUserLookup{byID: map[uuid.UUID]*model.User{custID: owner}}
 	cmd := &fakeGuestOrderCmd{summary: &orderapi.OrderSummary{
 		ID: uuid.New(), Resi: "RJK-XYZ999", CustomerID: custID, Status: "dibayar",
@@ -180,7 +180,7 @@ func TestGuestOrderService_VerifyOwnership_StaffOwner_RejectedSameSentinel(t *te
 	// token carrying typ=staff.
 	staffID := uuid.New()
 	owner := &model.User{
-		ID: staffID, Phone: "6281234567890", UserType: model.UserTypeStaff, IsActive: true,
+		ID: staffID, Phone: strp("6281234567890"), UserType: model.UserTypeStaff, IsActive: true,
 	}
 	users := &fakeUserLookup{byID: map[uuid.UUID]*model.User{staffID: owner}}
 	cmd := &fakeGuestOrderCmd{summary: &orderapi.OrderSummary{
@@ -201,7 +201,7 @@ func TestGuestOrderService_VerifyOwnership_RegisteredCustomerOwner_RejectedSameS
 	custID := uuid.New()
 	registered := model.CustomerTypeRegistered
 	owner := &model.User{
-		ID: custID, Phone: "6281234567890", UserType: model.UserTypeCustomer,
+		ID: custID, Phone: strp("6281234567890"), UserType: model.UserTypeCustomer,
 		CustomerType: &registered, IsActive: true,
 	}
 	users := &fakeUserLookup{byID: map[uuid.UUID]*model.User{custID: owner}}
@@ -220,7 +220,7 @@ func TestGuestOrderService_VerifyOwnership_InactiveOwner_RejectedSameSentinel(t 
 	custID := uuid.New()
 	guest := model.CustomerTypeGuest
 	owner := &model.User{
-		ID: custID, Phone: "6281234567890", UserType: model.UserTypeCustomer,
+		ID: custID, Phone: strp("6281234567890"), UserType: model.UserTypeCustomer,
 		CustomerType: &guest, IsActive: false,
 	}
 	users := &fakeUserLookup{byID: map[uuid.UUID]*model.User{custID: owner}}
@@ -240,7 +240,7 @@ func TestGuestOrderService_VerifyOwnership_ActiveGuestOwner_TokenCarriesCustomer
 	orderID := uuid.New()
 	guest := model.CustomerTypeGuest
 	owner := &model.User{
-		ID: custID, Phone: "6281234567890", UserType: model.UserTypeCustomer,
+		ID: custID, Phone: strp("6281234567890"), UserType: model.UserTypeCustomer,
 		CustomerType: &guest, IsActive: true,
 	}
 	users := &fakeUserLookup{byID: map[uuid.UUID]*model.User{custID: owner}}
@@ -273,7 +273,7 @@ func TestGuestOrderService_VerifyOwnership_InvalidPhoneFormat_NotGenericSentinel
 	// distinct from the 401 "resi/phone don't match" case — must NOT be
 	// ErrGuestVerificationFailed.
 	custID := uuid.New()
-	owner := &model.User{ID: custID, Phone: "6281234567890", UserType: model.UserTypeCustomer}
+	owner := &model.User{ID: custID, Phone: strp("6281234567890"), UserType: model.UserTypeCustomer}
 	users := &fakeUserLookup{byID: map[uuid.UUID]*model.User{custID: owner}}
 	cmd := &fakeGuestOrderCmd{summary: &orderapi.OrderSummary{
 		ID: uuid.New(), Resi: "RJK-BADPHONE", CustomerID: custID, Status: "dibayar",

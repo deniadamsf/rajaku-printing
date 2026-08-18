@@ -55,6 +55,25 @@ var (
 	ErrOTPExpired         = errors.New("authapi: otp code not found or expired")
 	ErrOTPTooManyAttempts = errors.New("authapi: otp max attempts exceeded")
 	ErrOTPCooldown        = errors.New("authapi: otp resend cooldown active")
+
+	// Phone claim / ownership proof — §business rule: OTP hanya diterbitkan
+	// saat terjadi tabrakan identitas, bukan setiap registrasi/klaim nomor.
+	//
+	// ErrPhoneVerificationRequired — the phone the caller is trying to
+	// claim/register with is ALREADY OWNED BY SOMEONE ELSE (a different
+	// user_id — guest, registered, or staff) and no (or no valid) OTP was
+	// supplied to prove the caller actually controls that WhatsApp number.
+	// Distinct from ErrPhoneAlreadyUsed — this one is ACTIONABLE (the caller
+	// can request an OTP and retry); ErrPhoneAlreadyUsed is a dead end (the
+	// number's current owner can never be merged into, even with a valid
+	// OTP — see resolveUserForCompletion / PhoneClaimService.Claim).
+	ErrPhoneVerificationRequired = errors.New("authapi: phone already claimed by another account, verification required")
+	// ErrPhoneSelfVerificationRequired — the phone the caller is trying to
+	// verify is ALREADY ATTACHED TO THEIR OWN ACCOUNT, just not yet proven
+	// (phone_verified_at IS NULL). This is NOT a conflict with anyone else —
+	// deliberately a separate sentinel/code from ErrPhoneVerificationRequired
+	// so the frontend never tells a user "someone else has your own number".
+	ErrPhoneSelfVerificationRequired = errors.New("authapi: caller's own phone not yet verified, otp required")
 )
 
 // OTPCooldownError wraps ErrOTPCooldown with the exact remaining wait time

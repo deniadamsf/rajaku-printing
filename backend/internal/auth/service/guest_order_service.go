@@ -125,8 +125,13 @@ func (s *GuestOrderService) VerifyOwnership(ctx context.Context, resi, phoneRaw 
 
 	// Constant-time compare — defense against timing side-channels on phone
 	// guessing (spec requirement). Differing lengths already yield "no match"
-	// without a data-dependent branch.
-	phoneMatches := subtle.ConstantTimeCompare([]byte(owner.Phone), []byte(normalizedPhone)) == 1
+	// without a data-dependent branch. ownerPhone == "" (nil Phone) can never
+	// match — phone.Normalize above always yields a non-empty string.
+	ownerPhone := ""
+	if owner.Phone != nil {
+		ownerPhone = *owner.Phone
+	}
+	phoneMatches := subtle.ConstantTimeCompare([]byte(ownerPhone), []byte(normalizedPhone)) == 1
 	isActiveGuestCustomer := owner.UserType == model.UserTypeCustomer &&
 		owner.CustomerType != nil && *owner.CustomerType == model.CustomerTypeGuest &&
 		owner.IsActive
@@ -140,7 +145,7 @@ func (s *GuestOrderService) VerifyOwnership(ctx context.Context, resi, phoneRaw 
 		// defense in depth: even if the gate above is ever loosened, the
 		// issued token can never claim staff identity.
 		UserType: string(model.UserTypeCustomer),
-		Phone:    owner.Phone,
+		Phone:    ownerPhone,
 		Scope:    authapi.ScopeGuestOrder,
 		// Ties this token to the ONE order just verified — without this, a
 		// guest token from one resi would work for every other order owned

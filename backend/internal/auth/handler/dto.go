@@ -76,13 +76,59 @@ type googleRequestOTPRequest struct {
 }
 
 // googleRequestOTPResponse — POST /auth/google/request-otp response.
-// Deliberately identical in shape no matter the phone's status (see
-// service.RequestOTPOutput doc) — anti-enumeration.
+// OTPRequired deliberately REVEALS whether the phone is already claimed —
+// see service.RequestOTPOutput doc for why this is no longer anti-
+// enumeration. PhoneMasked/ExpiresIn/ResendAfterSeconds are only meaningful
+// when OTPRequired is true.
 type googleRequestOTPResponse struct {
-	Status            string `json:"status"` // always "otp_sent"
-	PhoneMasked       string `json:"phone_masked"`
-	ExpiresIn         int    `json:"expires_in"`          // seconds
-	ResendAvailableIn int    `json:"resend_available_in"` // seconds
+	OTPRequired        bool   `json:"otp_required"`
+	PhoneMasked        string `json:"phone_masked,omitempty"`
+	ExpiresIn          int    `json:"expires_in,omitempty"`
+	ResendAfterSeconds int    `json:"resend_after_seconds,omitempty"`
+}
+
+// ---- Phone claim (§ authenticated users adding/changing their own number) ----
+
+// phoneClaimRequestOTPRequest — POST /auth/phone/request-otp body
+// (authenticated). No `otp` field — this endpoint only ever ISSUES a
+// challenge, mirroring googleRequestOTPRequest.
+type phoneClaimRequestOTPRequest struct {
+	Phone string `json:"phone" binding:"required,min=8,max=20"`
+}
+
+// phoneClaimRequestOTPResponse — response contract for POST
+// /auth/phone/request-otp. `Reason` disambiguates WHY an OTP is/isn't
+// required so the frontend can pick accurate copy:
+//   - "free"           — nobody has this number, no OTP needed.
+//   - "self_verified"  — already the caller's own number AND already proven,
+//     nothing to do (no OTP sent).
+//   - "self_verify"    — already the caller's own number but NOT yet proven
+//     — NOT a conflict with anyone else, just needs the OTP round-trip.
+//   - "owned_by_other" — a DIFFERENT account (guest/registered/staff) holds
+//     this number — the conflict path, OTP proves ownership before claiming.
+type phoneClaimRequestOTPResponse struct {
+	OTPRequired        bool   `json:"otp_required"`
+	Reason             string `json:"reason"`
+	PhoneMasked        string `json:"phone_masked,omitempty"`
+	ExpiresIn          int    `json:"expires_in,omitempty"`
+	ResendAfterSeconds int    `json:"resend_after_seconds,omitempty"`
+}
+
+// phoneClaimRequest — POST /auth/phone body (authenticated) — add/change the
+// caller's own phone number. `otp` mandatory only when the number is already
+// claimed by someone (self-unverified or a different account) — see
+// service.PhoneClaimService.Claim.
+type phoneClaimRequest struct {
+	Phone string `json:"phone" binding:"required,min=8,max=20"`
+	OTP   string `json:"otp"   binding:"omitempty,min=6,max=8"`
+}
+
+// phoneClaimResponse — POST /auth/phone response. PhoneVerified is a boolean
+// projection of phone_verified_at — never leak the raw timestamp to
+// customers (§ /auth/me contract).
+type phoneClaimResponse struct {
+	Phone         string `json:"phone"`
+	PhoneVerified bool   `json:"phone_verified"`
 }
 
 // googleExchangeResponse is returned by both /exchange and /complete — its

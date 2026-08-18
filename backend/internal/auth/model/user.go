@@ -24,22 +24,37 @@ const (
 )
 
 type User struct {
-	ID            uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	Email         *string    `gorm:"uniqueIndex;size:255"                            json:"email,omitempty"`
-	Phone         string     `gorm:"uniqueIndex;size:20;not null"                    json:"phone"`
-	Name          string     `gorm:"size:255;not null"                               json:"name"`
-	PasswordHash  *string    `gorm:"size:255"                                        json:"-"`
-	UserType      UserType   `gorm:"size:20;not null"                                json:"user_type"`
-	CustomerType  *CustomerType `gorm:"size:20"                                      json:"customer_type,omitempty"`
-	OAuthProvider *string    `gorm:"column:oauth_provider;size:20"                   json:"oauth_provider,omitempty"`
-	OAuthSubject  *string    `gorm:"column:oauth_subject;size:255"                   json:"-"`
+	ID    uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	Email *string   `gorm:"uniqueIndex;size:255"                            json:"email,omitempty"`
+	// Phone — nullable (migration 000017): a Google-registered customer may
+	// skip supplying a WhatsApp number entirely (owner decision — OTP hanya
+	// diterbitkan saat benar-benar dibutuhkan untuk membuktikan kepemilikan,
+	// bukan setiap registrasi, supaya volume kirim WA lewat Baileys tidak
+	// memicu banned, §13). Uniqueness is enforced by a PARTIAL unique index
+	// (`WHERE phone IS NOT NULL`) so any number of NULL-phone accounts may
+	// coexist. Still the matching key (§11) for every row that DOES have one.
+	Phone *string `gorm:"size:20"                                         json:"phone,omitempty"`
+	// PhoneVerifiedAt — NULL means `Phone` is merely CLAIMED (typed in by the
+	// user, or attached by a kasir/POS walk-in) but never proven; non-NULL
+	// records when a WhatsApp OTP round-trip actually confirmed ownership
+	// (§ phone-claim review). Every write path that sets `Phone` MUST decide
+	// this column explicitly — never let it silently carry over a stale
+	// verification from a different number. Never expose the raw timestamp to
+	// customers; only derive a `phone_verified` boolean (see service.MeOutput).
+	PhoneVerifiedAt *time.Time    `gorm:"column:phone_verified_at"                        json:"-"`
+	Name            string        `gorm:"size:255;not null"                               json:"name"`
+	PasswordHash    *string       `gorm:"size:255"                                        json:"-"`
+	UserType        UserType      `gorm:"size:20;not null"                                json:"user_type"`
+	CustomerType    *CustomerType `gorm:"size:20"                                         json:"customer_type,omitempty"`
+	OAuthProvider   *string       `gorm:"column:oauth_provider;size:20"                   json:"oauth_provider,omitempty"`
+	OAuthSubject    *string       `gorm:"column:oauth_subject;size:255"                   json:"-"`
 	// NB: DB has DEFAULT TRUE — but GORM's `default:true` tag would silently
 	// overwrite an explicit `false` Go value (used by staff invite flow), so
 	// we drop it here. Every Go path currently sets IsActive explicitly.
-	IsActive      bool       `gorm:"not null"                                        json:"is_active"`
-	LastLoginAt   *time.Time `                                                       json:"last_login_at,omitempty"`
-	CreatedAt     time.Time  `gorm:"not null;default:now()"                          json:"created_at"`
-	UpdatedAt     time.Time  `gorm:"not null;default:now()"                          json:"updated_at"`
+	IsActive    bool       `gorm:"not null"                                        json:"is_active"`
+	LastLoginAt *time.Time `                                                       json:"last_login_at,omitempty"`
+	CreatedAt   time.Time  `gorm:"not null;default:now()"                          json:"created_at"`
+	UpdatedAt   time.Time  `gorm:"not null;default:now()"                          json:"updated_at"`
 
 	Roles []Role `gorm:"many2many:user_roles;joinForeignKey:user_id;joinReferences:role_id" json:"roles,omitempty"`
 }

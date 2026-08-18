@@ -27,11 +27,17 @@ const (
 	CodePhoneAlreadyUsed   = "PHONE_ALREADY_USED"
 	CodeEmailAlreadyUsed   = "EMAIL_ALREADY_USED"
 
-	// OTP WhatsApp verification (Google OAuth registration).
+	// OTP WhatsApp verification (Google OAuth registration + phone claim).
 	CodeOTPInvalid         = "OTP_INVALID"
 	CodeOTPExpired         = "OTP_EXPIRED"
 	CodeOTPTooManyAttempts = "OTP_TOO_MANY_ATTEMPTS"
 	CodeOTPCooldown        = "OTP_COOLDOWN"
+
+	// Phone claim / ownership proof (§ authapi.ErrPhoneVerificationRequired
+	// doc) — distinct from CodePhoneAlreadyUsed: this one means "supply an
+	// OTP and retry", not "pick a different number".
+	CodePhoneVerificationRequired     = "PHONE_ALREADY_IN_USE"
+	CodePhoneSelfVerificationRequired = "PHONE_SELF_VERIFICATION_REQUIRED"
 )
 
 // DomainError is the shared error type crossing service → handler layers.

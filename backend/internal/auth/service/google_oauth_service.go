@@ -43,8 +43,18 @@ type googleOAuthUserStore interface {
 	Create(ctx context.Context, u *model.User) error
 	UpdateLastLogin(ctx context.Context, id uuid.UUID) error
 	ExistsByEmail(ctx context.Context, email string) (bool, error)
+	// ExistsByPhone — used to decide whether a phone number needs an OTP
+	// round-trip at all (§ business rule: OTP hanya untuk tabrakan identitas,
+	// bukan setiap registrasi/klaim nomor — lihat RequestOTP/Complete).
+	ExistsByPhone(ctx context.Context, phone string) (bool, error)
 	LinkOAuth(ctx context.Context, id uuid.UUID, provider, subject string) error
 	UpgradeGuestToRegistered(ctx context.Context, id uuid.UUID, email *string, name, provider, subject string) error
+	// SetPhone — used by PhoneClaimService (authenticated users adding/
+	// changing their own number, and releasing a phone from an absorbed
+	// guest row). Not used by GoogleOAuthService itself, but living on the
+	// same shared interface avoids a second near-identical user-store
+	// narrowing in phone_claim_service.go (§22 least duplication).
+	SetPhone(ctx context.Context, id uuid.UUID, phone *string, verifiedAt *time.Time) error
 }
 
 // googleOAuthCodeStore narrows repository.OAuthLoginCodeRepository.
@@ -61,6 +71,15 @@ type googleOTPStore interface {
 	FindActive(ctx context.Context, handoffID uuid.UUID, phone string) (*model.PhoneVerification, error)
 	FindLatest(ctx context.Context, handoffID uuid.UUID, phone string) (*model.PhoneVerification, error)
 	CancelPendingForHandoff(ctx context.Context, handoffID uuid.UUID) error
+	// FindActiveByUser / FindLatestByUser / CancelPendingForUser — user_id-
+	// keyed counterparts of the three handoff-keyed methods above (migration
+	// 000017), used by PhoneClaimService (authenticated users proving
+	// ownership of their own phone, not a Google registration handoff).
+	// Living on this shared interface (rather than a second near-identical
+	// one) lets PhoneClaimService reuse phoneLockTxRunner as-is.
+	FindActiveByUser(ctx context.Context, userID uuid.UUID, phone string) (*model.PhoneVerification, error)
+	FindLatestByUser(ctx context.Context, userID uuid.UUID, phone string) (*model.PhoneVerification, error)
+	CancelPendingForUser(ctx context.Context, userID uuid.UUID) error
 	IncrementAttemptsIfAllowed(ctx context.Context, id uuid.UUID, maxAttempts int) (int, error)
 	MarkVerified(ctx context.Context, id uuid.UUID) error
 	MarkConsumed(ctx context.Context, id uuid.UUID) error
@@ -117,6 +136,11 @@ type GoogleOAuthService struct {
 	// txRunner — opens the single DB transaction Complete() needs across
 	// users/codes/otps (review finding #4). See google_oauth_tx.go.
 	txRunner googleOAuthTxRunner
+	// phoneLockRunner — opens a per-phone-number-scoped transaction (Postgres
+	// advisory lock) around the check-then-mutate sequences that gate OTP
+	// issuance and OTP verify attempts (review finding #1). See
+	// google_oauth_tx.go.
+	phoneLockRunner phoneLockTxRunner
 }
 
 func NewGoogleOAuthService(
@@ -130,7 +154,9 @@ func NewGoogleOAuthService(
 ) *GoogleOAuthService {
 	return &GoogleOAuthService{
 		users: users, codes: codes, otps: otps, google: google,
-		issuer: issuer, otpCfg: otpCfg, txRunner: newGormTxRunner(db),
+		issuer: issuer, otpCfg: otpCfg,
+		txRunner:        newGormTxRunner(db),
+		phoneLockRunner: newGormPhoneLockTxRunner(db),
 	}
 }
 
@@ -176,15 +202,27 @@ type RequestOTPInput struct {
 }
 
 // RequestOTPOutput — response contract for POST /auth/google/request-otp.
-// Deliberately identical in shape no matter whether the phone belongs to
-// nobody, a guest, a registered customer, or staff — the endpoint must not
-// leak that information at this stage (anti-enumeration; the ONLY place
-// phone-conflict is surfaced is Complete(), after the caller has actually
-// proven ownership of the number via the code sent here).
+//
+// NOT anti-enumeration anymore (owner decision, superseding this type's
+// original doc): OTPRequired now DELIBERATELY reveals whether `phone` is
+// already claimed by an existing `users` row (guest, registered, or staff) —
+// false means "free, no OTP needed, proceed straight to Complete()"; true
+// means "taken, prove ownership via the code just sent before Complete()
+// will accept it". This trade-off is intentional — sending a WhatsApp OTP to
+// every phone number typed into a registration form (even ones nobody has
+// ever claimed) burns Baileys' rate budget for no security benefit, since an
+// unclaimed number can't be used to hijack anyone's history anyway (§13:
+// Baileys is unofficial WhatsApp Web automation — high volume to strangers
+// risks the sending number getting banned). The endpoint is rate-limited on
+// its own strict bucket (RATE_LIMIT_OTP_*, see googleOTPLimited in
+// router.go) as the mitigation for the resulting enumeration surface.
 type RequestOTPOutput struct {
-	PhoneMasked       string
-	ExpiresIn         int // seconds
-	ResendAvailableIn int // seconds
+	OTPRequired bool
+	// PhoneMasked/ExpiresIn/ResendAfterSeconds are only meaningful when
+	// OTPRequired is true (an OTP was actually issued and sent).
+	PhoneMasked        string
+	ExpiresIn          int // seconds
+	ResendAfterSeconds int // seconds
 }
 
 // StartURL builds the Google consent-screen URL for the given anti-CSRF
@@ -389,14 +427,31 @@ func (s *GoogleOAuthService) exchangeSessionCode(ctx context.Context, rec *model
 // the instant the legitimate SPA calls this endpoint (normally within a
 // second of landing on the page), instead of remaining valid for up to 15
 // minutes.
+// exchangeRegistrationCode claims the OLD code and mints the NEW one in a
+// SINGLE transaction (review finding #3). Before this fix, the claim
+// (codes.MarkUsed) committed on its own; if generateToken(), codes.Create(),
+// or delivering the response to the caller failed/was lost AFTER that point,
+// the old code was permanently burned with no replacement anyone could use —
+// forcing the user to redo the entire Google consent screen, exactly what
+// this rotation was meant to avoid needing. Both operations only ever touch
+// oauth_login_codes, so the transaction boundary is clean — reuses the same
+// googleOAuthTxRunner Complete() uses, just with only tx.Codes exercised.
 func (s *GoogleOAuthService) exchangeRegistrationCode(ctx context.Context, rec *model.OAuthLoginCode) (*GoogleExchangeOutput, error) {
 	if rec.Subject == nil || rec.Email == nil {
 		return nil, fmt.Errorf("google oauth exchange: registration handoff code %s missing subject/email", rec.ID)
 	}
-	if err := s.claimHandoffCode(ctx, rec.ID); err != nil {
-		return nil, err
-	}
-	newCode, err := s.reissueRegistrationHandoff(ctx, rec)
+	var newCode string
+	err := s.txRunner.RunInTx(ctx, func(tx googleOAuthCompletionTx) error {
+		if err := claimHandoffCodeWith(ctx, tx.Codes, rec.ID); err != nil {
+			return err
+		}
+		reissued, err := reissueRegistrationHandoffWith(ctx, tx.Codes, rec)
+		if err != nil {
+			return err
+		}
+		newCode = reissued
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -409,10 +464,12 @@ func (s *GoogleOAuthService) exchangeRegistrationCode(ctx context.Context, rec *
 	}, nil
 }
 
-// reissueRegistrationHandoff mints a brand-new registration handoff code
+// reissueRegistrationHandoffWith mints a brand-new registration handoff code
 // carrying the SAME Google identity as `rec` — used by exchangeRegistrationCode
-// to rotate the code exposed in the browser URL.
-func (s *GoogleOAuthService) reissueRegistrationHandoff(ctx context.Context, rec *model.OAuthLoginCode) (string, error) {
+// to rotate the code exposed in the browser URL. Store-parameterized (like
+// claimHandoffCodeWith) so it can run against the transaction-scoped codes
+// store (review finding #3).
+func reissueRegistrationHandoffWith(ctx context.Context, codes googleOAuthCodeStore, rec *model.OAuthLoginCode) (string, error) {
 	newRec := &model.OAuthLoginCode{
 		Kind:         model.OAuthLoginCodeKindRegistration,
 		Provider:     rec.Provider,
@@ -427,18 +484,18 @@ func (s *GoogleOAuthService) reissueRegistrationHandoff(ctx context.Context, rec
 		return "", fmt.Errorf("google oauth exchange: generate rotated handoff code: %w", err)
 	}
 	newRec.CodeHash = hash
-	if err := s.codes.Create(ctx, newRec); err != nil {
+	if err := codes.Create(ctx, newRec); err != nil {
 		return "", fmt.Errorf("google oauth exchange: create rotated registration handoff: %w", err)
 	}
 	return raw, nil
 }
 
 // RequestOTP sends a WhatsApp OTP to prove ownership of the phone number
-// supplied for a registration handoff (§ security review finding A — WA
-// numbers aren't secret, so this MUST happen before any user row is
-// created/upgraded). Response shape is deliberately identical no matter the
-// phone's status (unclaimed / guest / registered / staff) — see
-// RequestOTPOutput doc.
+// supplied for a registration handoff — but ONLY when that number is already
+// claimed by an existing `users` row (§ business rule: OTP hanya diterbitkan
+// saat terjadi tabrakan identitas, bukan untuk setiap registrasi — lihat
+// RequestOTPOutput doc for why). An unclaimed number short-circuits with
+// OTPRequired=false and sends nothing at all.
 func (s *GoogleOAuthService) RequestOTP(ctx context.Context, in RequestOTPInput) (*RequestOTPOutput, error) {
 	rec, err := s.lookupActiveCode(ctx, in.Code)
 	if err != nil {
@@ -453,60 +510,91 @@ func (s *GoogleOAuthService) RequestOTP(ctx context.Context, in RequestOTPInput)
 		return nil, fmt.Errorf("phone invalid: %w", err)
 	}
 
-	// Cross-handoff, per-phone cap (review finding #2) — checked BEFORE the
-	// per-handoff cooldown below: without this, an attacker who opens a fresh
-	// registration handoff for every request gets a fresh (handoff, phone)
-	// cooldown bucket every time, so the per-handoff check alone never
-	// engages no matter how many WhatsApp messages get fired at the same
-	// victim number.
-	if err := s.checkPerPhoneIssueCap(ctx, normalizedPhone); err != nil {
-		return nil, err
+	taken, err := s.users.ExistsByPhone(ctx, normalizedPhone)
+	if err != nil {
+		return nil, fmt.Errorf("google oauth request otp: check phone existence: %w", err)
 	}
-
-	if err := s.checkResendCooldown(ctx, rec.ID, normalizedPhone); err != nil {
-		return nil, err
-	}
-
-	// At most one active challenge per handoff at a time — cancel whatever
-	// was pending (even under a different, possibly typo'd, phone number)
-	// before issuing the new one.
-	if err := s.otps.CancelPendingForHandoff(ctx, rec.ID); err != nil {
-		return nil, fmt.Errorf("google oauth request otp: cancel previous challenge: %w", err)
+	if !taken {
+		return &RequestOTPOutput{OTPRequired: false}, nil
 	}
 
 	code, err := generateOTPCode(s.otpCfg.CodeLength)
 	if err != nil {
 		return nil, fmt.Errorf("google oauth request otp: %w", err)
 	}
-	pv := &model.PhoneVerification{
-		OAuthLoginCodeID: rec.ID,
-		Phone:            normalizedPhone,
-		CodeHash:         hashOTP(normalizedPhone, code),
-		ExpiresAt:        time.Now().UTC().Add(s.otpCfg.TTL),
-	}
-	if err := s.otps.Create(ctx, pv); err != nil {
-		return nil, fmt.Errorf("google oauth request otp: create challenge: %w", err)
+
+	// Everything that reads-then-writes per-phone state runs inside ONE
+	// transaction, opened under a Postgres advisory lock scoped to
+	// normalizedPhone (review finding #1 — TOCTOU: without the lock, N
+	// concurrent requests for the same number could all read a low
+	// count/cooldown and all pass, letting the per-phone cap be bypassed
+	// entirely under enough parallelism). checkResendCooldown rides along
+	// here too — it has the exact same read-then-write shape and there's no
+	// reason to leave it unprotected once the transaction boundary exists.
+	var pv *model.PhoneVerification
+	err = s.phoneLockRunner.RunInTx(ctx, normalizedPhone, func(tx googleOTPStore) error {
+		if err := checkPerPhoneIssueCapWith(ctx, tx, normalizedPhone, s.otpCfg.MaxPerPhoneHour); err != nil {
+			return err
+		}
+		if err := checkResendCooldownWith(ctx, tx, rec.ID, normalizedPhone, s.otpCfg.ResendCooldown); err != nil {
+			return err
+		}
+		// At most one active challenge per handoff at a time — cancel
+		// whatever was pending (even under a different, possibly typo'd,
+		// phone number) before issuing the new one.
+		if err := tx.CancelPendingForHandoff(ctx, rec.ID); err != nil {
+			return fmt.Errorf("google oauth request otp: cancel previous challenge: %w", err)
+		}
+		newPV := &model.PhoneVerification{
+			OAuthLoginCodeID: &rec.ID,
+			Phone:            normalizedPhone,
+			CodeHash:         hashOTP(normalizedPhone, code),
+			ExpiresAt:        time.Now().UTC().Add(s.otpCfg.TTL),
+		}
+		if err := tx.Create(ctx, newPV); err != nil {
+			return fmt.Errorf("google oauth request otp: create challenge: %w", err)
+		}
+		pv = newPV
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
+	// Enqueuing the WA send is deliberately OUTSIDE the transaction above —
+	// it writes to a different module's table (notification_jobs) and best
+	// left out of the phone-lock tx's blast radius/duration.
 	if err := s.sendOTP(ctx, normalizedPhone, code, pv.ID); err != nil {
 		return nil, err
 	}
 
 	return &RequestOTPOutput{
-		PhoneMasked:       phone.Mask(normalizedPhone),
-		ExpiresIn:         int(s.otpCfg.TTL.Seconds()),
-		ResendAvailableIn: int(s.otpCfg.ResendCooldown.Seconds()),
+		OTPRequired:        true,
+		PhoneMasked:        phone.Mask(normalizedPhone),
+		ExpiresIn:          int(s.otpCfg.TTL.Seconds()),
+		ResendAfterSeconds: int(s.otpCfg.ResendCooldown.Seconds()),
 	}, nil
 }
 
 // sendOTP renders the fixed WA message template and enqueues it — best-
 // effort via the notification module's job queue (§13: never send WA
-// synchronously in the request path).
+// synchronously in the request path). Thin wrapper over sendPhoneOTP (shared
+// with PhoneClaimService — §22 least duplication).
 func (s *GoogleOAuthService) sendOTP(ctx context.Context, normalizedPhone, code string, challengeID uuid.UUID) error {
-	if s.otpSender == nil {
-		return fmt.Errorf("google oauth request otp: notification sender not configured")
+	return sendPhoneOTP(ctx, s.otpSender, s.otpCfg, normalizedPhone, code, challengeID)
+}
+
+// sendPhoneOTP renders the fixed WA message template and enqueues it — best-
+// effort via the notification module's job queue (§13: never send WA
+// synchronously in the request path). Free function so both
+// GoogleOAuthService (registration) and PhoneClaimService (authenticated
+// users adding/changing their own number) share the exact same message
+// template instead of drifting apart.
+func sendPhoneOTP(ctx context.Context, sender notificationapi.OTPSender, cfg OTPConfig, normalizedPhone, code string, challengeID uuid.UUID) error {
+	if sender == nil {
+		return fmt.Errorf("send phone otp: notification sender not configured")
 	}
-	minutes := int(s.otpCfg.TTL.Minutes())
+	minutes := int(cfg.TTL.Minutes())
 	if minutes < 1 {
 		minutes = 1
 	}
@@ -515,26 +603,53 @@ func (s *GoogleOAuthService) sendOTP(ctx context.Context, normalizedPhone, code 
 		code, minutes,
 	)
 	dedup := "otp:" + challengeID.String()
-	if err := s.otpSender.EnqueueOTP(ctx, normalizedPhone, message, dedup); err != nil {
-		return fmt.Errorf("google oauth request otp: enqueue notification: %w", err)
+	if err := sender.EnqueueOTP(ctx, normalizedPhone, message, dedup); err != nil {
+		return fmt.Errorf("send phone otp: enqueue notification: %w", err)
 	}
 	return nil
 }
 
-// checkResendCooldown enforces OTP_RESEND_COOLDOWN for (handoffID, phone).
-func (s *GoogleOAuthService) checkResendCooldown(ctx context.Context, handoffID uuid.UUID, normalizedPhone string) error {
-	latest, err := s.otps.FindLatest(ctx, handoffID, normalizedPhone)
+// checkResendCooldownWith enforces OTP_RESEND_COOLDOWN for (handoffID,
+// phone). Store-parameterized (review finding #1) so RequestOTP can run it
+// against the phone-lock-scoped transaction store instead of s.otps directly
+// — it has the exact same "read latest, then decide whether to write" shape
+// as the two per-phone cap checks below, so it rides along inside the same
+// advisory-lock transaction rather than being left as a separate, still-racy
+// call.
+func checkResendCooldownWith(ctx context.Context, otps googleOTPStore, handoffID uuid.UUID, normalizedPhone string, cooldown time.Duration) error {
+	latest, err := otps.FindLatest(ctx, handoffID, normalizedPhone)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			return nil
 		}
 		return fmt.Errorf("google oauth request otp: check resend cooldown: %w", err)
 	}
-	elapsed := time.Since(latest.CreatedAt)
-	if elapsed >= s.otpCfg.ResendCooldown {
+	return cooldownErrorFromLatest(latest.CreatedAt, cooldown)
+}
+
+// checkResendCooldownForUserWith is checkResendCooldownWith's user_id-keyed
+// counterpart (PhoneClaimService — an authenticated user proving ownership of
+// their own phone, not a Google registration handoff).
+func checkResendCooldownForUserWith(ctx context.Context, otps googleOTPStore, userID uuid.UUID, normalizedPhone string, cooldown time.Duration) error {
+	latest, err := otps.FindLatestByUser(ctx, userID, normalizedPhone)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("phone claim request otp: check resend cooldown: %w", err)
+	}
+	return cooldownErrorFromLatest(latest.CreatedAt, cooldown)
+}
+
+// cooldownErrorFromLatest is the shared "how much longer must the caller
+// wait" computation behind both checkResendCooldownWith and
+// checkResendCooldownForUserWith.
+func cooldownErrorFromLatest(latestCreatedAt time.Time, cooldown time.Duration) error {
+	elapsed := time.Since(latestCreatedAt)
+	if elapsed >= cooldown {
 		return nil
 	}
-	remaining := s.otpCfg.ResendCooldown - elapsed
+	remaining := cooldown - elapsed
 	// Round UP to the next whole second so the client never polls a moment
 	// too early and gets rejected again.
 	secs := int(remaining.Seconds())
@@ -544,19 +659,24 @@ func (s *GoogleOAuthService) checkResendCooldown(ctx context.Context, handoffID 
 	return &authapi.OTPCooldownError{ResendAvailableIn: secs}
 }
 
-// checkPerPhoneIssueCap enforces OTP_MAX_PER_PHONE_HOUR — how many OTP
+// checkPerPhoneIssueCapWith enforces OTP_MAX_PER_PHONE_HOUR — how many OTP
 // challenges may be ISSUED to one WhatsApp number per hour, across every
 // registration handoff (review finding #2). Distinct from
-// checkResendCooldown above, which only throttles resends WITHIN a single
-// handoff — that alone does nothing to stop an attacker from opening a new
-// handoff per request to reset the cooldown clock.
-func (s *GoogleOAuthService) checkPerPhoneIssueCap(ctx context.Context, normalizedPhone string) error {
+// checkResendCooldownWith above, which only throttles resends WITHIN a
+// single handoff — that alone does nothing to stop an attacker from opening
+// a new handoff per request to reset the cooldown clock.
+//
+// Store-parameterized (review finding #1): RequestOTP calls this against the
+// phone-lock-scoped transaction store so the COUNT this reads and the
+// otps.Create() that follows it (if the cap isn't hit) can never be split by
+// a concurrent request reading the same stale count.
+func checkPerPhoneIssueCapWith(ctx context.Context, otps googleOTPStore, normalizedPhone string, maxPerPhoneHour int) error {
 	since := time.Now().UTC().Add(-time.Hour)
-	count, oldest, err := s.otps.CountAndOldestSince(ctx, normalizedPhone, since)
+	count, oldest, err := otps.CountAndOldestSince(ctx, normalizedPhone, since)
 	if err != nil {
 		return fmt.Errorf("google oauth request otp: check per-phone issue cap: %w", err)
 	}
-	if count < int64(s.otpCfg.MaxPerPhoneHour) {
+	if count < int64(maxPerPhoneHour) {
 		return nil
 	}
 	// The cap clears exactly one hour after the oldest challenge in the
@@ -575,29 +695,42 @@ func (s *GoogleOAuthService) checkPerPhoneIssueCap(ctx context.Context, normaliz
 	return &authapi.OTPCooldownError{ResendAvailableIn: resendIn}
 }
 
-// checkPerPhoneFailedCap enforces OTP_MAX_FAILED_PER_PHONE_HOUR — the total
-// number of verify attempts logged against one WhatsApp number per hour,
-// across every registration handoff (review finding #2). Without this, an
-// attacker could open several handoffs for the same victim phone, each
+// checkPerPhoneFailedCapWith enforces OTP_MAX_FAILED_PER_PHONE_HOUR — the
+// total number of verify attempts logged against one WhatsApp number per
+// hour, across every registration handoff (review finding #2). Without this,
+// an attacker could open several handoffs for the same victim phone, each
 // carrying its own full OTP_MAX_ATTEMPTS budget, and keep guessing the code
 // far past what any single handoff's ceiling allows.
-func (s *GoogleOAuthService) checkPerPhoneFailedCap(ctx context.Context, normalizedPhone string) error {
+//
+// Store-parameterized (review finding #1): verifyOTP calls this against the
+// phone-lock-scoped transaction store so the SUM this reads and the
+// IncrementAttemptsIfAllowed() that follows it are atomic with respect to
+// other concurrent verify attempts against the same phone.
+func checkPerPhoneFailedCapWith(ctx context.Context, otps googleOTPStore, normalizedPhone string, maxFailedPerPhoneHour int) error {
 	since := time.Now().UTC().Add(-time.Hour)
-	total, err := s.otps.SumAttemptsSince(ctx, normalizedPhone, since)
+	total, err := otps.SumAttemptsSince(ctx, normalizedPhone, since)
 	if err != nil {
 		return fmt.Errorf("google oauth complete: check per-phone attempt cap: %w", err)
 	}
-	if total >= int64(s.otpCfg.MaxFailedPerPhoneHour) {
+	if total >= int64(maxFailedPerPhoneHour) {
 		return authapi.ErrOTPTooManyAttempts
 	}
 	return nil
 }
 
-// Complete finishes the registration flow: verifies the OTP sent by
-// RequestOTP, claims the handoff code, resolves the phone number against
-// `users` (create new, or upgrade a matching guest — §11: 1 nomor WA = 1
-// identitas lintas channel), links the Google identity, and issues a real
-// session.
+// Complete finishes the registration flow: resolves the (now optional) phone
+// number against `users` and issues a real session. Phone handling (§
+// business rule — OTP hanya untuk tabrakan identitas):
+//   - Phone blank/absent → account created with no phone at all.
+//   - Phone provided, currently unclaimed → account created with the number
+//     attached but UNVERIFIED (phone_verified_at stays NULL) — no OTP needed.
+//   - Phone provided, already claimed by an existing `users` row → an `otp`
+//     MUST be supplied and verified (authapi.ErrPhoneVerificationRequired
+//     otherwise). Once verified: a GUEST owner is upgraded in place (§11: 1
+//     nomor WA = 1 identitas, riwayat gabung); a STAFF or already-REGISTERED
+//     owner is never merged into — OTP proves WA ownership, not that
+//     account's password (authapi.ErrPhoneAlreadyUsed, a dead end requiring a
+//     different number).
 func (s *GoogleOAuthService) Complete(ctx context.Context, in CompleteGoogleInput) (*GoogleExchangeOutput, error) {
 	rec, err := s.lookupActiveCode(ctx, in.Code)
 	if err != nil {
@@ -610,9 +743,13 @@ func (s *GoogleOAuthService) Complete(ctx context.Context, in CompleteGoogleInpu
 		return nil, fmt.Errorf("google oauth complete: registration handoff code %s missing subject/email", rec.ID)
 	}
 
-	normalizedPhone, err := phone.Normalize(in.Phone)
-	if err != nil {
-		return nil, fmt.Errorf("phone invalid: %w", err)
+	var normalizedPhone *string
+	if trimmed := strings.TrimSpace(in.Phone); trimmed != "" {
+		p, err := phone.Normalize(trimmed)
+		if err != nil {
+			return nil, fmt.Errorf("phone invalid: %w", err)
+		}
+		normalizedPhone = &p
 	}
 
 	// Resolve + validate the display name BEFORE touching the OTP challenge.
@@ -630,12 +767,27 @@ func (s *GoogleOAuthService) Complete(ctx context.Context, in CompleteGoogleInpu
 		return nil, fmt.Errorf("name required: %w", errBadInput)
 	}
 
-	// verifyOTP is deliberately OUTSIDE the transaction below: its attempts
-	// counter must stay incremented even if everything after it rolls back
-	// (that's the entire point of counting attempts — see verifyOTP's doc).
-	pv, err := s.verifyOTP(ctx, rec.ID, normalizedPhone, in.OTP)
-	if err != nil {
-		return nil, err
+	// pv stays nil unless the phone is both provided AND already claimed by
+	// someone — that's the ONLY case an OTP round-trip is required. verifyOTP
+	// (when it runs) is deliberately OUTSIDE the transaction below: its
+	// attempts counter must stay incremented even if everything after it
+	// rolls back (that's the entire point of counting attempts — see
+	// verifyOTP's doc).
+	var pv *model.PhoneVerification
+	if normalizedPhone != nil {
+		taken, err := s.users.ExistsByPhone(ctx, *normalizedPhone)
+		if err != nil {
+			return nil, fmt.Errorf("google oauth complete: check phone existence: %w", err)
+		}
+		if taken {
+			if strings.TrimSpace(in.OTP) == "" {
+				return nil, authapi.ErrPhoneVerificationRequired
+			}
+			pv, err = s.verifyOTP(ctx, rec.ID, *normalizedPhone, in.OTP)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// claim handoff + resolve user (create/upgrade) + consume OTP + update
@@ -652,12 +804,14 @@ func (s *GoogleOAuthService) Complete(ctx context.Context, in CompleteGoogleInpu
 			return err
 		}
 		var resolveErr error
-		u, resolveErr = resolveUserForCompletion(ctx, tx.Users, normalizedPhone, name, *rec.Subject, *rec.Email)
+		u, resolveErr = resolveUserForCompletion(ctx, tx.Users, normalizedPhone, pv != nil, name, *rec.Subject, *rec.Email)
 		if resolveErr != nil {
 			return resolveErr
 		}
-		if err := tx.OTPs.MarkConsumed(ctx, pv.ID); err != nil {
-			return fmt.Errorf("google oauth complete: mark otp consumed: %w", err)
+		if pv != nil {
+			if err := tx.OTPs.MarkConsumed(ctx, pv.ID); err != nil {
+				return fmt.Errorf("google oauth complete: mark otp consumed: %w", err)
+			}
 		}
 		if err := tx.Users.UpdateLastLogin(ctx, u.ID); err != nil {
 			return fmt.Errorf("google oauth complete: update last login: %w", err)
@@ -676,46 +830,94 @@ func (s *GoogleOAuthService) Complete(ctx context.Context, in CompleteGoogleInpu
 }
 
 // verifyOTP looks up the active challenge for (handoffID, phone) and
-// constant-time-compares the hash. The attempts ceiling is enforced as part
-// of the SAME atomic UPDATE that increments the counter (review finding #1
-// — repository.IncrementAttemptsIfAllowed), so no window exists between
-// reading a stale attempts value and deciding whether a guess is allowed.
-// Every call reaching the increment counts as an attempt, whether the code
-// turns out right or wrong — increment happens BEFORE the hash comparison,
-// unconditionally, not just on the wrong-guess branch.
+// constant-time-compares the hash. The per-phone failed-attempt cap check and
+// the attempts-ceiling increment run together inside ONE transaction, opened
+// under a Postgres advisory lock scoped to normalizedPhone (review finding
+// #1 — repository.PhoneVerificationRepository.LockPhone /
+// IncrementAttemptsIfAllowed), so no window exists between reading a stale
+// SUM/attempts value and deciding whether a guess is allowed — for THIS
+// specific challenge row AND across every other handoff open for the same
+// phone number. Every call reaching the increment counts as an attempt,
+// whether the code turns out right or wrong — increment happens BEFORE the
+// hash comparison, unconditionally, not just on the wrong-guess branch.
+//
+// This transaction is DELIBERATELY SEPARATE from Complete()'s claim+resolve+
+// consume transaction (googleOAuthTxRunner) — the attempts counter bumped
+// here must stay incremented even if everything Complete() does afterward
+// rolls back (that's the entire point of counting attempts).
+//
+// Thin wrapper over verifyPhoneOTP (shared with PhoneClaimService — §22
+// least duplication): only the "how do I find the active challenge" step
+// differs (handoff-scoped here vs. user-scoped there).
 func (s *GoogleOAuthService) verifyOTP(ctx context.Context, handoffID uuid.UUID, normalizedPhone, otp string) (*model.PhoneVerification, error) {
-	if err := s.checkPerPhoneFailedCap(ctx, normalizedPhone); err != nil {
-		return nil, err
-	}
+	return verifyPhoneOTP(ctx, s.otps, s.phoneLockRunner, s.otpCfg, normalizedPhone, otp,
+		func(ctx context.Context, otps googleOTPStore) (*model.PhoneVerification, error) {
+			return otps.FindActive(ctx, handoffID, normalizedPhone)
+		})
+}
 
-	pv, err := s.otps.FindActive(ctx, handoffID, normalizedPhone)
+// verifyPhoneOTP is the shared engine behind GoogleOAuthService.verifyOTP
+// (Google registration handoff) and PhoneClaimService.verifyOTP
+// (authenticated user proving ownership of their own number) — both need the
+// identical constant-time compare + per-phone failed-attempt cap +
+// gated-attempts-increment dance; they only differ in HOW the active
+// challenge row is looked up (`findActive`), which the caller supplies.
+func verifyPhoneOTP(
+	ctx context.Context,
+	otps googleOTPStore,
+	lockRunner phoneLockTxRunner,
+	cfg OTPConfig,
+	normalizedPhone, otp string,
+	findActive func(context.Context, googleOTPStore) (*model.PhoneVerification, error),
+) (*model.PhoneVerification, error) {
+	pv, err := findActive(ctx, otps)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			return nil, authapi.ErrOTPExpired
 		}
-		return nil, fmt.Errorf("google oauth complete: lookup otp challenge: %w", err)
+		return nil, fmt.Errorf("verify phone otp: lookup challenge: %w", err)
 	}
 
-	attempts, err := s.otps.IncrementAttemptsIfAllowed(ctx, pv.ID, s.otpCfg.MaxAttempts)
-	if err != nil {
-		if errors.Is(err, repository.ErrAttemptsExceeded) {
-			return nil, authapi.ErrOTPTooManyAttempts
+	var attempts int
+	err = lockRunner.RunInTx(ctx, normalizedPhone, func(tx googleOTPStore) error {
+		if err := checkPerPhoneFailedCapWith(ctx, tx, normalizedPhone, cfg.MaxFailedPerPhoneHour); err != nil {
+			return err
 		}
-		return nil, fmt.Errorf("google oauth complete: increment otp attempts: %w", err)
+		a, err := tx.IncrementAttemptsIfAllowed(ctx, pv.ID, cfg.MaxAttempts)
+		if err != nil {
+			return err
+		}
+		attempts = a
+		return nil
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, authapi.ErrOTPTooManyAttempts):
+			return nil, err
+		case errors.Is(err, repository.ErrAttemptsExceeded):
+			return nil, authapi.ErrOTPTooManyAttempts
+		case errors.Is(err, repository.ErrNotFound):
+			// The challenge stopped being active (consumed/expired) between
+			// findActive above and the gated increment — same outcome as
+			// findActive itself returning ErrNotFound (review finding #5a).
+			return nil, authapi.ErrOTPExpired
+		default:
+			return nil, fmt.Errorf("verify phone otp: increment attempts: %w", err)
+		}
 	}
 
 	want := []byte(pv.CodeHash)
 	got := []byte(hashOTP(normalizedPhone, otp))
 	if subtle.ConstantTimeCompare(got, want) != 1 {
-		left := s.otpCfg.MaxAttempts - attempts
+		left := cfg.MaxAttempts - attempts
 		if left < 0 {
 			left = 0
 		}
 		return nil, &authapi.OTPInvalidError{AttemptsLeft: left}
 	}
 
-	if err := s.otps.MarkVerified(ctx, pv.ID); err != nil {
-		return nil, fmt.Errorf("google oauth complete: mark otp verified: %w", err)
+	if err := otps.MarkVerified(ctx, pv.ID); err != nil {
+		return nil, fmt.Errorf("verify phone otp: mark verified: %w", err)
 	}
 	return pv, nil
 }
@@ -744,23 +946,49 @@ func claimHandoffCodeWith(ctx context.Context, codes googleOAuthCodeStore, id uu
 	return nil
 }
 
-// resolveUserForCompletion — see spec: no user with this phone yet → create
-// a brand-new registered customer; phone belongs to staff or an already-
-// registered customer → reject (phone is the unique matching key, can't be
-// claimed twice); phone belongs to a guest customer → upgrade in place so
-// existing order history stays attached to the same user_id (§11).
+// resolveUserForCompletion decides how to create/attach the user row for a
+// Google registration completion (§ business rule — phone is now optional and
+// OTP-conditional):
+//   - phoneOptional == nil → brand-new customer created with no phone at all.
+//   - phoneOptional != nil && !phoneVerified → caller either supplied a
+//     number nobody has claimed (Complete()'s own ExistsByPhone check, moments
+//     earlier, said so), or never went through the OTP path at all. Either
+//     way, an authoritative re-check happens HERE, inside the transaction: if
+//     the number turns out to belong to someone by the time THIS lookup runs
+//     (race, or an OTP-less caller lying about the number being free),
+//     reject — an unverified claim must NEVER silently attach to an existing
+//     row, guest or not. That's exactly the account-takeover hole OTP exists
+//     to close, and it can't be allowed to reopen through a TOCTOU window.
+//   - phoneOptional != nil && phoneVerified → caller has JUST verified a
+//     correct OTP for this number (proves ownership). Nobody owns it (yet) →
+//     create fresh with phone_verified_at set. A GUEST owns it → upgrade in
+//     place (merge history, §11). Staff / already-registered owners are
+//     NEVER merged into, even with a valid OTP — OTP proves WA ownership, not
+//     the target account's password; silently attaching would be an account
+//     takeover via a different channel (authapi.ErrPhoneAlreadyUsed, a dead
+//     end requiring a different number).
 //
 // Takes the store as a parameter (rather than a method on *GoogleOAuthService)
 // so Complete() can pass either the service's own store or a
 // transaction-scoped one (review finding #4) — this function has no other
 // dependency on the service.
-func resolveUserForCompletion(ctx context.Context, users googleOAuthUserStore, normalizedPhone, name, subject, email string) (*model.User, error) {
-	existing, err := users.FindByPhone(ctx, normalizedPhone)
+func resolveUserForCompletion(ctx context.Context, users googleOAuthUserStore, phoneOptional *string, phoneVerified bool, name, subject, email string) (*model.User, error) {
+	if phoneOptional == nil {
+		return createRegisteredCustomer(ctx, users, nil, false, name, subject, email)
+	}
+
+	existing, err := users.FindByPhone(ctx, *phoneOptional)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			return createRegisteredCustomer(ctx, users, normalizedPhone, name, subject, email)
+			return createRegisteredCustomer(ctx, users, phoneOptional, phoneVerified, name, subject, email)
 		}
 		return nil, fmt.Errorf("google oauth complete: lookup phone: %w", err)
+	}
+
+	if !phoneVerified {
+		// See doc above — an unproven claim must never attach to an existing
+		// row, no matter what type it is.
+		return nil, authapi.ErrPhoneVerificationRequired
 	}
 
 	isRegisteredCustomer := existing.CustomerType != nil && *existing.CustomerType == model.CustomerTypeRegistered
@@ -771,7 +999,12 @@ func resolveUserForCompletion(ctx context.Context, users googleOAuthUserStore, n
 	return upgradeGuestCustomer(ctx, users, existing, name, subject, email)
 }
 
-func createRegisteredCustomer(ctx context.Context, users googleOAuthUserStore, normalizedPhone, name, subject, email string) (*model.User, error) {
+// createRegisteredCustomer inserts a brand-new registered customer.
+// `phoneOptional` nil leaves the phone column NULL; non-nil attaches it, with
+// phone_verified_at set ONLY when `phoneVerified` is true (an unclaimed
+// number a caller merely typed in is claimed-but-unproven, matching the
+// business rule — see resolveUserForCompletion's doc).
+func createRegisteredCustomer(ctx context.Context, users googleOAuthUserStore, phoneOptional *string, phoneVerified bool, name, subject, email string) (*model.User, error) {
 	if used, err := users.ExistsByEmail(ctx, email); err != nil {
 		return nil, fmt.Errorf("google oauth complete: check email uniqueness: %w", err)
 	} else if used {
@@ -782,13 +1015,17 @@ func createRegisteredCustomer(ctx context.Context, users googleOAuthUserStore, n
 	provider := "google"
 	u := &model.User{
 		Email:         &email,
-		Phone:         normalizedPhone,
+		Phone:         phoneOptional,
 		Name:          name,
 		UserType:      model.UserTypeCustomer,
 		CustomerType:  &registered,
 		OAuthProvider: &provider,
 		OAuthSubject:  &subject,
 		IsActive:      true,
+	}
+	if phoneOptional != nil && phoneVerified {
+		now := time.Now().UTC()
+		u.PhoneVerifiedAt = &now
 	}
 	if err := users.Create(ctx, u); err != nil {
 		return nil, fmt.Errorf("google oauth complete: create user: %w", err)
@@ -797,7 +1034,11 @@ func createRegisteredCustomer(ctx context.Context, users googleOAuthUserStore, n
 }
 
 // upgradeGuestCustomer promotes a matching guest to customer_type=registered
-// with a linked Google identity.
+// with a linked Google identity. Only ever called once resolveUserForCompletion
+// has already confirmed phoneVerified==true, so UserRepository.UpgradeGuestToRegistered
+// unconditionally stamps phone_verified_at — the guest's phone was unverified
+// by construction (POS never runs an OTP round-trip) and this call is exactly
+// the moment ownership got proven.
 //
 //   - Staff-only accounts and IsActive checks mirror the other resolution
 //     branches in this file (review finding #7 — this branch used to skip

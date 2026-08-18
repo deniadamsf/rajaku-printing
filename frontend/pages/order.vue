@@ -71,7 +71,7 @@ const form = reactive({
 onMounted(() => {
   if (auth.isCustomer && auth.user) {
     form.guestName = auth.user.name
-    form.guestPhone = auth.user.phone
+    form.guestPhone = auth.user.phone || ''
   }
 })
 

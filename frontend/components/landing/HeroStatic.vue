@@ -8,12 +8,17 @@
  */
 import { ArrowRight } from '@lucide/vue'
 import { motion } from 'motion-v'
+
+// Bisa diganti admin (/admin/site-media, slot hero_poster_mobile) tanpa deploy
+// ulang — fallback ke aset statis kalau slot kosong/backend mati.
+const { resolve: resolveMedia } = useSiteMedia()
+const heroPosterMobile = computed(() => resolveMedia('hero_poster_mobile'))
 </script>
 
 <template>
   <section class="relative overflow-hidden bg-ink-950">
     <img
-      src="/hero/poster-mobile.webp"
+      :src="heroPosterMobile"
       alt="Proses cetak banner large-format Rajaku Printing"
       width="828"
       height="466"

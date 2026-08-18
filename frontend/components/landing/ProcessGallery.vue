@@ -17,56 +17,66 @@ import { motion } from 'motion-v'
 
 interface ProcessItem {
   area: 'a' | 'b' | 'c' | 'd' | 'e' | 'f'
-  src: string
+  /** Slot sitemedia (§ modul sitemedia) — dipetakan ke path statis di useSiteMedia.ts. */
+  slot: string
   alt: string
   caption: string
   label: string
 }
 
-const items: ProcessItem[] = [
+const rawItems: ProcessItem[] = [
   {
     area: 'a',
-    src: '/proses/proses-04.webp',
+    slot: 'proses_4',
     alt: 'Mesin cetak large-format Rajaku Printing tampak penuh, siap memproses pesanan',
     caption: 'Mesin cetak large-format Rajaku Printing, siap memproses pesanan banner.',
     label: 'Workshop',
   },
   {
     area: 'b',
-    src: '/proses/proses-01.webp',
+    slot: 'proses_1',
     alt: 'Panel kontrol mesin cetak dan tabung tinta',
     caption: 'Panel kontrol & tabung tinta dicek sebelum proses cetak dimulai.',
     label: 'Kalibrasi',
   },
   {
     area: 'c',
-    src: '/proses/proses-03.webp',
+    slot: 'proses_3',
     alt: 'Detail print-head bergerak di atas bahan banner',
     caption: 'Print-head bergerak presisi mengaplikasikan tinta ke bahan banner.',
     label: 'Print-head',
   },
   {
     area: 'd',
-    src: '/proses/proses-02.webp',
+    slot: 'proses_2',
     alt: 'Banner mulai tercetak keluar dari mesin',
     caption: 'Banner mulai tercetak, keluar dari mesin lembar demi lembar.',
     label: 'Mencetak',
   },
   {
     area: 'e',
-    src: '/proses/proses-05.webp',
+    slot: 'proses_5',
     alt: 'Banner hasil cetak digulung rapi di atas roll',
     caption: 'Banner hasil cetak digulung rapi setelah proses selesai.',
     label: 'Selesai cetak',
   },
   {
     area: 'f',
-    src: '/proses/proses-06.webp',
+    slot: 'proses_6',
     alt: 'Hasil akhir cetak banner tampak lebar',
     caption: 'Hasil akhir cetak — warna presisi, siap masuk tahap finishing.',
     label: 'Hasil akhir',
   },
 ]
+
+// Bisa diganti admin (/admin/site-media, slot proses_1..6) tanpa deploy ulang.
+// `await ready` — komponen ini SSR normal (tidak di dalam <ClientOnly>), jadi
+// HTML awal wajib sudah dapat gambar final untuk SEO/first paint.
+const { resolve: resolveMedia, ready: siteMediaReady } = useSiteMedia()
+await siteMediaReady
+const items = computed(() =>
+  rawItems.map((p) => ({ ...p, src: resolveMedia(p.slot) })),
+)
 
 const { container, item } = useRevealVariants({ y: 20 })
 
@@ -105,7 +115,7 @@ function openAt(i: number, e: MouseEvent) {
     >
       <motion.button
         v-for="(p, i) in items"
-        :key="p.src"
+        :key="p.area"
         type="button"
         :variants="item"
         :class="['process-area-' + p.area]"

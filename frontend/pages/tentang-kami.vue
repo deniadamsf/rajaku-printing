@@ -223,7 +223,13 @@ function waLink(): string {
           </h2>
         </div>
 
-        <ul class="mt-10 grid gap-6 sm:grid-cols-2">
+        <motion.ul
+          class="mt-10 grid gap-6 sm:grid-cols-2"
+          :initial="{ opacity: 0, y: 16 }"
+          :while-in-view="{ opacity: 1, y: 0 }"
+          :in-view-options="{ once: true, margin: '-100px' }"
+          :transition="fadeTransition"
+        >
           <li v-for="v in values" :key="v.title" class="flex gap-4">
             <span
               class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-hairline bg-canvas text-brand-500"
@@ -235,13 +241,19 @@ function waLink(): string {
               <p class="mt-1 text-sm leading-relaxed text-ink-500">{{ v.desc }}</p>
             </div>
           </li>
-        </ul>
+        </motion.ul>
       </div>
     </section>
 
     <!-- Kontak & jam buka -->
     <section class="mx-auto max-w-6xl px-4 py-16 md:py-24">
-      <div class="grid gap-10 md:grid-cols-2">
+      <motion.div
+        class="grid gap-10 md:grid-cols-2"
+        :initial="{ opacity: 0, y: 16 }"
+        :while-in-view="{ opacity: 1, y: 0 }"
+        :in-view-options="{ once: true, margin: '-100px' }"
+        :transition="fadeTransition"
+      >
         <div>
           <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Kontak</p>
           <h2 class="mt-3 text-lg md:text-xl font-sans font-semibold text-ink-950">
@@ -324,7 +336,7 @@ function waLink(): string {
             Order Banner
           </NuxtLink>
         </div>
-      </div>
+      </motion.div>
     </section>
   </main>
 </template>

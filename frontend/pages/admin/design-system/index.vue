@@ -5,7 +5,19 @@
  * Tailwind config tidak runtime-introspectable; kalau config berubah,
  * update halaman ini juga — flow §26.11).
  */
-import { Check, Copy, CreditCard, Package, Palette as PaletteIcon } from '@lucide/vue'
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  CreditCard,
+  Package,
+  Palette as PaletteIcon,
+  Upload,
+  RotateCcw,
+  ImageOff as ImageOffIcon,
+} from '@lucide/vue'
+import { motion } from 'motion-v'
 
 definePageMeta({
   middleware: ['staff-only'],
@@ -97,6 +109,46 @@ function triggerSpin() {
   setTimeout(() => (spinning.value = false), 2000)
 }
 
+// --- Auto-slider (crossfade) demo — pola dipakai di LandingProductSlider ---
+const prefersReducedMotion = usePrefersReducedMotion()
+const dsSlides = ['Banner Outdoor', 'X-Banner Pameran', 'Backdrop Event']
+const dsActive = ref(0)
+const dsPaused = ref(false)
+const DS_DWELL_MS = 4000
+
+let dsTimer: ReturnType<typeof setTimeout> | null = null
+function dsClearTimer() {
+  if (dsTimer) {
+    clearTimeout(dsTimer)
+    dsTimer = null
+  }
+}
+function dsScheduleNext() {
+  dsClearTimer()
+  if (prefersReducedMotion.value || dsPaused.value) return
+  dsTimer = setTimeout(() => {
+    dsActive.value = (dsActive.value + 1) % dsSlides.length
+    dsScheduleNext()
+  }, DS_DWELL_MS)
+}
+function dsGoTo(i: number) {
+  dsActive.value = i
+  dsScheduleNext()
+}
+function dsOnEnter() {
+  dsPaused.value = true
+  dsClearTimer()
+}
+function dsOnLeave() {
+  dsPaused.value = false
+  dsScheduleNext()
+}
+onMounted(dsScheduleNext)
+onUnmounted(dsClearTimer)
+const dsTransition = computed(() =>
+  prefersReducedMotion.value ? { duration: 0 } : { duration: 0.6, ease: [0.22, 1, 0.36, 1] as const },
+)
+
 // --- Input demo state ---
 const demoInput = ref('')
 const demoTextarea = ref('')
@@ -126,8 +178,10 @@ function onDemoOtpInput(e: Event) {
       <a href="#inputs" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Inputs</a>
       <a href="#badges" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Badges</a>
       <a href="#cards" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Cards</a>
+      <a href="#media-upload" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Media upload</a>
       <a href="#icons" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Icons</a>
       <a href="#motion" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Motion</a>
+      <a href="#slider" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Auto-slider</a>
     </nav>
 
     <!-- ================================= Palet ================================= -->
@@ -431,6 +485,78 @@ function onDemoOtpInput(e: Event) {
       </div>
     </section>
 
+    <!-- ================================= Media upload card ================================= -->
+    <section id="media-upload" class="mb-16 scroll-mt-20">
+      <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Media upload card</h2>
+      <p class="mt-2 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        Kartu ganti-gambar per slot — dipakai di
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/site-media</code>. Pratinjau
+        4:3 dengan placeholder monoline saat kosong, label input file (bukan tombol terpisah — klik area
+        label langsung buka file picker, pola sama dengan cover upload artikel), tombol ikon "kembalikan ke
+        bawaan" yang butuh <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">&lt;AdminConfirmDialog&gt;</code>
+        karena destruktif.
+      </p>
+      <div class="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div class="rounded-lg border border-hairline bg-canvas p-6">
+          <div class="flex items-start gap-2">
+            <PaletteIcon class="mt-0.5 h-4 w-4 shrink-0 text-ink-400" :stroke-width="1.5" />
+            <div>
+              <h3 class="text-sm font-semibold text-ink-900">Hero Poster (Desktop)</h3>
+              <p class="mt-1 text-xs leading-relaxed text-ink-500">Poster fallback hero cinematic scroll-scrub.</p>
+            </div>
+          </div>
+          <div class="mt-3 flex items-center justify-between text-[10px] text-ink-500">
+            <span class="font-mono">hero_poster_desktop</span>
+            <span>Disarankan <span class="font-mono">1920×1080px</span></span>
+          </div>
+          <div class="mt-3 flex aspect-[4/3] items-center justify-center rounded-md border border-hairline bg-ink-950">
+            <span class="text-[10px] text-canvas/60">Pratinjau terisi</span>
+          </div>
+          <dl class="mt-3 space-y-0.5 text-[10px] text-ink-500">
+            <div class="flex justify-between gap-2"><dt>Berkas</dt><dd class="font-mono text-ink-700">poster-baru.webp</dd></div>
+            <div class="flex justify-between gap-2"><dt>Ukuran</dt><dd class="font-mono text-ink-700">312 KB · 1920×1080px</dd></div>
+          </dl>
+          <div class="mt-4 flex items-center gap-2">
+            <span class="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-xs font-semibold text-canvas">
+              <Upload class="h-3.5 w-3.5" :stroke-width="1.75" /> Ganti gambar
+            </span>
+            <span class="inline-flex items-center justify-center rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700">
+              <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </span>
+          </div>
+        </div>
+
+        <div class="rounded-lg border border-hairline bg-canvas p-6">
+          <div class="flex items-start gap-2">
+            <PaletteIcon class="mt-0.5 h-4 w-4 shrink-0 text-ink-400" :stroke-width="1.5" />
+            <div>
+              <h3 class="text-sm font-semibold text-ink-900">Langkah Proses 3</h3>
+              <p class="mt-1 text-xs leading-relaxed text-ink-500">Belum pernah diunggah admin.</p>
+            </div>
+          </div>
+          <div class="mt-3 flex items-center justify-between text-[10px] text-ink-500">
+            <span class="font-mono">proses_3</span>
+            <span>Disarankan <span class="font-mono">800×600px</span></span>
+          </div>
+          <div class="mt-3 flex aspect-[4/3] flex-col items-center justify-center gap-1.5 rounded-md border border-hairline bg-canvas-alt text-ink-400">
+            <ImageOffIcon class="h-6 w-6" :stroke-width="1.5" />
+            <span class="text-[10px]">Belum diatur — memakai gambar bawaan</span>
+          </div>
+          <div class="mt-4 flex items-center gap-2">
+            <span class="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-xs font-semibold text-canvas">
+              <Upload class="h-3.5 w-3.5" :stroke-width="1.75" /> Unggah gambar
+            </span>
+            <span class="inline-flex items-center justify-center rounded-md border border-hairline bg-canvas-alt px-3 py-2 text-ink-300">
+              <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </span>
+          </div>
+        </div>
+      </div>
+      <p class="mt-3 text-xs text-ink-500 leading-relaxed">
+        Tombol reset dinonaktifkan (<code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">disabled</code>) kalau slot masih kosong — tidak ada yang bisa "dikembalikan".
+      </p>
+    </section>
+
     <!-- ================================= Icons ================================= -->
     <section id="icons" class="mb-16 scroll-mt-20">
       <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Icons</h2>
@@ -500,6 +626,86 @@ function onDemoOtpInput(e: Event) {
             {{ spinning ? 'Memproses…' : 'Trigger spin' }}
           </button>
         </div>
+      </div>
+    </section>
+
+    <!-- ================================= Auto-slider (crossfade) ================================= -->
+    <section id="slider" class="mb-16 scroll-mt-20">
+      <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Auto-slider (crossfade)</h2>
+      <p class="mt-2 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        Dipakai di <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">components/landing/ProductSlider.vue</code>.
+        Crossfade via prop <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">:animate</code> reaktif motion-v
+        (BUKAN <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">AnimatePresence</code> — semua slide tetap
+        satu kali di-mount, SSR-friendly, hanya <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">opacity</code>
+        yang berubah). Dwell ~6.5 detik, transisi 700ms ease-out.
+      </p>
+      <ul class="mt-3 max-w-2xl list-disc space-y-1 pl-5 text-xs text-ink-500 leading-relaxed">
+        <li>Jeda otomatis saat hover ATAU fokus keyboard di dalam slider.</li>
+        <li>Kontrol manual (panah + dot) selalu berfungsi, keyboard-reachable, focus ring §26.6.</li>
+        <li><code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">prefers-reduced-motion</code>: auto-advance mati total, transisi jadi instan (durasi 0) — kontrol manual tetap jalan.</li>
+        <li>Tanpa <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">aria-live</code> cerewet — cukup <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">aria-label</code> wajar di tiap kontrol.</li>
+      </ul>
+
+      <div class="mt-6 rounded-lg border border-hairline bg-canvas p-6">
+        <div
+          class="relative aspect-[21/9] w-full max-w-xl overflow-hidden rounded-lg border border-hairline bg-ink-950"
+          role="group"
+          aria-roledescription="carousel"
+          aria-label="Contoh sorotan produk"
+          @mouseenter="dsOnEnter"
+          @mouseleave="dsOnLeave"
+          @focusin="dsOnEnter"
+          @focusout="dsOnLeave"
+        >
+          <motion.div
+            v-for="(s, i) in dsSlides"
+            :key="s"
+            class="absolute inset-0 flex items-center justify-center px-6 text-center"
+            :class="i === dsActive ? 'pointer-events-auto' : 'pointer-events-none'"
+            :animate="{ opacity: i === dsActive ? 1 : 0 }"
+            :transition="dsTransition"
+            :aria-hidden="i !== dsActive"
+          >
+            <p class="font-serif text-lg font-semibold text-canvas">{{ s }}</p>
+          </motion.div>
+
+          <button
+            type="button"
+            class="absolute left-2 top-1/2 z-10 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-ink-950/50 text-canvas backdrop-blur transition-colors duration-200 ease-out hover:bg-ink-950/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950"
+            aria-label="Slide sebelumnya"
+            @click="dsGoTo((dsActive - 1 + dsSlides.length) % dsSlides.length)"
+          >
+            <ChevronLeft class="h-4 w-4" :stroke-width="1.75" />
+          </button>
+          <button
+            type="button"
+            class="absolute right-2 top-1/2 z-10 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-ink-950/50 text-canvas backdrop-blur transition-colors duration-200 ease-out hover:bg-ink-950/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950"
+            aria-label="Slide berikutnya"
+            @click="dsGoTo((dsActive + 1) % dsSlides.length)"
+          >
+            <ChevronRight class="h-4 w-4" :stroke-width="1.75" />
+          </button>
+
+          <div class="absolute inset-x-0 bottom-2 z-10 flex items-center justify-center gap-1">
+            <button
+              v-for="(s, i) in dsSlides"
+              :key="s"
+              type="button"
+              class="group inline-flex h-6 w-6 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950"
+              :aria-label="`Ke slide ${i + 1}: ${s}`"
+              :aria-current="i === dsActive ? 'true' : undefined"
+              @click="dsGoTo(i)"
+            >
+              <span
+                class="block h-1.5 rounded-full transition-[width,background-color] duration-200 ease-out"
+                :class="i === dsActive ? 'w-6 bg-gold-400' : 'w-1.5 bg-canvas/40 group-hover:bg-canvas/70'"
+              />
+            </button>
+          </div>
+        </div>
+        <p class="mt-3 text-xs text-ink-500">
+          Arahkan kursor atau Tab masuk ke area slider untuk melihat auto-advance berhenti.
+        </p>
       </div>
     </section>
 

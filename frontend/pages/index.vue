@@ -21,8 +21,23 @@ import { ArrowRight } from '@lucide/vue'
 const { isDesktop, isMobile } = useDevice()
 const config = useRuntimeConfig()
 
+// Gambar landing bisa diganti dari admin panel (/admin/site-media) tanpa
+// deploy ulang — fetch SSR, fallback ke aset statis kalau slot kosong atau
+// backend mati (lihat docblock useSiteMedia.ts). `await ready` supaya HTML
+// SSR awal (dilihat crawler) langsung dapat gambar final, bukan fallback
+// statis yang lalu "berkedip" ganti setelah hydration.
+const { resolve: resolveMedia, ready: siteMediaReady } = useSiteMedia()
+await siteMediaReady
+const heroPosterDesktop = computed(() => resolveMedia('hero_poster_desktop'))
+const heroPosterMobile = computed(() => resolveMedia('hero_poster_mobile'))
+
 const canonical = config.public.appBaseUrl.replace(/\/$/, '')
-const ogImage = `${canonical}/og-image.jpg`
+// og_image: pakai URL absolut dari slot kalau diisi admin (backend sudah
+// membangunnya dari APP_BASE_URL), else fallback statis relatif ke canonical.
+const ogImage = computed(() => {
+  const fromSlot = resolveMedia('og_image')
+  return fromSlot.startsWith('http') ? fromSlot : `${canonical}${fromSlot}`
+})
 
 useSeoMeta({
   // Tanpa suffix brand — app.vue titleTemplate sudah menambahkan " — Rajaku Printing".
@@ -63,9 +78,9 @@ useHead({
             jangan sampai ke mobile) bocor di jalur LCP.
           -->
           <picture>
-            <source media="(max-width: 767px)" srcset="/hero/poster-mobile.webp" />
+            <source media="(max-width: 767px)" :srcset="heroPosterMobile" />
             <img
-              src="/hero/poster.webp"
+              :src="heroPosterDesktop"
               alt="Proses cetak banner large-format Rajaku Printing"
               width="1280"
               height="720"
@@ -101,6 +116,7 @@ useHead({
       </template>
     </ClientOnly>
 
+    <LandingProductSlider />
     <LandingServicesSection />
     <LandingProcessGallery />
     <LandingHowItWorksSection />

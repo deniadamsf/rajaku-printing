@@ -20,43 +20,62 @@ const focusRing =
 
 const baseUrl = config.public.appBaseUrl.replace(/\/$/, '')
 
+// Bisa diganti admin (/admin/site-media) tanpa deploy ulang — fallback ke aset
+// statis kalau slot kosong/backend mati (lihat docblock useSiteMedia.ts).
+const { resolve: resolveMedia } = useSiteMedia()
+const footerLogo = computed(() => resolveMedia('brand_logo_full_sm'))
+const schemaImage = computed(() => {
+  const fromSlot = resolveMedia('og_image')
+  return fromSlot.startsWith('http') ? fromSlot : `${baseUrl}${fromSlot}`
+})
+
+// Dibungkus computed (bukan JSON.stringify eager) supaya reaktif terhadap
+// `schemaImage` — data site-media di-fetch non-blocking (tanpa top-level
+// await) karena layout ini bukan dalam boundary <Suspense> milik NuxtPage;
+// unhead resolve ref/computed ini lazy saat serialisasi, jadi kalau
+// `pages/index.vue` (child, punya Suspense) sudah men-`await` fetch dengan
+// key sama, nilainya sudah benar tersedia sebelum head diserialisasi.
+const jsonLd = computed(() =>
+  JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'LocalBusiness',
+    '@id': `${baseUrl}/#business`,
+    name: business.name,
+    legalName: business.legalName,
+    description: business.description,
+    url: baseUrl,
+    image: schemaImage.value,
+    telephone: business.telephone,
+    email: business.email,
+    priceRange: business.priceRange,
+    address: {
+      '@type': 'PostalAddress',
+      streetAddress: business.streetAddress,
+      addressLocality: business.addressLocality,
+      addressRegion: business.addressRegion,
+      postalCode: business.postalCode,
+      addressCountry: business.addressCountry,
+    },
+    geo: {
+      '@type': 'GeoCoordinates',
+      latitude: business.geo.latitude,
+      longitude: business.geo.longitude,
+    },
+    areaServed: business.serviceArea,
+    openingHoursSpecification: business.openingHours.map((h) => ({
+      '@type': 'OpeningHoursSpecification',
+      dayOfWeek: h.days,
+      opens: h.opens,
+      closes: h.closes,
+    })),
+  }),
+)
+
 useHead({
   script: [
     {
       type: 'application/ld+json',
-      innerHTML: JSON.stringify({
-        '@context': 'https://schema.org',
-        '@type': 'LocalBusiness',
-        '@id': `${baseUrl}/#business`,
-        name: business.name,
-        legalName: business.legalName,
-        description: business.description,
-        url: baseUrl,
-        image: `${baseUrl}/og-image.jpg`,
-        telephone: business.telephone,
-        email: business.email,
-        priceRange: business.priceRange,
-        address: {
-          '@type': 'PostalAddress',
-          streetAddress: business.streetAddress,
-          addressLocality: business.addressLocality,
-          addressRegion: business.addressRegion,
-          postalCode: business.postalCode,
-          addressCountry: business.addressCountry,
-        },
-        geo: {
-          '@type': 'GeoCoordinates',
-          latitude: business.geo.latitude,
-          longitude: business.geo.longitude,
-        },
-        areaServed: business.serviceArea,
-        openingHoursSpecification: business.openingHours.map((h) => ({
-          '@type': 'OpeningHoursSpecification',
-          dayOfWeek: h.days,
-          opens: h.opens,
-          closes: h.closes,
-        })),
-      }),
+      innerHTML: jsonLd,
     },
   ],
 })
@@ -156,7 +175,7 @@ function isActive(prefix: string) {
       <div class="mx-auto max-w-6xl px-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-ink-500">
         <div class="flex items-center gap-2">
           <img
-            src="/brand/logo-full-sm.webp"
+            :src="footerLogo"
             alt="Rajaku Printing"
             width="480"
             height="461"

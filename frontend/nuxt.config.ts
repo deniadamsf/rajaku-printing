@@ -51,8 +51,28 @@ export default defineNuxtConfig({
   ssr: true,
 
   app: {
+    // Transisi antar halaman — fade singkat (§26.6: 150-250ms ease-out).
+    // Definisi kelas `.page-*` ada di assets/css/tailwind.css, termasuk override
+    // `prefers-reduced-motion` (transisi dimatikan total, bukan cuma dipercepat).
+    // Nuxt hanya memakai ini untuk navigasi client-side setelah hydration —
+    // first paint SSR tidak pernah terbungkus transisi, jadi tidak ada risiko
+    // konten "mulai dari opacity 0" di initial load (§15 SEO).
+    pageTransition: { name: 'page', mode: 'out-in' },
     head: {
       htmlAttrs: { lang: 'id' },
+      // Dijalankan SEBELUM body dicat: menandai bahwa JS hidup, sehingga
+      // jaring pengaman `html:not(.motion-ready)` di tailwind.css berhenti
+      // berlaku dan animasi reveal berjalan normal tanpa kedipan.
+      // Watchdog melepas kelasnya lagi kalau hydration tidak pernah selesai
+      // dalam 6 detik — menutup kasus bundle gagal termuat, bukan cuma
+      // kasus JS dimatikan.
+      script: [
+        {
+          innerHTML:
+            "(function(){var d=document.documentElement;d.classList.add('motion-ready');" +
+            "setTimeout(function(){if(!window.__rjkHydrated){d.classList.remove('motion-ready')}},6000)})()",
+        },
+      ],
       meta: [
         { charset: 'utf-8' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1' },

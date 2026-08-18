@@ -156,12 +156,12 @@ func (h *Handler) CreateArticle(c *gin.Context) {
 }
 
 type updateArticleBody struct {
-	Title           *string    `json:"title"`
-	Slug            *string    `json:"slug"`
-	Excerpt         *string    `json:"excerpt"`
-	ContentMD       *string    `json:"content_md"`
-	MetaTitle       *string    `json:"meta_title"`
-	MetaDescription *string    `json:"meta_description"`
+	Title           *string `json:"title"`
+	Slug            *string `json:"slug"`
+	Excerpt         *string `json:"excerpt"`
+	ContentMD       *string `json:"content_md"`
+	MetaTitle       *string `json:"meta_title"`
+	MetaDescription *string `json:"meta_description"`
 	// CoverImageID: pass uuid.Nil string ("00000000-...") untuk clear;
 	// nil = tidak diubah.
 	CoverImageID *uuid.UUID `json:"cover_image_id"`

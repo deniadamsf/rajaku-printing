@@ -19,9 +19,9 @@ type Article struct {
 	ID   uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 	Slug string    `gorm:"size:200;uniqueIndex;not null"                  json:"slug"`
 
-	Title      string  `gorm:"size:200;not null" json:"title"`
-	Excerpt    *string `                         json:"excerpt,omitempty"`
-	ContentMD  string  `gorm:"column:content_md;not null" json:"content_md"`
+	Title     string  `gorm:"size:200;not null" json:"title"`
+	Excerpt   *string `                         json:"excerpt,omitempty"`
+	ContentMD string  `gorm:"column:content_md;not null" json:"content_md"`
 
 	CoverImageID *uuid.UUID `gorm:"type:uuid;column:cover_image_id" json:"cover_image_id,omitempty"`
 

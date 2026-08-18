@@ -324,10 +324,10 @@ func TestGenerateForOrder_DuplicateInsert_RefetchesExisting(t *testing.T) {
 	// Ganti pendekatan: set byOrder + byOrderErr = nil BEFORE call, tapi
 	// itu memfailkan idempotent check awal. Jadi kita gunakan bendera terpisah.
 	store2 := &fakeInvoiceStoreWithRace{
-		byOrderErr:      invrepo.ErrNotFound,
-		createErr:       invrepo.ErrDuplicateOrder,
+		byOrderErr:         invrepo.ErrNotFound,
+		createErr:          invrepo.ErrDuplicateOrder,
 		byOrderAfterCreate: existing,
-		nextNumberValue: 3,
+		nextNumberValue:    3,
 	}
 	svc2 := newSvc(nil, blobs, &fakeOrderCmd{view: view}, &fakeCustomers{identity: &authapi.Identity{Name: "X"}})
 	svc2.invoices = store2

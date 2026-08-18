@@ -92,17 +92,17 @@ func toPricingRowResponse(p model.ProductPricing) pricingRowResponse {
 }
 
 type productDetailResponse struct {
-	ID            uuid.UUID            `json:"id"`
-	Slug          string               `json:"slug"`
-	Name          string               `json:"name"`
-	Description   string               `json:"description,omitempty"`
-	Category      string               `json:"category"`
-	PricingType   string               `json:"pricing_type"`
-	MinWidthCm    *int                 `json:"min_width_cm,omitempty"`
-	MinHeightCm   *int                 `json:"min_height_cm,omitempty"`
-	MaxWidthCm    *int                 `json:"max_width_cm,omitempty"`
-	MaxHeightCm   *int                 `json:"max_height_cm,omitempty"`
-	Pricings      []pricingRowResponse `json:"pricings"`
+	ID          uuid.UUID            `json:"id"`
+	Slug        string               `json:"slug"`
+	Name        string               `json:"name"`
+	Description string               `json:"description,omitempty"`
+	Category    string               `json:"category"`
+	PricingType string               `json:"pricing_type"`
+	MinWidthCm  *int                 `json:"min_width_cm,omitempty"`
+	MinHeightCm *int                 `json:"min_height_cm,omitempty"`
+	MaxWidthCm  *int                 `json:"max_width_cm,omitempty"`
+	MaxHeightCm *int                 `json:"max_height_cm,omitempty"`
+	Pricings    []pricingRowResponse `json:"pricings"`
 }
 
 func toProductDetailResponse(p model.Product) productDetailResponse {

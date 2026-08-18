@@ -120,4 +120,3 @@ func toOrderResponse(o *model.Order) orderResponse {
 	}
 	return r
 }
-

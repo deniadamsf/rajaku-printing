@@ -66,10 +66,10 @@ func callerID(c *gin.Context) (uuid.UUID, bool) {
 // ---- Staff endpoints ----
 
 type createStaffBody struct {
-	Name     string      `json:"name"`
-	Email    string      `json:"email"`
-	Phone    string      `json:"phone"`
-	RoleIDs  []string    `json:"role_ids"`
+	Name    string   `json:"name"`
+	Email   string   `json:"email"`
+	Phone   string   `json:"phone"`
+	RoleIDs []string `json:"role_ids"`
 }
 
 // POST /admin/staff

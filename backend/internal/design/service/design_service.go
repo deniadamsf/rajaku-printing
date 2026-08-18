@@ -646,10 +646,10 @@ func (s *Service) persistBlobAndRow(
 		FileSizeBytes:    written,
 		// Mime kanonik dari ekstensi, BUKAN nilai mentah client — nilai ini
 		// disajikan kembali sebagai Content-Type saat file di-stream.
-		FileMimeType:     canonicalMime,
-		IsPreviewable:    previewable,
-		UploadedAt:       now,
-		UploadedBy:       &in.CallerID,
+		FileMimeType:  canonicalMime,
+		IsPreviewable: previewable,
+		UploadedAt:    now,
+		UploadedBy:    &in.CallerID,
 	}
 	if notes != "" {
 		n := notes

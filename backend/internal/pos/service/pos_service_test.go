@@ -19,13 +19,13 @@ import (
 // ---------- fakes ----------
 
 type fakeOrderCmd struct {
-	createInput       orderapi.POSCreateOrderInput
-	createResult      *orderapi.OrderSummary
-	createErr         error
-	createCalls       int
-	listResult        []orderapi.OrderSummary
-	listErr           error
-	listLastDate      time.Time
+	createInput  orderapi.POSCreateOrderInput
+	createResult *orderapi.OrderSummary
+	createErr    error
+	createCalls  int
+	listResult   []orderapi.OrderSummary
+	listErr      error
+	listLastDate time.Time
 }
 
 func (f *fakeOrderCmd) FindSummaryByResi(context.Context, string) (*orderapi.OrderSummary, error) {
@@ -81,8 +81,8 @@ func (f *fakeOrderCmd) ListPOSOrdersByDate(_ context.Context, d time.Time) ([]or
 }
 
 type fakeCustomers struct {
-	identity *authapi.Identity
-	err      error
+	identity  *authapi.Identity
+	err       error
 	lastPhone string
 	lastName  string
 }

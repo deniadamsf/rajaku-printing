@@ -6,9 +6,9 @@ package posapi
 import "errors"
 
 var (
-	ErrInvalidPhone           = errors.New("posapi: nomor WA pelanggan tidak valid")
-	ErrCustomerResolve        = errors.New("posapi: gagal resolve/create customer dari nomor WA")
-	ErrInvalidMetodeBayar     = errors.New("posapi: metode_bayar POS harus cash atau qris_pos")
-	ErrOrderCreate            = errors.New("posapi: gagal create walk-in order")
-	ErrInvalidDate            = errors.New("posapi: tanggal rekonsiliasi invalid")
+	ErrInvalidPhone       = errors.New("posapi: nomor WA pelanggan tidak valid")
+	ErrCustomerResolve    = errors.New("posapi: gagal resolve/create customer dari nomor WA")
+	ErrInvalidMetodeBayar = errors.New("posapi: metode_bayar POS harus cash atau qris_pos")
+	ErrOrderCreate        = errors.New("posapi: gagal create walk-in order")
+	ErrInvalidDate        = errors.New("posapi: tanggal rekonsiliasi invalid")
 )

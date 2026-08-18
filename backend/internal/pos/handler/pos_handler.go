@@ -43,8 +43,8 @@ func mapDomainErr(c *gin.Context, err error) {
 }
 
 type createOrderBody struct {
-	CustomerName  string    `json:"customer_name"`
-	CustomerPhone string    `json:"customer_phone"`
+	CustomerName  string `json:"customer_name"`
+	CustomerPhone string `json:"customer_phone"`
 
 	ProductID  string `json:"product_id"`
 	MaterialID string `json:"material_id"`

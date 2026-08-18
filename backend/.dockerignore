@@ -1,0 +1,4 @@
+bin/
+backend-dev.log
+.DS_Store
+.env

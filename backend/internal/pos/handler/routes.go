@@ -8,8 +8,8 @@ import (
 
 // RegisterRoutes wires POS endpoints (semua staff-only).
 //
-//   POST /admin/pos/orders             kasir input walk-in (perm pos.create_order)
-//   GET  /admin/pos/reconciliation     laporan harian (perm pos.reconcile)
+//	POST /admin/pos/orders             kasir input walk-in (perm pos.create_order)
+//	GET  /admin/pos/reconciliation     laporan harian (perm pos.reconcile)
 func (h *Handler) RegisterRoutes(v1 *gin.RouterGroup, auth authapi.Service) {
 	pos := v1.Group("/admin/pos")
 	pos.Use(

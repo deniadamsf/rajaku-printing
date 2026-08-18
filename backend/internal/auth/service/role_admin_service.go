@@ -48,9 +48,9 @@ func (s *RoleAdminService) ListPermissions(ctx context.Context) ([]model.MenuPer
 
 // CreateRoleInput — payload create role custom (non-system).
 type CreateRoleInput struct {
-	Name        string // unique; snake_case biasanya
-	DisplayName string
-	Description string
+	Name            string // unique; snake_case biasanya
+	DisplayName     string
+	Description     string
 	PermissionCodes []string // optional; kosong = role tanpa permission (still valid)
 }
 

@@ -208,9 +208,9 @@ type SetShippingCostParams struct {
 	OrderID      uuid.UUID
 	ShippingCost int64
 	NewTotal     int64
-	FromStatus   string   // current status (for state_history row)
-	NewStatus    string   // usually "menunggu_pembayaran"
-	Intermediate string   // "menunggu_ongkir" if going from order_masuk (extra history row); empty if not needed
+	FromStatus   string // current status (for state_history row)
+	NewStatus    string // usually "menunggu_pembayaran"
+	Intermediate string // "menunggu_ongkir" if going from order_masuk (extra history row); empty if not needed
 	ChangedBy    *uuid.UUID
 	Note         *string
 }

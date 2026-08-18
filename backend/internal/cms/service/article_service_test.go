@@ -33,10 +33,10 @@ type fakeStore struct {
 	findBySlugErr    error
 	listErr          error
 
-	createImageErr    error
-	findImageErr      error
-	attachImageErr    error
-	attachImageCalls  int
+	createImageErr   error
+	findImageErr     error
+	attachImageErr   error
+	attachImageCalls int
 }
 
 func newFakeStore() *fakeStore {
@@ -400,11 +400,11 @@ func TestUploadImage_CorruptDecodeFails(t *testing.T) {
 
 func TestSlugifyTitle(t *testing.T) {
 	cases := map[string]string{
-		"Halo Dunia":                              "halo-dunia",
-		"  Ada  Spasi  Berlebih  ":                "ada-spasi-berlebih",
-		"Rp10.000/m² Banner!":                     "rp10-000-m-banner",
-		"":                                        "artikel",
-		"###":                                     "artikel",
+		"Halo Dunia":               "halo-dunia",
+		"  Ada  Spasi  Berlebih  ": "ada-spasi-berlebih",
+		"Rp10.000/m² Banner!":      "rp10-000-m-banner",
+		"":                         "artikel",
+		"###":                      "artikel",
 	}
 	for in, want := range cases {
 		if got := SlugifyTitle(in); got != want {

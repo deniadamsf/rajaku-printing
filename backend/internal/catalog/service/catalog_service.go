@@ -136,15 +136,15 @@ func (s *Service) Quote(ctx context.Context, req catalogapi.QuoteRequest) (*cata
 
 func productToSummary(p *model.Product) *catalogapi.ProductSummary {
 	return &catalogapi.ProductSummary{
-		ID:            p.ID,
-		Slug:          p.Slug,
-		Name:          p.Name,
-		Category:      p.Category,
-		PricingType:   catalogapi.PricingType(p.PricingType),
-		MinWidthCm:    p.MinWidthCm,
-		MinHeightCm:   p.MinHeightCm,
-		MaxWidthCm:    p.MaxWidthCm,
-		MaxHeightCm:   p.MaxHeightCm,
-		IsActive:      p.IsActive,
+		ID:          p.ID,
+		Slug:        p.Slug,
+		Name:        p.Name,
+		Category:    p.Category,
+		PricingType: catalogapi.PricingType(p.PricingType),
+		MinWidthCm:  p.MinWidthCm,
+		MinHeightCm: p.MinHeightCm,
+		MaxWidthCm:  p.MaxWidthCm,
+		MaxHeightCm: p.MaxHeightCm,
+		IsActive:    p.IsActive,
 	}
 }

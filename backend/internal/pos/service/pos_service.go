@@ -1,12 +1,12 @@
 // Package service — POS/walk-in orchestrator (§11).
 //
 // Thin: tidak punya storage sendiri. Alur:
-//   1. Normalize + validate customer phone.
-//   2. Resolve/create customer via authapi.CustomerService.
-//   3. Call orderapi.CreatePOSOrder (atomic: order + history di status dibayar).
-//   4. Trigger WA konfirmasi (KindPOSOrderCreated) — non-blocking.
-//   5. Trigger auto-generate invoice — non-blocking.
-//   6. Kembalikan result ke handler untuk cetak struk & display.
+//  1. Normalize + validate customer phone.
+//  2. Resolve/create customer via authapi.CustomerService.
+//  3. Call orderapi.CreatePOSOrder (atomic: order + history di status dibayar).
+//  4. Trigger WA konfirmasi (KindPOSOrderCreated) — non-blocking.
+//  5. Trigger auto-generate invoice — non-blocking.
+//  6. Kembalikan result ke handler untuk cetak struk & display.
 package service
 
 import (
@@ -44,8 +44,8 @@ func New(orderCmd orderapi.OrderCommandService, customers authapi.CustomerServic
 	return &Service{orderCmd: orderCmd, customers: customers, cfg: cfg}
 }
 
-func (s *Service) SetNotifier(n notificationapi.Enqueuer)          { s.notifier = n }
-func (s *Service) SetInvoiceGenerator(g invoiceapi.Generator)      { s.invoiceGen = g }
+func (s *Service) SetNotifier(n notificationapi.Enqueuer)     { s.notifier = n }
+func (s *Service) SetInvoiceGenerator(g invoiceapi.Generator) { s.invoiceGen = g }
 
 // CreateOrder — main entrypoint dari handler kasir.
 func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (*CreateOrderResult, error) {

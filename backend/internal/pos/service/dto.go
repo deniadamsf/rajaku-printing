@@ -8,7 +8,7 @@ import (
 
 // CreateOrderInput — payload dari kasir. Nomor WA raw (di-normalize di service).
 type CreateOrderInput struct {
-	KasirID     uuid.UUID
+	KasirID uuid.UUID
 
 	// Customer identity
 	CustomerName  string

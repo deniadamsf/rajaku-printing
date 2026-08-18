@@ -20,16 +20,16 @@ const (
 
 // ProductSummary — proyeksi minimal untuk konsumen eksternal (order/POS).
 type ProductSummary struct {
-	ID            uuid.UUID
-	Slug          string
-	Name          string
-	Category      string
-	PricingType   PricingType
-	MinWidthCm    *int
-	MinHeightCm   *int
-	MaxWidthCm    *int
-	MaxHeightCm   *int
-	IsActive      bool
+	ID          uuid.UUID
+	Slug        string
+	Name        string
+	Category    string
+	PricingType PricingType
+	MinWidthCm  *int
+	MinHeightCm *int
+	MaxWidthCm  *int
+	MaxHeightCm *int
+	IsActive    bool
 }
 
 type MaterialSummary struct {

@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("invoice/repository: not found")
-	ErrDuplicateOrder  = errors.New("invoice/repository: invoice already exists for this order")
+	ErrNotFound       = errors.New("invoice/repository: not found")
+	ErrDuplicateOrder = errors.New("invoice/repository: invoice already exists for this order")
 )
 
 const pgUniqueViolationCode = "23505"

@@ -9,6 +9,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pino from 'pino';
 import { config } from './config.js';
+import { typingDelayMs, jitterMs } from './pacing.js';
+import { bindSession } from './quota.js';
 
 // Baileys butuh logger dengan child(). pino cocok — kita silent-kan level
 // bawaan Baileys sendiri (verbose banget) tapi pertahankan level worker.
@@ -32,6 +34,17 @@ function markReady(isReady) {
 
 export function isReady() { return ready; }
 export function getLastQR() { return lastQR; }
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// Nomor yang sedang ter-pairing, format 62xxx (dari "62xxx:12@s.whatsapp.net").
+export function getSelfNumber() {
+  const id = sock?.user?.id;
+  if (!id) return null;
+  return id.split('@')[0].split(':')[0];
+}
 
 // Await first successful connection. Dipakai kalau caller mau tunggu
 // worker beneran online sebelum start polling loop.
@@ -77,6 +90,9 @@ export async function startWA() {
     if (connection === 'open') {
       log.info('WA connected — worker siap kirim');
       lastQR = null;
+      // Anchor warmup ke nomor yang ter-pairing: kalau nomornya berganti,
+      // quota.js otomatis mulai ramp dari hari ke-1 lagi.
+      bindSession(getSelfNumber());
       markReady(true);
     } else if (connection === 'close') {
       markReady(false);
@@ -103,8 +119,61 @@ export async function startWA() {
   return sock;
 }
 
+// --- Cek nomor terdaftar di WhatsApp -----------------------------------
+// Mengirim ke nomor yang tidak punya WhatsApp adalah sinyal spam yang kuat
+// (§13). Hasil di-cache in-memory dengan TTL supaya nomor yang sama tidak
+// di-query berulang — query onWhatsApp sendiri juga termasuk traffic.
+const numberCache = new Map(); // phone62 -> { registered: boolean, ts: number }
+
+function cacheGet(phone62) {
+  const hit = numberCache.get(phone62);
+  if (!hit) return undefined;
+  if (Date.now() - hit.ts > config.numberCacheTtlMs) {
+    numberCache.delete(phone62);
+    return undefined;
+  }
+  return hit.registered;
+}
+
+function cacheSet(phone62, registered) {
+  // Prune kasar supaya map tidak tumbuh selamanya di proses long-running.
+  if (numberCache.size > 5000) {
+    for (const [k, v] of numberCache) {
+      if (Date.now() - v.ts > config.numberCacheTtlMs) numberCache.delete(k);
+    }
+    if (numberCache.size > 5000) numberCache.clear();
+  }
+  numberCache.set(phone62, { registered, ts: Date.now() });
+}
+
+// Return true = terdaftar, false = TIDAK terdaftar (jangan kirim),
+// null = tidak diketahui (fitur dimatikan / query gagal) → caller boleh kirim,
+// karena error infrastruktur tidak boleh jadi kegagalan permanen.
+export async function isRegisteredOnWhatsApp(phone62) {
+  if (!config.checkRegistered) return null;
+  const cached = cacheGet(phone62);
+  if (cached !== undefined) return cached;
+  if (!ready || !sock) return null;
+
+  const jid = `${phone62}@s.whatsapp.net`;
+  try {
+    const res = await sock.onWhatsApp(jid);
+    const entry = Array.isArray(res) ? res[0] : undefined;
+    const registered = Boolean(entry?.exists);
+    cacheSet(phone62, registered);
+    return registered;
+  } catch (err) {
+    log.warn({ phone: phone62, err: err?.message },
+      'cek onWhatsApp gagal — lanjut kirim (tidak dianggap nomor mati)');
+    return null;
+  }
+}
+
 // sendText — kirim WA plain text ke nomor 62xxx (tanpa `+` / `0`).
 // Baileys wajib format JID: <number>@s.whatsapp.net.
+//
+// `text` dikirim APA ADANYA — penyusunan/variasi teks ada di backend Go
+// (kolom notification_jobs.message); worker tidak boleh menormalkan isinya.
 export async function sendText(phone62, text) {
   if (!ready || !sock) {
     throw new Error('WA belum siap (belum scan QR atau koneksi putus)');
@@ -113,5 +182,21 @@ export async function sendText(phone62, text) {
     throw new Error(`format nomor tidak valid: ${phone62} (harus 62xxx)`);
   }
   const jid = `${phone62}@s.whatsapp.net`;
+
+  // Pola manusia: subscribe presence → "sedang mengetik" selama proporsional
+  // panjang pesan → "paused" → baru kirim. Kegagalan presence TIDAK boleh
+  // membatalkan pengiriman (cuma kosmetik perilaku).
+  if (config.simulateTyping) {
+    try {
+      await sock.presenceSubscribe(jid);
+      await sleep(jitterMs(200, 600));
+      await sock.sendPresenceUpdate('composing', jid);
+      await sleep(typingDelayMs(text));
+      await sock.sendPresenceUpdate('paused', jid);
+    } catch (err) {
+      log.warn({ phone: phone62, err: err?.message }, 'presence/typing gagal — lanjut kirim');
+    }
+  }
+
   await sock.sendMessage(jid, { text });
 }

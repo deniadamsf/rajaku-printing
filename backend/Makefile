@@ -1,4 +1,4 @@
-.PHONY: help run build tidy fmt vet lint test migrate-up migrate-down migrate-create seed-admin
+.PHONY: help run build tidy fmt vet lint test test-race-docker migrate-up migrate-down migrate-create seed-admin
 
 help:
 	@echo "Rajaku Printing backend — available targets:"
@@ -35,6 +35,19 @@ lint:
 
 test:
 	go test -race -cover ./...
+
+# Race detector butuh cgo + compiler C. Mesin dev Windows di sini tidak punya
+# gcc, jadi `make test` gagal di `-race`. Target ini menjalankan suite yang
+# sama di dalam container Linux (toolchain C lengkap) — hasilnya identik
+# dengan job `go test -race` di .github/workflows/ci.yml.
+# Volume cache dipakai ulang supaya run kedua dst. tidak download modul lagi.
+test-race-docker:
+	docker run --rm \
+	  -v "$(CURDIR):/src" \
+	  -v rajaku-gomod:/go/pkg/mod \
+	  -v rajaku-gocache:/root/.cache/go-build \
+	  -w /src -e CGO_ENABLED=1 -e GOFLAGS=-buildvcs=false \
+	  golang:1.26 go test -race -cover ./...
 
 # --- DB migrations (golang-migrate) ---
 # Requires: `go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest`

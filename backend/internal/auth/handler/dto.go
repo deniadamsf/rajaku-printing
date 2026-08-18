@@ -61,9 +61,9 @@ type googleExchangeRequest struct {
 // it ever reaches the service/DB round-trip.
 type googleCompleteRequest struct {
 	Code  string `json:"code"  binding:"required"`
-	Phone string `json:"phone" binding:"required,min=8,max=20"`
+	Phone string `json:"phone" binding:"omitempty,min=8,max=20"`
 	Name  string `json:"name"  binding:"max=255"`
-	OTP   string `json:"otp"   binding:"required,min=6,max=8"`
+	OTP   string `json:"otp"   binding:"omitempty,min=6,max=8"`
 }
 
 // googleRequestOTPRequest — POST /auth/google/request-otp body. No Name

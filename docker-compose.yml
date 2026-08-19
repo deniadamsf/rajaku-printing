@@ -23,8 +23,6 @@ services:
     container_name: rajaku-backend
     restart: unless-stopped
     env_file: .env.docker
-    ports:
-      - "8080:8080"
     volumes:
       - ./.docker-data/storage:/app/storage
     depends_on:
@@ -37,8 +35,6 @@ services:
     container_name: rajaku-frontend
     restart: unless-stopped
     env_file: .env.docker
-    ports:
-      - "3000:3000"
     depends_on:
       - backend
 

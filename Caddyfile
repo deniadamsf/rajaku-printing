@@ -1,0 +1,11 @@
+{$DOMAIN}, www.{$DOMAIN} {
+    # 1. Mengarahkan request API ke container backend
+    handle /api/* {
+        reverse_proxy backend:8080
+    }
+
+    # 2. Mengarahkan request website utama ke container frontend
+    handle /* {
+        reverse_proxy frontend:3000
+    }
+}

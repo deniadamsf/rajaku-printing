@@ -38,7 +38,7 @@ services:
     restart: unless-stopped
     env_file: .env.docker
     ports:
-      - "127.0.0.1:3002:3000"
+      - "127.0.0.1:13000:3000"
     depends_on:
       - backend
 

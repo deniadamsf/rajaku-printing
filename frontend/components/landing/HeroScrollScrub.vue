@@ -174,7 +174,7 @@ onUnmounted(() => {
         fetchpriority="high"
         class="absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ease-out"
         :class="framesReady ? 'opacity-0' : 'opacity-100'"
-      />
+      >
 
       <!-- Canvas image-sequence, di-scrub oleh GSAP ScrollTrigger -->
       <canvas

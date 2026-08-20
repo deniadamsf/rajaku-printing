@@ -24,7 +24,7 @@ const heroPosterMobile = computed(() => resolveMedia('hero_poster_mobile'))
       height="466"
       fetchpriority="high"
       class="absolute inset-0 h-full w-full object-cover"
-    />
+    >
     <div class="absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/45 to-ink-950/15" />
 
     <motion.div

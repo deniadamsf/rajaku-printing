@@ -181,7 +181,7 @@ function isActive(prefix: string) {
             height="461"
             loading="lazy"
             class="h-8 w-auto"
-          />
+          >
         </div>
         <nav class="flex flex-wrap items-center justify-center gap-5">
           <NuxtLink to="/katalog" :class="['hover:text-ink-900 transition-colors', focusRing]">Katalog</NuxtLink>

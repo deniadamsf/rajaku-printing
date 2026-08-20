@@ -123,7 +123,7 @@ async function loadGuestDesignFiles() {
   try {
     const res = await guestDesignApi.listByResi(resi.value)
     guestDesignFiles.value = res.items ?? []
-  } catch (e) {
+  } catch {
     guestDesignFiles.value = []
   } finally {
     loadingGuestDesignFiles.value = false
@@ -171,7 +171,7 @@ async function loadGuestProofs() {
   try {
     const res = await guestPaymentApi.listProofsForOrder(resi.value)
     guestProofs.value = res.items ?? []
-  } catch (e) {
+  } catch {
     guestProofs.value = []
   } finally {
     loadingGuestProofs.value = false
@@ -488,7 +488,8 @@ async function copyResi() {
         </div>
 
         <!-- Shipping address (masked) — hanya kalau kirim -->
-        <div v-if="data.metode_ambil === 'kirim' && (data.shipping_address || data.shipping_phone)"
+        <div
+v-if="data.metode_ambil === 'kirim' && (data.shipping_address || data.shipping_phone)"
              class="mt-4 rounded-md border border-hairline bg-canvas-alt p-3 text-xs text-ink-700">
           <div class="flex items-start gap-2">
             <MapPin class="h-3.5 w-3.5 text-ink-500 mt-0.5 flex-none" :stroke-width="1.75" />
@@ -659,7 +660,7 @@ async function copyResi() {
                     alt="Kode QRIS untuk pembayaran"
                     class="w-full max-w-[260px] rounded-md border border-hairline bg-canvas"
                     loading="lazy"
-                  />
+                  >
                   <p v-if="paymentInfo.qris_merchant_name || paymentInfo.qris_nmid" class="mt-2 text-xs text-ink-500">
                     <template v-if="paymentInfo.qris_merchant_name">
                       Nama merchant yang muncul:

@@ -313,7 +313,7 @@ function fmtDate(s: string): string {
                   type="text"
                   placeholder="JNE / SiCepat / J&T / Grab / …"
                   class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-                />
+                >
               </div>
               <div>
                 <label for="tracking" class="block text-xs font-medium text-ink-700">Nomor resi kurir</label>
@@ -323,7 +323,7 @@ function fmtDate(s: string): string {
                   type="text"
                   placeholder="Contoh: JNE1234567890"
                   class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors font-mono"
-                />
+                >
               </div>
               <div>
                 <label for="note" class="block text-xs font-medium text-ink-700">Catatan (opsional)</label>
@@ -334,7 +334,7 @@ function fmtDate(s: string): string {
                   maxlength="500"
                   placeholder="Estimasi 2-3 hari…"
                   class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-                />
+                >
               </div>
             </div>
             <div class="mt-5 flex justify-end gap-2">

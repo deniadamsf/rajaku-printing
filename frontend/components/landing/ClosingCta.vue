@@ -45,7 +45,7 @@ const logoMark = computed(() => resolveMedia('brand_logo_mark'))
             height="512"
             loading="lazy"
             class="mx-auto h-12 w-12 opacity-90 md:mx-0"
-          />
+          >
           <h2 class="mt-5 text-2xl md:text-3xl font-serif font-semibold tracking-tight text-canvas">
             Siap cetak banner Anda?
           </h2>

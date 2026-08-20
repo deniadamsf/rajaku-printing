@@ -277,7 +277,7 @@ const previewIsPDF = computed(() => previewProof.value?.file_mime_type === 'appl
                 :src="previewURL"
                 alt="Bukti"
                 class="mx-auto max-h-[60vh] rounded shadow"
-              />
+              >
               <object
                 v-else-if="previewIsPDF"
                 :data="previewURL"

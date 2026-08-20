@@ -8,11 +8,21 @@
  * Rendering:
  *   - Markdown → HTML server-side via `marked` di useAsyncData (bundle
  *     ke server chunk saja saat SSR; client hydration hanya butuh HTML string).
+ *   - Hasil `marked` WAJIB lewat DOMPurify sebelum masuk `v-html`. Markdown
+ *     mengizinkan HTML mentah, dan `marked` tidak menyanitasi apa pun sejak
+ *     opsi `sanitize`-nya dihapus. Tanpa ini, pemegang role "Admin Artikel"
+ *     (§10 — bukan super admin) bisa menanam <script> di badan artikel yang
+ *     lalu dieksekusi di browser SETIAP pengunjung halaman publik, termasuk
+ *     super admin — jalur naik hak akses, bukan sekadar defacement.
+ *     DOMPurify juga menutup vektor yang tidak tertutup oleh sekadar
+ *     melarang HTML mentah, mis. tautan `javascript:` dari sintaks Markdown
+ *     biasa `[teks](javascript:...)`.
  * Design:
  *   - Fraunces headline, Inter body dengan leading-relaxed, max-w-2xl untuk
  *     text-heavy, generous spacing.
  */
 import { marked } from 'marked'
+import DOMPurify from 'isomorphic-dompurify'
 import type { Article } from '~/types/cms'
 import { ApiError } from '~/composables/useApi'
 
@@ -34,7 +44,9 @@ const { data, error } = await useAsyncData<DetailPayload>(
   async () => {
     const article = await cms.getBySlug(slug.value)
     // marked.parse selalu string kalau input sync → cast safe.
-    const contentHTML = marked.parse(article.content_md, { async: false }) as string
+    const contentHTML = DOMPurify.sanitize(
+      marked.parse(article.content_md, { async: false }) as string,
+    )
     return { article, contentHTML }
   },
   { watch: [slug] },
@@ -170,10 +182,13 @@ function fmtDate(s?: string | null): string {
         :alt="article.title"
         class="w-full aspect-[16/9] object-cover"
         loading="eager"
-      />
+      >
     </figure>
 
     <!-- Body -->
+    <!-- contentHTML sudah disanitasi DOMPurify di script setup di atas.
+         Lihat catatan XSS di header file sebelum mengubah baris ini. -->
+    <!-- eslint-disable-next-line vue/no-v-html -->
     <div class="mt-10 article-body" v-html="contentHTML" />
 
     <!-- Footer nav -->

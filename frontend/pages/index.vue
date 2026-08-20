@@ -78,7 +78,7 @@ useHead({
             jangan sampai ke mobile) bocor di jalur LCP.
           -->
           <picture>
-            <source media="(max-width: 767px)" :srcset="heroPosterMobile" />
+            <source media="(max-width: 767px)" :srcset="heroPosterMobile" >
             <img
               :src="heroPosterDesktop"
               alt="Proses cetak banner large-format Rajaku Printing"
@@ -86,7 +86,7 @@ useHead({
               height="720"
               fetchpriority="high"
               class="absolute inset-0 h-full w-full object-cover"
-            />
+            >
           </picture>
           <div class="absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/45 to-ink-950/15" />
           <div class="relative z-10 px-4 py-24 md:py-32 text-center">

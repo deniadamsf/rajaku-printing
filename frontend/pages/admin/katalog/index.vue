@@ -480,7 +480,8 @@ onMounted(async () => {
               <td class="px-4 py-3 text-ink-900">{{ m.name }}</td>
               <td class="px-4 py-3 text-xs text-ink-500 hidden md:table-cell max-w-md truncate">{{ m.description || '—' }}</td>
               <td class="px-4 py-3">
-                <span :class="[
+                <span
+:class="[
                   'inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset',
                   m.is_active
                     ? 'bg-emerald-50 text-emerald-800 ring-emerald-200'
@@ -559,7 +560,8 @@ onMounted(async () => {
                 <template v-else>—</template>
               </td>
               <td class="px-4 py-3">
-                <span :class="[
+                <span
+:class="[
                   'inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset',
                   p.is_active
                     ? 'bg-emerald-50 text-emerald-800 ring-emerald-200'
@@ -685,7 +687,8 @@ onMounted(async () => {
                 <td class="px-4 py-3 text-right text-ink-900">{{ fmtIDR(row.price_total) }}</td>
               </template>
               <td class="px-4 py-3">
-                <span :class="[
+                <span
+:class="[
                   'inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset',
                   row.is_active
                     ? 'bg-emerald-50 text-emerald-800 ring-emerald-200'

@@ -55,8 +55,6 @@ const customerAssets = computed(() =>
 const staffDrafts = computed(() =>
   files.value.filter((f) => f.role === 'staff_draft').sort((a, b) => (a.uploaded_at < b.uploaded_at ? 1 : -1)),
 )
-const latestDraft = computed<DesignFile | null>(() => staffDrafts.value[0] ?? null)
-
 const canVerifyUpload = computed(
   () =>
     canApprove.value &&
@@ -289,7 +287,8 @@ function statusLabel(s: string): string {
         </div>
 
         <!-- Brief (request path) -->
-        <div v-if="order.design_source === 'request' && (order.design_brief || customerAssets.length)"
+        <div
+v-if="order.design_source === 'request' && (order.design_brief || customerAssets.length)"
              class="rounded-lg border border-hairline bg-canvas p-5">
           <h2 class="text-xs font-medium uppercase tracking-[0.14em] text-ink-500">Brief</h2>
           <p v-if="order.design_brief" class="mt-3 text-sm text-ink-800 leading-relaxed border-l-2 border-gold-400 pl-3 whitespace-pre-line">
@@ -418,7 +417,7 @@ function statusLabel(s: string): string {
             maxlength="500"
             placeholder="Catatan (opsional)"
             class="mt-3 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-          />
+          >
           <button
             type="button"
             class="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
@@ -451,7 +450,7 @@ function statusLabel(s: string): string {
               accept="image/jpeg,image/png,image/webp,application/pdf,.cdr,.ai"
               class="hidden"
               @change="onDraftFileChange"
-            />
+            >
           </label>
           <p class="mt-1 text-[10px] text-ink-500">
             Format: JPG/PNG/WebP/PDF/CDR/AI. Max {{ Math.round(25) }} MB.
@@ -462,7 +461,7 @@ function statusLabel(s: string): string {
             maxlength="500"
             placeholder="Catatan draft (opsional)"
             class="mt-3 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-          />
+          >
           <button
             type="button"
             class="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
@@ -567,7 +566,7 @@ function statusLabel(s: string): string {
                 :src="preview.url"
                 :alt="preview.file.file_original_name"
                 class="mx-auto max-h-[65vh] rounded border border-hairline"
-              />
+              >
               <object
                 v-else-if="previewIsPDF && preview"
                 :data="preview.url"

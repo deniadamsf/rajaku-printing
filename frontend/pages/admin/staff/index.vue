@@ -373,7 +373,8 @@ function fmtDateTime(iso?: string): string {
               <span v-else class="text-xs text-ink-400">— tanpa role</span>
             </td>
             <td class="px-4 py-3">
-              <span :class="[
+              <span
+:class="[
                 'inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset',
                 s.is_active
                   ? 'bg-emerald-50 text-emerald-800 ring-emerald-200'

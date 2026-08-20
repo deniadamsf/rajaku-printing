@@ -9,7 +9,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Copy,
   CreditCard,
   Package,
   Palette as PaletteIcon,
@@ -394,7 +393,7 @@ function onDemoOtpInput(e: Event) {
               type="text"
               placeholder="Judul artikel…"
               class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-            />
+            >
           </div>
 
           <div>
@@ -415,7 +414,7 @@ function onDemoOtpInput(e: Event) {
               type="text"
               value="invalid slug!"
               class="mt-1 block w-full rounded-md border border-brand-500 bg-canvas px-3 py-2 text-sm text-ink-900 focus:ring-brand-500/30 focus:ring-2 focus:outline-none"
-            />
+            >
             <p class="mt-1 text-xs text-brand-700">Slug hanya boleh a-z, 0-9, dan dash.</p>
           </div>
 
@@ -426,7 +425,7 @@ function onDemoOtpInput(e: Event) {
               value="Read-only value"
               disabled
               class="mt-1 block w-full rounded-md border border-hairline bg-canvas-alt px-3 py-2 text-sm text-ink-500 cursor-not-allowed"
-            />
+            >
           </div>
         </div>
 
@@ -447,7 +446,7 @@ function onDemoOtpInput(e: Event) {
             placeholder="000000"
             class="mt-1 block w-full max-w-xs rounded-md border border-hairline bg-canvas px-3 py-2.5 text-center font-mono text-lg tracking-[0.5em] text-ink-900 placeholder-ink-300 transition-colors focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
             @input="onDemoOtpInput"
-          />
+          >
           <p class="text-xs text-ink-500">Countdown kedaluwarsa & tombol kirim ulang pakai style link/tombol standar (lihat halaman aslinya) — bukan komponen terpisah di sini.</p>
         </div>
       </div>

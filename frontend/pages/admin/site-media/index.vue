@@ -201,7 +201,7 @@ onMounted(fetchItems)
             :src="previewSrc(item)!"
             :alt="item.label"
             class="h-full w-full object-cover"
-          />
+          >
           <div v-else class="flex h-full flex-col items-center justify-center gap-1.5 text-ink-400">
             <ImageOff class="h-6 w-6" :stroke-width="1.5" />
             <span class="text-[10px]">Belum diatur — memakai gambar bawaan</span>
@@ -240,7 +240,7 @@ onMounted(fetchItems)
               class="hidden"
               :disabled="!canManage || uploadingSlot === item.slot"
               @change="onFileChange(item, $event)"
-            />
+            >
           </label>
           <button
             type="button"

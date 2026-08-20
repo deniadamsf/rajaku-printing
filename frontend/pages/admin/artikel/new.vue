@@ -82,7 +82,7 @@ async function onSubmit() {
             type="text"
             placeholder="auto-generate dari judul"
             class="flex-1 bg-transparent outline-none font-mono text-xs text-ink-900 placeholder-ink-400"
-          />
+          >
         </div>
         <p class="mt-1 text-xs text-ink-500">
           Preview slug: <code class="rounded bg-canvas-alt px-1.5 py-0.5 font-mono text-[10px] text-ink-700">{{ slugPreview }}</code>

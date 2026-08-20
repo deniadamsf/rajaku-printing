@@ -250,7 +250,7 @@ onBeforeUnmount(stopPolling)
                 :src="status.qr_data_url"
                 alt="QR pairing WhatsApp"
                 class="h-full w-full object-contain"
-              />
+              >
               <p v-else class="text-center text-xs text-ink-400">QR belum tersedia, menunggu layanan menerbitkannya…</p>
             </div>
 

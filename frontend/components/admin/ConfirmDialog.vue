@@ -26,6 +26,7 @@ const props = withDefaults(
   {
     confirmLabel: 'Konfirmasi',
     cancelLabel: 'Batal',
+    message: '',
     variant: 'default',
     loading: false,
   },
@@ -33,8 +34,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'update:open', v: boolean): void
-  (e: 'confirm'): void
-  (e: 'cancel'): void
+  (e: 'confirm' | 'cancel'): void
 }>()
 
 function close() {

@@ -30,8 +30,6 @@ import {
   X,
   Loader2,
   CheckCircle2,
-  CircleDot,
-  Circle,
   FileText,
   FileWarning,
   AlertTriangle,
@@ -464,7 +462,7 @@ function proofStatusBadgeClass(s: string): string {
                   alt="Kode QRIS untuk pembayaran"
                   class="w-full max-w-[260px] rounded-md border border-hairline bg-canvas"
                   loading="lazy"
-                />
+                >
                 <p v-if="paymentInfo.qris_merchant_name || paymentInfo.qris_nmid" class="mt-2 text-xs text-ink-500">
                   <template v-if="paymentInfo.qris_merchant_name">
                     Nama merchant yang muncul:

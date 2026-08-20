@@ -125,10 +125,13 @@ type phoneClaimRequest struct {
 
 // phoneClaimResponse — POST /auth/phone response. PhoneVerified is a boolean
 // projection of phone_verified_at — never leak the raw timestamp to
-// customers (§ /auth/me contract).
+// customers (§ /auth/me contract). MergedOrders is the count of orders moved
+// from an absorbed GUEST identity into this account (§11 satu pelanggan satu
+// riwayat) — always present, 0 when nothing was absorbed.
 type phoneClaimResponse struct {
 	Phone         string `json:"phone"`
 	PhoneVerified bool   `json:"phone_verified"`
+	MergedOrders  int64  `json:"merged_orders"`
 }
 
 // googleExchangeResponse is returned by both /exchange and /complete — its

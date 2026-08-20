@@ -46,10 +46,12 @@ definePageMeta({
 })
 
 const route = useRoute()
+const config = useRuntimeConfig()
 const auth = useAuthStore()
 const orderSvc = useOrder()
 const paymentSvc = usePayment()
 const designSvc = useDesign()
+const pos = usePos()
 
 const resi = computed(() => String(route.params.resi))
 
@@ -131,7 +133,71 @@ onMounted(async () => {
     loadProofs()
     loadDesignFiles()
   }
+  loadReceiptConfig()
 })
+
+// -------------------- cetak ulang struk (§12) --------------------
+/**
+ * Lebar kertas struk aktif, dipakai `ReceiptStruk` untuk `@page` dinamis.
+ * Fallback 58mm kalau endpoint config gagal/belum tersedia — kegagalan di
+ * sini TIDAK BOLEH menggagalkan render halaman detail order, cuma fitur
+ * cetak ulang yang terdampak (tetap jalan, cuma pakai default).
+ */
+const receiptWidthMm = ref<58 | 80>(58)
+async function loadReceiptConfig() {
+  try {
+    const cfg = await pos.receiptConfig()
+    receiptWidthMm.value = cfg.width_mm === 80 ? 80 : 58
+  } catch (e) {
+    console.error('Gagal memuat receipt-config, pakai default 58mm', e)
+  }
+}
+
+/**
+ * Tracking URL dibangun dari `appBaseUrl` terpusat (CLAUDE.md §2) — pola
+ * sama dengan `layouts/default.vue`/`pages/tentang-kami.vue`, bukan
+ * konstanta baru.
+ */
+const trackingUrl = computed(() =>
+  order.value ? `${config.public.appBaseUrl.replace(/\/$/, '')}/lacak/${order.value.resi}` : '',
+)
+
+/**
+ * Struk tidak dirender di layar — semua datanya (nama pelanggan, produk,
+ * nominal) sudah tampil di section lain halaman ini, jadi preview duplikat
+ * cuma menambah scroll tanpa info baru.
+ *
+ * `receiptMounted` ADA supaya struk hanya ter-mount selama proses cetak
+ * struk berlangsung, bukan sepanjang halaman terbuka. Alasannya CSS print di
+ * ReceiptStruk.vue menyembunyikan SELURUH isi halaman (`body *`) tanpa
+ * syarat dan memaksa `@page` jadi 58/80mm. Kalau komponen itu ter-mount
+ * permanen, staff yang menekan Ctrl+P untuk mencetak lembar detail order
+ * (mis. sebagai surat jalan produksi) akan diam-diam mendapat struk thermal
+ * di ukuran kertas yang salah — mereka tidak menekan tombol apa pun yang
+ * meminta struk. Dengan gerbang ini, Ctrl+P biasa tetap mencetak halaman.
+ */
+const receiptMounted = ref(false)
+
+async function printStruk() {
+  receiptMounted.value = true
+  // Tunggu satu tick supaya <ReceiptStruk> benar-benar ada di DOM (dan tag
+  // <style> @page-nya ter-inject) sebelum dialog cetak dibuka.
+  await nextTick()
+  try {
+    window.print()
+  } finally {
+    // window.print() memblokir sampai dialog ditutup di sebagian besar
+    // browser, tapi tidak dijamin — `finally` + afterprint dua-duanya
+    // dipasang supaya struk tidak pernah tertinggal ter-mount.
+    receiptMounted.value = false
+  }
+}
+
+if (import.meta.client) {
+  useEventListener(window, 'afterprint', () => {
+    receiptMounted.value = false
+  })
+}
 
 // -------------------- permissions --------------------
 const canSetOngkir = computed(() => auth.hasPermission('shipping.set_cost'))
@@ -311,7 +377,16 @@ function waLink(phone: string): string {
         <button
           v-if="order"
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors"
+          class="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+          @click="printStruk"
+        >
+          <Printer class="h-3.5 w-3.5" :stroke-width="1.75" />
+          Cetak struk
+        </button>
+        <button
+          v-if="order"
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
           @click="copyResi"
         >
           <Check v-if="copiedResi" class="h-3.5 w-3.5 text-emerald-600" :stroke-width="1.75" />
@@ -719,6 +794,36 @@ function waLink(phone: string): string {
           </div>
         </div>
       </aside>
+    </div>
+
+    <!-- ============================ Struk (cetak ulang) ============================
+         Tersembunyi di layar (semua datanya sudah tampil di section lain di
+         atas) — cuma dipakai saat `window.print()` dipicu tombol "Cetak
+         struk" di header. `hidden print:block` WAJIB dipakai (bukan
+         `visibility`/`sr-only`) supaya elemen ini tidak `display: none` saat
+         cetak — teknik isolasi print di ReceiptStruk.vue mengandalkan
+         `visibility: visible !important` pada `#struk`, yang tidak bisa
+         menembus `display: none` di elemen leluhurnya. -->
+    <div v-if="order && receiptMounted" class="hidden print:block">
+      <ReceiptStruk
+        :resi="order.resi"
+        :created-at="order.created_at"
+        :customer-name="customer?.name ?? '—'"
+        :customer-phone="customer?.phone ?? '—'"
+        :product-name="order.product_name"
+        :material-name="order.material_name"
+        :width-cm="order.width_cm"
+        :height-cm="order.height_cm"
+        :quantity="order.quantity"
+        :unit-price="order.unit_price"
+        :subtotal="order.subtotal"
+        :shipping-cost="order.shipping_cost"
+        :total="order.total"
+        :metode-ambil="order.metode_ambil"
+        :metode-bayar="order.metode_bayar ?? '-'"
+        :tracking-url="trackingUrl"
+        :width-mm="receiptWidthMm"
+      />
     </div>
 
     <!-- ============================ Cancel modal ============================ -->

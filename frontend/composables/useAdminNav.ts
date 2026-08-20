@@ -22,6 +22,7 @@ import {
   Sparkles,
   SlidersHorizontal,
   Images,
+  QrCode,
 } from '@lucide/vue'
 
 export interface AdminNavItem {
@@ -135,6 +136,14 @@ export function useAdminNav() {
       description: 'Ganti gambar hero, logo, proses tanpa deploy',
       icon: Images,
       permission: 'sitemedia.manage',
+      group: 'kelola',
+    },
+    {
+      label: 'Pairing WhatsApp',
+      to: '/admin/whatsapp',
+      description: 'Tautkan nomor WA toko lewat QR, tanpa SSH',
+      icon: QrCode,
+      permission: 'notification.manage',
       group: 'kelola',
     },
     {

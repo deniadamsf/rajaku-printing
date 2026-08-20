@@ -545,6 +545,14 @@ func orderToSummary(o *model.Order) *orderapi.OrderSummary {
 		DesignSource: string(o.DesignSource),
 		CreatedBy:    o.CreatedBy,
 		CreatedAt:    o.CreatedAt,
+		ProductName:  o.ProductNameSnapshot,
+		MaterialName: o.MaterialNameSnapshot,
+		WidthCm:      o.WidthCm,
+		HeightCm:     o.HeightCm,
+		Quantity:     o.Quantity,
+		UnitPrice:    o.UnitPrice,
+		Subtotal:     o.Subtotal,
+		ShippingCost: o.ShippingCost,
 	}
 	if o.MetodeBayar != nil {
 		sum.MetodeBayar = string(*o.MetodeBayar)

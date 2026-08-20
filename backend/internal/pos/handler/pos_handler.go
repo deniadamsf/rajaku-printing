@@ -117,6 +117,14 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 	httpx.Created(c, result)
 }
 
+// GET /admin/pos/receipt-config — lebar kertas struk aktif + daftar yang
+// didukung. Config display, bukan data kritis: kegagalan baca setting sudah
+// ditangani service (jatuh ke default), jadi endpoint ini selalu 200.
+func (h *Handler) ReceiptConfig(c *gin.Context) {
+	cfg := h.svc.ReceiptConfig(c.Request.Context())
+	httpx.OK(c, cfg)
+}
+
 // GET /admin/pos/reconciliation?date=YYYY-MM-DD — laporan harian.
 func (h *Handler) Reconciliation(c *gin.Context) {
 	dateStr := c.Query("date")

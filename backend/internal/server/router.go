@@ -35,7 +35,9 @@ import (
 	notifhandler "github.com/rajaku-printing/backend/internal/notification/handler"
 	notifrepo "github.com/rajaku-printing/backend/internal/notification/repository"
 	notifservice "github.com/rajaku-printing/backend/internal/notification/service"
+	"github.com/rajaku-printing/backend/internal/notification/workerclient"
 	orderhandler "github.com/rajaku-printing/backend/internal/order/handler"
+	"github.com/rajaku-printing/backend/internal/order/orderapi"
 	orderrepo "github.com/rajaku-printing/backend/internal/order/repository"
 	orderservice "github.com/rajaku-printing/backend/internal/order/service"
 	paymenthandler "github.com/rajaku-printing/backend/internal/payment/handler"
@@ -172,6 +174,16 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	// Same OTP policy/config as Google OAuth registration (§ business rule —
 	// OTP only for contested numbers). otpSender wired below, same
 	// setter-injection reason as googleOAuthSvc above.
+	//
+	// newOrderCustomerMerger: composition-root factory (§22 — only router.go
+	// may import both auth and order internals) that binds a fresh
+	// orderservice.CustomerMerger to whatever *gorm.DB transaction the phone
+	// claim's absorption path is running inside, so a guest's order history
+	// moves atomically with releasing its phone (§11). Doesn't depend on
+	// orderSvc — built below out of order on purpose, no reordering needed.
+	newOrderCustomerMerger := func(tx *gorm.DB) orderapi.CustomerMerger {
+		return orderservice.NewCustomerMerger(tx)
+	}
 	phoneClaimSvc := authservice.NewPhoneClaimService(
 		userRepo, phoneVerificationRepo,
 		authservice.OTPConfig{
@@ -183,6 +195,7 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 			MaxFailedPerPhoneHour: d.Config.OTP.MaxFailedPerPhoneHour,
 		},
 		d.DB,
+		newOrderCustomerMerger,
 	)
 	phoneClaimH := authhandler.NewPhoneClaimHandler(phoneClaimSvc)
 
@@ -270,6 +283,7 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 		BaseURL: d.Config.App.FrontendURL,
 	})
 	posSvc.SetInvoiceGenerator(invoiceSvc)
+	posSvc.SetSettingsReader(settingsSvc)
 	posH := poshandler.New(posSvc)
 
 	// --- Wiring modul notification ---
@@ -301,6 +315,20 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	// Alert internal (ke nomor ops, bukan customer) — dipakai reminder retensi.
 	designSvc.SetInternalAlerter(notifSvc)
 	notifH := notifhandler.New(notifSvc, d.Config.Notification.InternalSecret)
+
+	// --- Wiring pairing WhatsApp admin panel (§13, permission notification.manage,
+	// migration 000021) ---
+	// workerclient adalah CALLER ke notification-worker (arah kebalikan dari
+	// /internal/notifications/* di atas, di mana worker yang memanggil kita).
+	// Timeout sengaja pendek — halaman admin tidak boleh menggantung kalau
+	// worker mati.
+	pairingWorkerClient := workerclient.New(
+		d.Config.Notification.WorkerURL,
+		d.Config.Notification.InternalSecret,
+		5*time.Second,
+	)
+	pairingSvc := notifservice.NewPairingService(pairingWorkerClient)
+	pairingH := notifhandler.NewPairingHandler(pairingSvc)
 
 	// --- Wiring modul CMS (§14) ---
 	// Share filestore (root sama, subdir cms_images).
@@ -419,9 +447,15 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 		// worker bisa polling cepat.
 		notifH.RegisterRoutes(v1)
 
-		// Modul settings — super-admin-only, ubah kebijakan global mis.
-		// retensi file desain (§19).
-		settingsH.RegisterRoutes(v1, authSvc)
+		// Admin panel — /admin/whatsapp/pairing + /admin/whatsapp/unlink.
+		// Staff-only + permission notification.manage (§13, §ket keamanan:
+		// QR pairing setara kredensial, JANGAN pernah dimount publik).
+		pairingH.RegisterRoutes(v1, authSvc)
+
+		// Modul settings — GET /payment-info publik (§7, rate limited via
+		// `public` group declared above); sisanya admin (super-admin-only)
+		// ubah kebijakan global mis. retensi file desain (§19).
+		settingsH.RegisterRoutes(v1, public, authSvc)
 	}
 
 	bg, err := buildBackground(d.Config, designSvc, notifSvc)

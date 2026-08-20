@@ -147,11 +147,15 @@ function needsAction(status: string): boolean {
         <dt class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Email</dt>
         <dd class="mt-1 text-sm text-ink-900">{{ auth.user?.email || '—' }}</dd>
       </div>
-      <AccountPhonePanel />
+      <!-- @merged: order lama dari nomor yang baru diklaim ikut pindah ke akun
+           ini (§11), jadi daftar pesanan di bawah wajib dimuat ulang — kalau
+           tidak, pesan suksesnya menjanjikan riwayat bertambah sementara
+           daftarnya masih menampilkan keadaan sebelum penggabungan. -->
+      <AccountPhonePanel @merged="fetchOrders" />
     </div>
 
     <!-- Orders section -->
-    <div class="mt-10">
+    <div id="pesanan" class="mt-10 scroll-mt-24">
       <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
         <h2 class="font-serif text-xl font-semibold tracking-tight text-ink-950">Pesanan saya</h2>
         <div class="inline-flex rounded-md border border-hairline overflow-hidden text-sm">

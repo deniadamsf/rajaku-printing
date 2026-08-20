@@ -35,7 +35,53 @@ const (
 	// KeyDesignRetentionDays — berapa hari blob file desain disimpan sebelum
 	// dihapus otomatis dari disk (§19). Row DB tetap ada (audit/rekap).
 	KeyDesignRetentionDays = "design_retention_days"
+
+	// KeyPaymentBankName — nama bank tujuan transfer (§7 — pembayaran manual).
+	KeyPaymentBankName = "payment.bank_name"
+	// KeyPaymentAccountName — nama pemilik rekening tujuan transfer.
+	KeyPaymentAccountName = "payment.account_name"
+	// KeyPaymentAccountNumber — nomor rekening tujuan transfer. Disimpan
+	// ternormalisasi (digit saja, spasi/strip dibuang) oleh settings/service.
+	KeyPaymentAccountNumber = "payment.account_number"
+	// KeyPaymentQRISNote — instruksi teks di bawah gambar QRIS. Boleh kosong.
+	KeyPaymentQRISNote = "payment.qris_note"
+	// KeyPaymentQRISMerchantName — nama merchant yang tampil saat QRIS
+	// dipindai (bisa beda dari nama rekening bank). Boleh kosong.
+	KeyPaymentQRISMerchantName = "payment.qris_merchant_name"
+	// KeyPaymentQRISNmid — National Merchant ID QRIS. Boleh kosong.
+	KeyPaymentQRISNmid = "payment.qris_nmid"
+
+	// KeyPOSReceiptWidthMM — lebar kertas struk thermal POS dalam mm, hanya
+	// boleh 58 atau 80 (§11/§12 CLAUDE.md — thermal printer 58mm/80mm).
+	// Dikembalikan ke kasir saat order POS dibuat supaya frontend bisa atur
+	// CSS `@page` sesuai roll printer yang terpasang.
+	KeyPOSReceiptWidthMM = "pos.receipt_width_mm"
 )
+
+// POSReceiptWidthsMM — SATU-SATUNYA daftar lebar roll thermal yang didukung
+// sistem (§12). Sengaja tinggal di sini, bukan diduplikasi per modul: dipakai
+// bareng oleh settings/service (validasi nilai yang BOLEH DISIMPAN) dan
+// pos/service (validasi nilai yang DIBACA dari DB). Kalau daftarnya terpecah,
+// menambah ukuran baru (mis. 76mm) di satu sisi saja bikin admin bisa memilih
+// 76 lalu kasir diam-diam dapat struk 58mm — gagal senyap, bukan gagal keras.
+//
+// Menambah ukuran: cukup satu baris di sini (frontend & seed migration masih
+// perlu disesuaikan terpisah).
+var POSReceiptWidthsMM = []int{58, 80}
+
+// DefaultPOSReceiptWidthMM — lebar yang dipakai kalau setting tidak terbaca
+// atau nilainya rusak. Harus sama dengan nilai seed migration 000022.
+const DefaultPOSReceiptWidthMM = 58
+
+// IsValidPOSReceiptWidthMM melaporkan apakah mm termasuk lebar yang didukung.
+func IsValidPOSReceiptWidthMM(mm int) bool {
+	for _, w := range POSReceiptWidthsMM {
+		if mm == w {
+			return true
+		}
+	}
+	return false
+}
 
 // Reader — kontrak baca untuk modul consumer (mis. design retention job).
 // Sengaja minimal: consumer cuma butuh nilai, tidak butuh metadata/CRUD.

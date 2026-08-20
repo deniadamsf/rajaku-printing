@@ -31,11 +31,15 @@ import { ApiError } from '~/composables/useApi'
 import type { PublicTracking } from '~/types/tracking'
 import type { DesignFile } from '~/types/design'
 import type { PaymentProofCustomer } from '~/types/payment'
-import { bankInfo } from '~/utils/payment'
 
 // Slot QRIS dikelola admin lewat /admin/site-media. Tidak ada fallback
 // statis: kalau belum diunggah, panel QRIS memang tidak ditampilkan.
 const qrisUrl = computed(() => useSiteMedia().resolve('qris_code'))
+
+// Rekening & QRIS dari modul `settings` (§7). TIDAK ADA fallback hardcode —
+// lihat docblock usePaymentInfo untuk alasan keamanan. Kalau `paymentInfo`
+// null, panel "transfer ke" disembunyikan di template.
+const { info: paymentInfo } = usePaymentInfo()
 
 definePageMeta({ layout: 'default' })
 
@@ -632,14 +636,16 @@ async function copyResi() {
                 upload buktinya di bawah ini.
               </p>
 
-              <!-- Bank info -->
-              <div class="mt-4 rounded-md border border-hairline bg-canvas p-4 text-sm">
+              <!-- Bank info — TIDAK ADA fallback hardcode (lihat usePaymentInfo).
+                   Kalau gagal dimuat, panel ini diganti pesan tenang di bawah
+                   supaya pembeli tidak salah transfer ke rekening basi. -->
+              <div v-if="paymentInfo" class="mt-4 rounded-md border border-hairline bg-canvas p-4 text-sm">
                 <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-2">Transfer ke</p>
                 <div class="space-y-1">
-                  <p class="text-ink-900"><strong>{{ bankInfo.bankName }}</strong> — {{ bankInfo.accountName }}</p>
-                  <p class="font-mono text-base text-ink-950 font-semibold tracking-wider">{{ bankInfo.accountNumber }}</p>
+                  <p class="text-ink-900"><strong>{{ paymentInfo.bank_name }}</strong> — {{ paymentInfo.account_name }}</p>
+                  <p class="font-mono text-base text-ink-950 font-semibold tracking-wider">{{ paymentInfo.account_number }}</p>
                 </div>
-                <p class="mt-2 text-xs text-ink-500">{{ bankInfo.qrisNote }}</p>
+                <p v-if="paymentInfo.qris_note" class="mt-2 text-xs text-ink-500">{{ paymentInfo.qris_note }}</p>
 
                 <!-- QRIS hanya tampil kalau admin sudah mengunggahnya ke slot
                      `qris_code`; tidak ada gambar bawaan, jadi tanpa unggahan
@@ -654,12 +660,28 @@ async function copyResi() {
                     class="w-full max-w-[260px] rounded-md border border-hairline bg-canvas"
                     loading="lazy"
                   />
-                  <p class="mt-2 text-xs text-ink-500">
-                    Nama merchant yang muncul:
-                    <span class="font-medium text-ink-700">{{ bankInfo.qrisMerchantName }}</span>
-                    &middot; NMID <span class="font-mono">{{ bankInfo.qrisNmid }}</span>
+                  <p v-if="paymentInfo.qris_merchant_name || paymentInfo.qris_nmid" class="mt-2 text-xs text-ink-500">
+                    <template v-if="paymentInfo.qris_merchant_name">
+                      Nama merchant yang muncul:
+                      <span class="font-medium text-ink-700">{{ paymentInfo.qris_merchant_name }}</span>
+                    </template>
+                    <template v-if="paymentInfo.qris_nmid">
+                      <template v-if="paymentInfo.qris_merchant_name">&middot;</template>
+                      NMID <span class="font-mono">{{ paymentInfo.qris_nmid }}</span>
+                    </template>
                   </p>
                 </div>
+              </div>
+
+              <!-- Info pembayaran gagal dimuat — sengaja TIDAK menampilkan
+                   rekening lama/placeholder apa pun (lihat usePaymentInfo). -->
+              <div v-else class="mt-4 flex items-start gap-2 rounded-md border border-hairline bg-canvas-alt/60 p-4 text-sm">
+                <AlertTriangle class="h-4 w-4 text-ink-500 flex-none mt-0.5" :stroke-width="1.75" />
+                <p class="text-ink-700 leading-relaxed">
+                  Informasi rekening tujuan sedang tidak bisa dimuat. Untuk keamanan, kami tidak menampilkan
+                  nomor rekening lama. Mohon hubungi kami dulu via WhatsApp untuk memastikan tujuan transfer
+                  yang benar sebelum mengirim dana.
+                </p>
               </div>
 
               <!-- Upload form -->

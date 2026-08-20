@@ -46,3 +46,18 @@ export interface PaymentProofCustomer {
 export interface PaymentProofCustomerListResponse {
   items: PaymentProofCustomer[]
 }
+
+/**
+ * PaymentInfo — respons publik `GET /payment-info` (§7 pembayaran manual).
+ * `bank_name`/`account_name`/`account_number` dijamin terisi kalau request
+ * berhasil. `qris_*` boleh string kosong (QRIS belum tentu tersedia) — lihat
+ * `composables/usePaymentInfo.ts` untuk aturan render.
+ */
+export interface PaymentInfo {
+  bank_name: string
+  account_name: string
+  account_number: string
+  qris_note: string
+  qris_merchant_name: string
+  qris_nmid: string
+}

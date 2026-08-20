@@ -12,10 +12,49 @@ export interface AppSetting {
   description?: string
   updated_at: string
   updated_by?: string
+  /**
+   * Daftar nilai yang sah untuk key ini (mis. `["58", "80"]` untuk lebar
+   * kertas struk) — proyeksi dari aturan enum di backend
+   * (`settings/model/setting_item.go`). Hanya key enum yang membawa field
+   * ini; key free-form (retensi hari, payment.*) tidak punya daftar
+   * tertutup, jadi field ini undefined dan frontend tahu untuk merender
+   * input teks/angka biasa, bukan pilihan tertutup.
+   */
+  allowed_values?: string[]
 }
 
 /** Key setting yang dikenal — samakan dengan settingsapi di backend. */
 export const SETTING_DESIGN_RETENTION_DAYS = 'design_retention_days'
+
+/**
+ * Key rekening & QRIS (§7 pembayaran manual). Nilainya tampil LANGSUNG ke
+ * pembeli di halaman pembayaran (`GET /payment-info`, publik) — lihat
+ * `composables/usePaymentInfo.ts`. `qris_*` boleh kosong (QRIS belum tentu
+ * tersedia), tiga key bank wajib diisi admin.
+ */
+export const SETTING_PAYMENT_BANK_NAME = 'payment.bank_name'
+export const SETTING_PAYMENT_ACCOUNT_NAME = 'payment.account_name'
+export const SETTING_PAYMENT_ACCOUNT_NUMBER = 'payment.account_number'
+export const SETTING_PAYMENT_QRIS_NOTE = 'payment.qris_note'
+export const SETTING_PAYMENT_QRIS_MERCHANT_NAME = 'payment.qris_merchant_name'
+export const SETTING_PAYMENT_QRIS_NMID = 'payment.qris_nmid'
+
+/**
+ * Lebar roll kertas thermal kasir (§12). Nilainya string `"58"` atau `"80"`
+ * (mm), dipakai frontend POS untuk membangun `@page { size: <n>mm auto }`
+ * dinamis saat cetak struk — lihat `pages/admin/pos/index.vue`.
+ */
+export const SETTING_POS_RECEIPT_WIDTH_MM = 'pos.receipt_width_mm'
+
+/** Urutan render di card "Rekening & QRIS" — lihat `pages/admin/pengaturan/index.vue`. */
+export const PAYMENT_SETTING_KEYS = [
+  SETTING_PAYMENT_BANK_NAME,
+  SETTING_PAYMENT_ACCOUNT_NAME,
+  SETTING_PAYMENT_ACCOUNT_NUMBER,
+  SETTING_PAYMENT_QRIS_NOTE,
+  SETTING_PAYMENT_QRIS_MERCHANT_NAME,
+  SETTING_PAYMENT_QRIS_NMID,
+] as const
 
 export function useAdminSettings() {
   const api = useApi()

@@ -29,6 +29,13 @@ const SAVE_PATH = '/auth/phone'
 export interface AccountPhoneSaveResult {
   phone: string
   phone_verified: boolean
+  /**
+   * Jumlah order lama dari nomor WA yang sama (mis. bekas order walk-in di
+   * kasir) yang ikut dipindahkan ke akun ini saat nomor disimpan — janji
+   * "satu pelanggan, satu riwayat" (CLAUDE.md §11). Selalu ada; `0` kalau
+   * tidak ada order lama yang ikut pindah.
+   */
+  merged_orders: number
 }
 
 export function useAccountPhone() {

@@ -37,7 +37,7 @@ async function onLogout() {
 <template>
   <div class="min-h-screen bg-canvas-alt text-ink-900 font-sans">
     <!-- Topbar mobile -->
-    <header class="lg:hidden sticky top-0 z-30 flex items-center justify-between border-b border-hairline bg-canvas px-4 h-12">
+    <header class="lg:hidden sticky top-0 z-30 flex items-center justify-between border-b border-hairline bg-canvas px-4 h-12 print:hidden">
       <button
         type="button"
         class="rounded-md p-2 text-ink-600 hover:bg-canvas-alt"
@@ -54,7 +54,7 @@ async function onLogout() {
       <!-- Sidebar -->
       <aside
         :class="[
-          'fixed inset-y-0 left-0 z-40 w-64 shrink-0 bg-ink-950 text-ink-100 transform transition-transform lg:static lg:translate-x-0',
+          'fixed inset-y-0 left-0 z-40 w-64 shrink-0 bg-ink-950 text-ink-100 transform transition-transform lg:static lg:translate-x-0 print:hidden',
           sidebarOpen ? 'translate-x-0' : '-translate-x-full',
         ]"
       >
@@ -133,7 +133,7 @@ async function onLogout() {
 
       <!-- Main -->
       <div class="flex-1 min-w-0 flex flex-col">
-        <header class="hidden lg:flex sticky top-0 z-20 h-14 items-center justify-between bg-canvas border-b border-hairline px-8">
+        <header class="hidden lg:flex sticky top-0 z-20 h-14 items-center justify-between bg-canvas border-b border-hairline px-8 print:hidden">
           <div class="text-sm text-ink-500">
             Halo, <span class="font-medium text-ink-900">{{ auth.user?.name }}</span>
             <span v-if="auth.roles.length" class="ml-2 text-xs text-ink-400">
@@ -149,7 +149,7 @@ async function onLogout() {
           </button>
         </header>
 
-        <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-10 py-8">
+        <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-10 py-8 print:p-0">
           <slot />
         </main>
       </div>

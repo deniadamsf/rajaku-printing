@@ -14,6 +14,7 @@ import (
 	"github.com/rajaku-printing/backend/internal/notification/notificationapi"
 	"github.com/rajaku-printing/backend/internal/order/orderapi"
 	"github.com/rajaku-printing/backend/internal/pos/posapi"
+	"github.com/rajaku-printing/backend/internal/settings/settingsapi"
 )
 
 // ---------- fakes ----------
@@ -124,6 +125,20 @@ func (f *fakeInvoiceGen) GenerateForOrder(_ context.Context, _ uuid.UUID, _ *uui
 	return f.info, nil
 }
 
+type fakeSettings struct {
+	width int
+	err   error
+	calls int
+}
+
+func (f *fakeSettings) GetInt(_ context.Context, _ string) (int, error) {
+	f.calls++
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.width, nil
+}
+
 // ---------- helpers ----------
 
 func newSvc(cmd *fakeOrderCmd, cs *fakeCustomers, notif *fakeNotifier, inv *fakeInvoiceGen) *Service {
@@ -213,6 +228,65 @@ func TestCreateOrder_HappyPath_ResolvesCustomer_CreatesOrder_TriggersNotifAndInv
 	}
 }
 
+// TestCreateOrder_LineItemDetailsPopulated menutup gap struk POS yang cuma
+// memuat resi/tanggal/metode/total (tugas A) — memastikan nama pelanggan &
+// rincian item snapshot ikut sampai ke CreateOrderResult, diambil dari
+// OrderSummary yang dikembalikan orderCmd, BUKAN dihitung ulang di sini.
+func TestCreateOrder_LineItemDetailsPopulated(t *testing.T) {
+	custID := uuid.New()
+	shipping := int64(15000)
+	cmd := &fakeOrderCmd{createResult: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-POS7", CustomerID: custID,
+		Total: 215000, MetodeBayar: "cash", MetodeAmbil: "kirim",
+		ProductName:  "Banner Vinyl",
+		MaterialName: "Flexi Korea",
+		WidthCm:      100,
+		HeightCm:     200,
+		Quantity:     2,
+		UnitPrice:    100000,
+		Subtotal:     200000,
+		ShippingCost: &shipping,
+	}}
+	custs := &fakeCustomers{identity: &authapi.Identity{UserID: custID, Name: "Budi Santoso", Phone: "6281234567890"}}
+	svc := newSvc(cmd, custs, nil, nil)
+
+	result, err := svc.CreateOrder(context.Background(), validInput(uuid.New()))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+
+	// validInput mengetik "Budi", sementara customer yang cocok di DB bernama
+	// "Budi Santoso". Yang tercetak di struk WAJIB nama yang diketik kasir —
+	// lihat TestCreateOrder_ReceiptUsesKasirTypedName di bawah.
+	if result.CustomerName != "Budi" {
+		t.Errorf("customer_name: want %q got %q", "Budi", result.CustomerName)
+	}
+	if result.CustomerPhone != "6281234567890" {
+		t.Errorf("customer_phone: want %q got %q", "6281234567890", result.CustomerPhone)
+	}
+	if result.ProductName != "Banner Vinyl" {
+		t.Errorf("product_name: want Banner Vinyl got %q", result.ProductName)
+	}
+	if result.MaterialName != "Flexi Korea" {
+		t.Errorf("material_name: want Flexi Korea got %q", result.MaterialName)
+	}
+	if result.WidthCm != 100 || result.HeightCm != 200 {
+		t.Errorf("width/height: want 100x200 got %dx%d", result.WidthCm, result.HeightCm)
+	}
+	if result.Quantity != 2 {
+		t.Errorf("quantity: want 2 got %d", result.Quantity)
+	}
+	if result.UnitPrice != 100000 {
+		t.Errorf("unit_price: want 100000 got %d", result.UnitPrice)
+	}
+	if result.Subtotal != 200000 {
+		t.Errorf("subtotal: want 200000 got %d", result.Subtotal)
+	}
+	if result.ShippingCost == nil || *result.ShippingCost != 15000 {
+		t.Errorf("shipping_cost: want 15000 got %v", result.ShippingCost)
+	}
+}
+
 func TestCreateOrder_InvalidPhone_Rejected(t *testing.T) {
 	svc := newSvc(&fakeOrderCmd{}, &fakeCustomers{}, nil, nil)
 	in := validInput(uuid.New())
@@ -263,6 +337,150 @@ func TestCreateOrder_InvoiceGenFails_OrderStillSucceeds(t *testing.T) {
 	}
 }
 
+func TestCreateOrder_ReceiptWidthMM_ReadFromSettings(t *testing.T) {
+	custID := uuid.New()
+	cmd := &fakeOrderCmd{createResult: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-POS3", CustomerID: custID, Total: 10000,
+		MetodeBayar: "cash", MetodeAmbil: "pickup",
+	}}
+	custs := &fakeCustomers{identity: &authapi.Identity{UserID: custID, Name: "Budi", Phone: "6281234567890"}}
+	svc := newSvc(cmd, custs, nil, nil)
+	svc.SetSettingsReader(&fakeSettings{width: 80})
+
+	result, err := svc.CreateOrder(context.Background(), validInput(uuid.New()))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if result.ReceiptWidthMM != 80 {
+		t.Errorf("receipt_width_mm: want 80 got %d", result.ReceiptWidthMM)
+	}
+}
+
+func TestCreateOrder_ReceiptWidthMM_FallsBackWhenSettingsUnavailable(t *testing.T) {
+	custID := uuid.New()
+	makeCmd := func() *fakeOrderCmd {
+		return &fakeOrderCmd{createResult: &orderapi.OrderSummary{
+			ID: uuid.New(), Resi: "RJK-POS4", CustomerID: custID, Total: 10000,
+			MetodeBayar: "cash", MetodeAmbil: "pickup",
+		}}
+	}
+	custs := func() *fakeCustomers {
+		return &fakeCustomers{identity: &authapi.Identity{UserID: custID, Name: "Budi", Phone: "6281234567890"}}
+	}
+
+	// Case 1: reader nil (belum di-wire).
+	svcNoReader := newSvc(makeCmd(), custs(), nil, nil)
+	result, err := svcNoReader.CreateOrder(context.Background(), validInput(uuid.New()))
+	if err != nil {
+		t.Fatalf("order harus tetap sukses walau settings reader nil: %v", err)
+	}
+	if result.ReceiptWidthMM != defaultReceiptWidthMM {
+		t.Errorf("receipt_width_mm: want fallback %d got %d", defaultReceiptWidthMM, result.ReceiptWidthMM)
+	}
+
+	// Case 2: reader error ErrSettingNotFound.
+	svcErrReader := newSvc(makeCmd(), custs(), nil, nil)
+	svcErrReader.SetSettingsReader(&fakeSettings{err: settingsapi.ErrSettingNotFound})
+	result2, err := svcErrReader.CreateOrder(context.Background(), validInput(uuid.New()))
+	if err != nil {
+		t.Fatalf("order harus tetap sukses walau setting hilang: %v", err)
+	}
+	if result2.ReceiptWidthMM != defaultReceiptWidthMM {
+		t.Errorf("receipt_width_mm: want fallback %d got %d", defaultReceiptWidthMM, result2.ReceiptWidthMM)
+	}
+}
+
+// TestCreateOrder_ReceiptWidthMM_ReadsDefaultWidthFromDB mengunci bahwa nilai
+// 58 yang dikembalikan berasal dari DB, BUKAN dari jalur fallback. Tanpa ini,
+// bug "selalu fallback" tidak terdeteksi: keduanya menghasilkan angka sama.
+func TestCreateOrder_ReceiptWidthMM_ReadsDefaultWidthFromDB(t *testing.T) {
+	custID := uuid.New()
+	cmd := &fakeOrderCmd{createResult: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-POS5", CustomerID: custID, Total: 10000,
+		MetodeBayar: "cash", MetodeAmbil: "pickup",
+	}}
+	custs := &fakeCustomers{identity: &authapi.Identity{UserID: custID, Name: "Budi", Phone: "6281234567890"}}
+	settings := &fakeSettings{width: 58}
+	svc := newSvc(cmd, custs, nil, nil)
+	svc.SetSettingsReader(settings)
+
+	result, err := svc.CreateOrder(context.Background(), validInput(uuid.New()))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if result.ReceiptWidthMM != 58 {
+		t.Errorf("receipt_width_mm: want 58 got %d", result.ReceiptWidthMM)
+	}
+	if settings.calls != 1 {
+		t.Errorf("settings reader harus dipanggil tepat sekali, dapat %d kali", settings.calls)
+	}
+}
+
+// TestCreateOrder_ReceiptWidthMM_FallsBackWhenValueOutsideAllowedList menutup
+// cabang kegagalan senyap: row DB diedit manual, ATAU daftar lebar di
+// settingsapi diperluas tanpa menyesuaikan seluruh rantai. Nilai di luar
+// daftar harus jatuh ke fallback, dan order tetap sukses.
+func TestCreateOrder_ReceiptWidthMM_FallsBackWhenValueOutsideAllowedList(t *testing.T) {
+	custID := uuid.New()
+	cmd := &fakeOrderCmd{createResult: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-POS6", CustomerID: custID, Total: 10000,
+		MetodeBayar: "cash", MetodeAmbil: "pickup",
+	}}
+	custs := &fakeCustomers{identity: &authapi.Identity{UserID: custID, Name: "Budi", Phone: "6281234567890"}}
+	svc := newSvc(cmd, custs, nil, nil)
+	svc.SetSettingsReader(&fakeSettings{width: 70})
+
+	result, err := svc.CreateOrder(context.Background(), validInput(uuid.New()))
+	if err != nil {
+		t.Fatalf("order harus tetap sukses walau nilai setting di luar daftar: %v", err)
+	}
+	if result.ReceiptWidthMM != defaultReceiptWidthMM {
+		t.Errorf("receipt_width_mm: want fallback %d got %d", defaultReceiptWidthMM, result.ReceiptWidthMM)
+	}
+}
+
+// ---------- ReceiptConfig (tugas B) ----------
+
+func TestReceiptConfig_ReadsActiveWidthAndListsAllowed(t *testing.T) {
+	svc := newSvc(&fakeOrderCmd{}, &fakeCustomers{}, nil, nil)
+	svc.SetSettingsReader(&fakeSettings{width: 80})
+
+	cfg := svc.ReceiptConfig(context.Background())
+	if cfg.WidthMM != 80 {
+		t.Errorf("width_mm: want 80 got %d", cfg.WidthMM)
+	}
+	found58, found80 := false, false
+	for _, w := range cfg.AllowedWidthsMM {
+		if w == 58 {
+			found58 = true
+		}
+		if w == 80 {
+			found80 = true
+		}
+	}
+	if !found58 || !found80 {
+		t.Errorf("allowed_widths_mm harus memuat 58 & 80, got %v", cfg.AllowedWidthsMM)
+	}
+}
+
+// TestReceiptConfig_FallsBackWhenReaderUnavailable — config display, bukan
+// data kritis: reader nil/error harus tetap menghasilkan width_mm default,
+// TIDAK boleh membuat endpoint gagal (§ tugas B).
+func TestReceiptConfig_FallsBackWhenReaderUnavailable(t *testing.T) {
+	svcNoReader := newSvc(&fakeOrderCmd{}, &fakeCustomers{}, nil, nil)
+	cfg := svcNoReader.ReceiptConfig(context.Background())
+	if cfg.WidthMM != defaultReceiptWidthMM {
+		t.Errorf("width_mm: want fallback %d got %d", defaultReceiptWidthMM, cfg.WidthMM)
+	}
+
+	svcErrReader := newSvc(&fakeOrderCmd{}, &fakeCustomers{}, nil, nil)
+	svcErrReader.SetSettingsReader(&fakeSettings{err: settingsapi.ErrSettingNotFound})
+	cfg2 := svcErrReader.ReceiptConfig(context.Background())
+	if cfg2.WidthMM != defaultReceiptWidthMM {
+		t.Errorf("width_mm: want fallback %d got %d", defaultReceiptWidthMM, cfg2.WidthMM)
+	}
+}
+
 func TestDailyReconciliation_AggregatesByMetodeAndKasir(t *testing.T) {
 	kasirA := uuid.New()
 	kasirB := uuid.New()
@@ -307,5 +525,89 @@ func TestDailyReconciliation_AggregatesByMetodeAndKasir(t *testing.T) {
 		default:
 			t.Errorf("unexpected kasir id: %s", k.KasirID)
 		}
+	}
+}
+
+// TestCreateOrder_ReceiptUsesKasirTypedName mengunci keputusan yang tidak
+// terlihat dari tanda tangan fungsi: ResolveOrCreateGuest mengembalikan nama
+// LAMA di DB kalau nomor WA sudah terdaftar, dan nama itu TIDAK boleh dipakai
+// di struk.
+//
+// Skenario nyata: satu nomor WA rumah/toko dipakai bergantian (§11 — nomor WA
+// adalah matching key, bukan identitas orang). Kalau struk memakai nama DB,
+// pelanggan yang berdiri di depan kasir menerima kertas bernama orang lain,
+// dan itu sekaligus membocorkan siapa yang terdaftar di nomor tersebut.
+func TestCreateOrder_ReceiptUsesKasirTypedName(t *testing.T) {
+	custID := uuid.New()
+	cmd := &fakeOrderCmd{createResult: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-POS8", CustomerID: custID, Total: 50000,
+		MetodeBayar: "cash", MetodeAmbil: "pickup",
+	}}
+	// Nomor sudah terdaftar atas nama lain.
+	custs := &fakeCustomers{identity: &authapi.Identity{
+		UserID: custID, Name: "Nama Lama Di DB", Phone: "6281234567890",
+	}}
+	svc := newSvc(cmd, custs, nil, nil)
+
+	in := validInput(uuid.New())
+	in.CustomerName = "Ibu Sari"
+
+	result, err := svc.CreateOrder(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if result.CustomerName != "Ibu Sari" {
+		t.Errorf("struk harus pakai nama yang diketik kasir: want %q got %q",
+			"Ibu Sari", result.CustomerName)
+	}
+	// Telepon tetap dari identity — versi ternormalisasi 62xxx (§13), bukan
+	// "081234567890" mentah yang diketik kasir.
+	if result.CustomerPhone != "6281234567890" {
+		t.Errorf("customer_phone harus ternormalisasi: want %q got %q",
+			"6281234567890", result.CustomerPhone)
+	}
+}
+
+// TestCreateOrder_ShippingCostNilForPickup memagari kontrak tiga-nilai
+// `shipping_cost` (*int64 + omitempty): absent = pickup, 0 = kirim tapi ongkir
+// gratis, >0 = kirim berbayar. Kalau pointer ini suatu saat "disederhanakan"
+// jadi int64, omitempty akan menelan nilai 0 dan kirim-gratis jadi tak bisa
+// dibedakan dari pickup di struk — tanpa satu test pun memerah.
+func TestCreateOrder_ShippingCostNilForPickup(t *testing.T) {
+	custID := uuid.New()
+	cmd := &fakeOrderCmd{createResult: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-POS9", CustomerID: custID, Total: 50000,
+		MetodeBayar: "cash", MetodeAmbil: "pickup",
+		ShippingCost: nil,
+	}}
+	custs := &fakeCustomers{identity: &authapi.Identity{UserID: custID, Name: "Budi", Phone: "6281234567890"}}
+	svc := newSvc(cmd, custs, nil, nil)
+
+	result, err := svc.CreateOrder(context.Background(), validInput(uuid.New()))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if result.ShippingCost != nil {
+		t.Errorf("pickup harus TIDAK punya shipping_cost, got %d", *result.ShippingCost)
+	}
+
+	// Kirim dengan ongkir gratis: 0 harus tetap terbawa sebagai nilai, bukan
+	// hilang jadi absent seperti pickup.
+	gratis := int64(0)
+	cmd2 := &fakeOrderCmd{createResult: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-POS10", CustomerID: custID, Total: 50000,
+		MetodeBayar: "cash", MetodeAmbil: "kirim",
+		ShippingCost: &gratis,
+	}}
+	svc2 := newSvc(cmd2, custs, nil, nil)
+	result2, err := svc2.CreateOrder(context.Background(), validInput(uuid.New()))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if result2.ShippingCost == nil {
+		t.Fatal("kirim-gratis harus punya shipping_cost 0, bukan absent")
+	}
+	if *result2.ShippingCost != 0 {
+		t.Errorf("shipping_cost: want 0 got %d", *result2.ShippingCost)
 	}
 }

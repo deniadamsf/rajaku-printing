@@ -35,6 +35,18 @@ function markReady(isReady) {
 export function isReady() { return ready; }
 export function getLastQR() { return lastQR; }
 
+// unlinkSession memutus pairing WhatsApp saat ini atas permintaan admin
+// (halaman pairing di admin panel). Baileys akan memancarkan connection
+// 'close' dengan alasan loggedOut, yang menghapus folder session lalu
+// menyalakan ulang socket — jadi QR baru langsung terbit tanpa perlu SSH
+// ke server.
+export async function unlinkSession() {
+  if (!sock) throw new Error('socket belum aktif');
+  await sock.logout();
+  markReady(false);
+  return true;
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -105,10 +117,14 @@ export async function startWA() {
           for (const f of fs.readdirSync(config.sessionDir)) {
             fs.rmSync(path.join(config.sessionDir, f), { recursive: true, force: true });
           }
-          log.warn('session dihapus — restart worker & scan QR baru');
+          log.warn('session dihapus — menyalakan ulang socket untuk QR baru');
         } catch (e) {
           log.error({ err: e.message }, 'gagal hapus session dir');
         }
+        // Nyalakan ulang supaya QR baru terbit sendiri. Tanpa ini, operator
+        // wajib restart worker manual — yang membuat halaman pairing di
+        // admin panel tidak ada gunanya untuk ganti nomor.
+        setTimeout(() => { startWA().catch((e) => log.error({ err: e.message }, 'restart setelah logout gagal')); }, 2_000);
       } else {
         // Reconnect otomatis setelah delay singkat.
         setTimeout(() => { startWA().catch((e) => log.error({ err: e.message }, 'reconnect failed')); }, 5_000);

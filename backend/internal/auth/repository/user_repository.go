@@ -11,9 +11,15 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/rajaku-printing/backend/internal/auth/model"
 )
+
+// gormForUpdate — row-level lock clause (`SELECT ... FOR UPDATE`), same
+// pattern as internal/order/repository/order_repository.go's helper of the
+// same name.
+func gormForUpdate() clause.Locking { return clause.Locking{Strength: "UPDATE"} }
 
 // ErrNotFound is a repository-level sentinel — service maps this to a domain
 // error (mis. authapi.ErrUserNotFound) before returning to handler.
@@ -55,6 +61,33 @@ func (r *UserRepository) FindByPhone(ctx context.Context, phone string) (*model.
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("find user by phone %q: %w", phone, err)
+	}
+	return &u, nil
+}
+
+// FindByPhoneForUpdate is FindByPhone's row-locking counterpart
+// (`SELECT ... FOR UPDATE`) — MUST be called inside an open transaction.
+// Used by PhoneClaimService.claimOther's authoritative in-transaction
+// re-check (§ phone-claim review finding #1): without the lock, the owner
+// row could change type (guest → registered, e.g. via a concurrent
+// UpgradeGuestToRegistered) between this read and the absorption writes that
+// follow it in the same transaction, letting a since-upgraded account get
+// silently merged into and tombstoned. Deliberately skips the
+// Roles.Permissions preload FindByPhone carries — this caller only ever
+// inspects UserType/CustomerType, and preloading roles here would be a
+// second round-trip inside an already-locked row's transaction for no
+// benefit.
+func (r *UserRepository) FindByPhoneForUpdate(ctx context.Context, phone string) (*model.User, error) {
+	var u model.User
+	err := r.db.WithContext(ctx).
+		Clauses(gormForUpdate()).
+		Where("phone = ?", phone).
+		First(&u).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("find user by phone (for update) %q: %w", phone, err)
 	}
 	return &u, nil
 }

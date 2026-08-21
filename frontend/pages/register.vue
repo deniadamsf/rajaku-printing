@@ -6,8 +6,16 @@
  * Design: patuh CLAUDE.md §26 (Fraunces headline + Inter body, brand/ink/hairline,
  * Lucide icon — tanpa rose/slate/emoji).
  */
-import { UserPlus, Loader2 } from '@lucide/vue'
+import { CloudUpload, MessageCircle, UserPlus, Loader2, PackageSearch } from '@lucide/vue'
 import { ApiError } from '~/composables/useApi'
+
+// Poin panel brand — perilaku sistem yang memang ada (§6 upload/minta desain,
+// §13 notifikasi WhatsApp tiap perubahan status, §5 lacak resi).
+const panelPoints = [
+  { icon: CloudUpload, text: 'Upload desain sendiri, atau minta tim kami yang membuatkan.' },
+  { icon: MessageCircle, text: 'Kabar tiap perubahan status dikirim ke WhatsApp Anda.' },
+  { icon: PackageSearch, text: 'Nomor resi bisa dipakai melacak progres cetak kapan saja.' },
+]
 
 definePageMeta({
   middleware: ['guest'],
@@ -53,7 +61,10 @@ async function onSubmit() {
 </script>
 
 <template>
-  <section class="mx-auto max-w-md px-4 py-16 md:py-24">
+  <AuthShell
+    panel-title="Pesanan Anda, terpantau dari awal sampai siap diambil."
+    :panel-points="panelPoints"
+  >
     <div class="text-center">
       <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
         Rajaku Printing
@@ -138,5 +149,5 @@ async function onSubmit() {
         </NuxtLink>
       </p>
     </form>
-  </section>
+  </AuthShell>
 </template>

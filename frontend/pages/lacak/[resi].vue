@@ -52,7 +52,7 @@ const resi = computed(() => {
 })
 
 useSeoMeta({
-  title: () => `Lacak ${resi.value} — Rajaku Printing`,
+  title: () => `Lacak ${resi.value}`,
   description: 'Cek status pesanan Anda di Rajaku Printing.',
   robots: 'noindex,nofollow', // tracking pages personal — jangan ke-index Google
 })
@@ -377,6 +377,50 @@ const sortedHistory = computed(() => {
 // Current status = last history row's status (or data.status fallback).
 const currentStatus = computed(() => data.value?.status || sortedHistory.value.at(-1)?.status || '')
 
+/**
+ * Urutan langkah jalur normal §4, bercabang sesuai `metode_ambil`: pickup
+ * melewati penetapan ongkir dan berhenti di "siap diambil", pengiriman lewat
+ * "siap dikirim → dalam pengiriman".
+ *
+ * Dipakai HANYA untuk menampilkan tahap yang belum terjadi sebagai bayangan di
+ * bawah riwayat. Ini bukan sumber kebenaran transisi status (itu milik backend)
+ * — kalau §4 berubah, daftar ini ikut diperbarui, bukan sebaliknya.
+ */
+function happyPath(metodeAmbil: string): string[] {
+  const isKirim = metodeAmbil === 'kirim'
+  const path = ['order_masuk']
+  if (isKirim) path.push('menunggu_ongkir')
+  path.push(
+    'menunggu_pembayaran',
+    'menunggu_verifikasi',
+    'dibayar',
+    'desain_diverifikasi',
+    'proses_cetak',
+    'qc',
+    isKirim ? 'siap_kirim' : 'siap_ambil',
+  )
+  if (isKirim) path.push('dikirim')
+  path.push('selesai')
+  return path
+}
+
+/**
+ * Tahap yang belum dilalui. Sengaja kosong (tidak menebak) untuk order yang
+ * dibatalkan atau yang statusnya sedang di luar jalur normal — mis. bukti
+ * transfer ditolak atau sedang loop revisi desain. Menampilkan "tahap
+ * berikutnya" yang keliru di situasi begitu lebih membingungkan daripada tidak
+ * menampilkan apa pun.
+ */
+const upcomingSteps = computed(() => {
+  const order = data.value
+  if (!order || currentStatus.value === 'dibatalkan') return []
+  const path = happyPath(order.metode_ambil)
+  const idx = path.indexOf(currentStatus.value)
+  if (idx === -1) return []
+  const reached = new Set(sortedHistory.value.map((row) => row.status))
+  return path.slice(idx + 1).filter((status) => !reached.has(status))
+})
+
 // Copy resi to clipboard convenience.
 const copied = ref(false)
 async function copyResi() {
@@ -445,7 +489,16 @@ async function copyResi() {
               class="group flex items-center gap-2 text-left"
               @click="copyResi"
             >
-              <span class="font-serif text-2xl md:text-3xl font-semibold tracking-tight text-ink-950">{{ data.resi }}</span>
+              <!--
+                Resi = kode, bukan prosa: §26.3 menetapkan JetBrains Mono untuk
+                nomor resi, dan melarang Fraunces di dalam tombol. Ukurannya
+                tetap besar karena ini identitas utama halaman (bukan metadata
+                sisipan), dengan tracking dilonggarkan supaya deret huruf-angka
+                tetap gampang dibaca dan dicocokkan karakter per karakter.
+              -->
+              <span
+                class="font-mono text-xl md:text-2xl font-semibold tracking-[0.08em] text-ink-950"
+              >{{ data.resi }}</span>
               <span
                 :class="[
                   'text-[10px] font-medium uppercase tracking-[0.14em] px-2 py-0.5 rounded-full ring-1 ring-inset transition-colors',
@@ -542,6 +595,28 @@ v-if="data.metode_ambil === 'kirim' && (data.shipping_address || data.shipping_p
             </div>
           </li>
         </ol>
+
+        <!--
+          Tahap yang belum terjadi, ditampilkan redup dengan garis putus-putus
+          supaya jelas berbeda dari riwayat nyata di atasnya. Tanpa ini,
+          pelanggan yang statusnya baru "menunggu pembayaran" tidak punya
+          gambaran berapa tahap lagi sampai pesanannya siap.
+        -->
+        <div v-if="upcomingSteps.length > 0" class="mt-6 border-t border-hairline pt-5">
+          <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
+            Tahap berikutnya
+          </p>
+          <ol class="relative mt-4 space-y-3 border-l border-dashed border-ink-200 pl-6">
+            <li v-for="status in upcomingSteps" :key="status" class="relative">
+              <span
+                class="absolute -left-[27px] flex h-4 w-4 items-center justify-center rounded-full bg-canvas ring-4 ring-canvas"
+              >
+                <Circle class="h-3 w-3 text-ink-300" :stroke-width="2" />
+              </span>
+              <p class="text-sm text-ink-400">{{ labelOf(status) }}</p>
+            </li>
+          </ol>
+        </div>
       </div>
 
       <!-- ============ Guest ownership verification ============ -->

@@ -34,7 +34,7 @@ import { ApiError } from '~/composables/useApi'
 definePageMeta({ layout: 'default' })
 
 useSeoMeta({
-  title: 'Order Banner — Rajaku Printing',
+  title: 'Order Banner',
   description:
     'Order banner cetak custom online. Upload desain sendiri atau minta jasa desain. Ambil di tempat atau dikirim ke alamat Anda.',
   ogTitle: 'Order Banner — Rajaku Printing',

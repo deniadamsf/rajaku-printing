@@ -21,13 +21,19 @@ import {
   Calculator,
   Layers,
   Loader2,
-  PackageSearch,
+  RotateCcw,
   Ruler,
   Package as PackageIcon,
   ArrowRight,
 } from '@lucide/vue'
 import { motion } from 'motion-v'
-import type { CatalogProduct, CatalogProductDetail, CatalogQuote } from '~/types/catalog'
+import { CORE_SERVICES, FALLBACK_MATERIALS } from '~/utils/catalog-fallback'
+import type {
+  CatalogMaterial,
+  CatalogProduct,
+  CatalogProductDetail,
+  CatalogQuote,
+} from '~/types/catalog'
 import { ApiError } from '~/composables/useApi'
 
 definePageMeta({ layout: 'default' })
@@ -50,14 +56,23 @@ const {
   refresh: refreshProducts,
 } = await useAsyncData('katalog-products', () => catalog.listProducts())
 
-const {
-  data: materialsData,
-  pending: materialsPending,
-  error: materialsError,
-} = await useAsyncData('katalog-materials', () => catalog.listMaterials())
+// `error` sengaja tidak diambil: kegagalan fetch bahan ditangani dengan
+// menampilkan daftar bahan bawaan sistem (lihat `materials` di bawah), bukan
+// dengan menampilkan pesan gagal.
+const { data: materialsData, pending: materialsPending } = await useAsyncData(
+  'katalog-materials',
+  () => catalog.listMaterials(),
+)
 
 const products = computed<CatalogProduct[]>(() => productsData.value?.products ?? [])
-const materials = computed(() => materialsData.value?.materials ?? [])
+
+// Bahan: kalau endpoint gagal atau kosong, pakai daftar bahan bawaan sistem
+// (`utils/catalog-fallback.ts`) — bukan baris "daftar bahan belum bisa dimuat".
+// Daftar itu memang bahan yang kami sediakan, jadi menampilkannya tetap jujur.
+const materials = computed<ReadonlyArray<CatalogMaterial>>(() => {
+  const fromApi = materialsData.value?.materials ?? []
+  return fromApi.length > 0 ? fromApi : FALLBACK_MATERIALS
+})
 
 function pricingLabel(p: CatalogProduct): string {
   return p.pricing_type === 'paket' ? 'Harga paket' : 'Harga per m²'
@@ -237,42 +252,64 @@ useHead({
 
     <!-- Products grid -->
     <section class="mx-auto max-w-6xl px-4 pb-16 md:pb-24">
-      <div v-if="productsError" class="rounded-lg border border-hairline bg-canvas-alt p-6 text-sm text-ink-500">
-        Katalog belum bisa dimuat saat ini.
-        <button
-          type="button"
-          class="ml-1 font-medium text-brand-500 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas rounded-sm"
-          @click="refreshProducts()"
-        >
-          Coba lagi
-        </button>
+      <div v-if="productsPending" class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        <div v-for="i in 6" :key="i" class="h-72 animate-pulse rounded-lg border border-hairline bg-canvas-alt" />
       </div>
 
-      <div v-else-if="productsPending" class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-        <div v-for="i in 6" :key="i" class="h-48 animate-pulse rounded-lg border border-hairline bg-canvas-alt" />
-      </div>
+      <!--
+        Katalog gagal dimuat ATAU belum diisi → tetap tampilkan jenis layanan
+        yang memang kami kerjakan (artwork, tanpa harga), bukan kotak error
+        setinggi satu layar. Harga & kalkulator memang butuh backend hidup, dan
+        itu dijelaskan apa adanya di bawah grid.
+      -->
+      <div v-else-if="products.length === 0">
+        <ul class="flex snap-x snap-mandatory gap-6 overflow-x-auto pb-2 md:grid md:gap-6 md:overflow-visible md:pb-0 md:grid-cols-2 lg:grid-cols-3">
+          <li
+            v-for="service in CORE_SERVICES"
+            :key="service.name"
+            class="w-[80%] shrink-0 snap-center md:w-auto md:shrink overflow-hidden rounded-lg border border-hairline bg-canvas"
+          >
+            <div class="aspect-[4/3] w-full overflow-hidden bg-canvas-alt">
+              <ArtProduct :variant="service.variant" decorative />
+            </div>
+            <div class="p-6 md:p-8">
+              <h2 class="text-sm font-sans font-semibold text-ink-950">{{ service.name }}</h2>
+              <p class="mt-2 text-sm leading-relaxed text-ink-500">{{ service.desc }}</p>
+            </div>
+          </li>
+        </ul>
+        <p class="mt-3 text-xs text-ink-500 md:hidden">Geser ke samping untuk melihat produk lainnya.</p>
 
-      <div
-        v-else-if="products.length === 0"
-        class="rounded-lg border border-hairline bg-canvas p-8 md:p-10 text-center"
-      >
-        <PackageSearch class="mx-auto h-6 w-6 text-ink-400" :stroke-width="1.5" />
-        <p class="mt-3 text-sm font-semibold text-ink-900">Katalog sedang disiapkan</p>
-        <p class="mt-1 text-sm text-ink-500">
-          Produk akan tampil di sini setelah tim kami melengkapi katalog. Hubungi kami langsung
-          untuk kebutuhan cetak Anda.
-        </p>
-        <NuxtLink
-          to="/order"
-          class="mt-5 inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-5 py-2.5 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
-        >
-          Order Banner
-        </NuxtLink>
+        <div class="mt-8 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-ink-500">
+          <p>
+            {{
+              productsError
+                ? 'Harga dan kalkulator estimasi belum bisa dimuat saat ini.'
+                : 'Daftar harga sedang dilengkapi tim kami.'
+            }}
+            Hubungi kami lewat form order untuk penawaran.
+          </p>
+          <button
+            v-if="productsError"
+            type="button"
+            class="inline-flex items-center gap-1.5 text-xs font-medium text-ink-500 transition-colors hover:text-ink-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas rounded-sm"
+            @click="refreshProducts()"
+          >
+            <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" />
+            Coba muat ulang
+          </button>
+          <NuxtLink
+            to="/order"
+            class="inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-5 py-2.5 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+          >
+            Order Banner
+          </NuxtLink>
+        </div>
       </div>
 
       <motion.ul
         v-else
-        class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3"
+        class="flex snap-x snap-mandatory gap-6 overflow-x-auto pb-2 md:grid md:gap-6 md:overflow-visible md:pb-0 md:grid-cols-2 lg:grid-cols-3"
         :variants="container"
         initial="hidden"
         while-in-view="show"
@@ -283,42 +320,62 @@ useHead({
           :id="`produk-${p.slug}`"
           :key="p.id"
           :variants="item"
-          class="scroll-mt-24 rounded-lg border border-hairline bg-canvas p-6 md:p-8 transition-colors hover:border-ink-300"
+          class="w-[80%] shrink-0 snap-center md:w-auto md:shrink scroll-mt-24 overflow-hidden rounded-lg border border-hairline bg-canvas transition-colors hover:border-ink-300"
         >
-          <component :is="pricingIcon(p)" class="h-6 w-6 text-brand-500" :stroke-width="1.5" />
-          <h2 class="mt-4 text-sm font-sans font-semibold text-ink-950">{{ p.name }}</h2>
-          <p v-if="p.description" class="mt-2 text-sm leading-relaxed text-ink-500 line-clamp-3">
-            {{ p.description }}
-          </p>
-          <div class="mt-4 flex flex-wrap items-center gap-2">
-            <span
-              class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-gold-700 bg-gold-50 ring-1 ring-inset ring-gold-500/30"
+          <!--
+            Area visual kartu: foto asli produk kalau admin sudah mengunggahnya
+            (`image_url`), selama belum ada pakai artwork vektor per jenis produk.
+            Pola & rasio disamakan dengan `LandingServicesSection` supaya kartu
+            produk terlihat sama di landing dan di katalog.
+          -->
+          <div class="aspect-[4/3] w-full overflow-hidden bg-canvas-alt">
+            <img
+              v-if="p.image_url"
+              :src="p.image_url"
+              :alt="p.name"
+              width="800"
+              height="600"
+              loading="lazy"
+              class="h-full w-full object-cover"
             >
-              {{ pricingLabel(p) }}
-            </span>
-            <span
-              v-if="p.category"
-              class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-ink-600 bg-canvas-alt ring-1 ring-inset ring-hairline"
-            >
-              {{ p.category }}
-            </span>
+            <ArtProduct v-else :variant="artworkVariantFor(p)" decorative />
           </div>
-          <div class="mt-5 flex items-center gap-4">
-            <button
-              type="button"
-              class="inline-flex items-center gap-1.5 text-sm font-medium text-ink-700 transition-colors hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas rounded-sm"
-              @click="selectProductForCalc(p)"
-            >
-              <Calculator class="h-4 w-4" :stroke-width="1.5" />
-              Hitung estimasi
-            </button>
-            <NuxtLink
-              to="/order"
-              class="inline-flex items-center gap-1.5 text-sm font-semibold text-brand-500 transition-colors hover:text-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas rounded-sm"
-            >
-              Order
-              <ArrowRight class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </NuxtLink>
+
+          <div class="p-6 md:p-8">
+            <div class="flex items-center gap-2 text-ink-400">
+              <component :is="pricingIcon(p)" class="h-4 w-4" :stroke-width="1.5" />
+              <span class="text-[10px] font-medium uppercase tracking-[0.14em]">
+                {{ p.category }}
+              </span>
+            </div>
+            <h2 class="mt-3 text-sm font-sans font-semibold text-ink-950">{{ p.name }}</h2>
+            <p v-if="p.description" class="mt-2 text-sm leading-relaxed text-ink-500 line-clamp-3">
+              {{ p.description }}
+            </p>
+            <div class="mt-4 flex flex-wrap items-center gap-2">
+              <span
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-gold-700 bg-gold-50 ring-1 ring-inset ring-gold-500/30"
+              >
+                {{ pricingLabel(p) }}
+              </span>
+            </div>
+            <div class="mt-5 flex items-center gap-4">
+              <button
+                type="button"
+                class="inline-flex items-center gap-1.5 text-sm font-medium text-ink-700 transition-colors hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas rounded-sm"
+                @click="selectProductForCalc(p)"
+              >
+                <Calculator class="h-4 w-4" :stroke-width="1.5" />
+                Hitung estimasi
+              </button>
+              <NuxtLink
+                to="/order"
+                class="inline-flex items-center gap-1.5 text-sm font-semibold text-brand-500 transition-colors hover:text-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas rounded-sm"
+              >
+                Order
+                <ArrowRight class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </NuxtLink>
+            </div>
           </div>
         </motion.li>
       </motion.ul>
@@ -338,15 +395,9 @@ useHead({
           </p>
         </div>
 
-        <div v-if="materialsError" class="mt-8 text-sm text-ink-500">
-          Daftar bahan belum bisa dimuat saat ini.
-        </div>
-        <div v-else-if="materialsPending" class="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div v-if="materialsPending" class="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <div v-for="i in 4" :key="i" class="h-16 animate-pulse rounded-md border border-hairline bg-canvas" />
         </div>
-        <p v-else-if="materials.length === 0" class="mt-8 text-sm text-ink-500">
-          Data bahan sedang disiapkan tim kami.
-        </p>
         <motion.ul
           v-else
           class="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
@@ -369,11 +420,21 @@ useHead({
             </div>
           </li>
         </motion.ul>
+        <p class="mt-3 text-xs text-ink-500 md:hidden">Geser ke samping untuk melihat produk lainnya.</p>
       </div>
     </section>
 
-    <!-- Kalkulator estimasi harga -->
-    <section id="kalkulator" class="mx-auto max-w-4xl px-4 py-16 md:py-24 scroll-mt-16">
+    <!--
+      Kalkulator hanya berarti kalau katalog benar-benar termuat. Saat kosong,
+      seluruh section disembunyikan (bukan diisi kalimat "kalkulator tersedia
+      setelah katalog siap") — grid layanan di atas sudah menjelaskan situasinya
+      sekali, tidak perlu diulang sebagai bidang kosong kedua.
+    -->
+    <section
+      v-if="products.length > 0"
+      id="kalkulator"
+      class="mx-auto max-w-4xl px-4 py-16 md:py-24 scroll-mt-16"
+    >
       <div class="max-w-2xl">
         <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Kalkulator</p>
         <h2 class="mt-3 text-lg md:text-xl font-sans font-semibold text-ink-950">
@@ -392,10 +453,7 @@ useHead({
         :in-view-options="{ once: true, margin: '-100px' }"
         :transition="fadeTransition"
       >
-        <div v-if="products.length === 0" class="text-sm text-ink-500">
-          Kalkulator tersedia setelah katalog produk siap.
-        </div>
-        <div v-else class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
+        <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
           <div class="space-y-4">
             <div class="grid gap-4 sm:grid-cols-2">
               <div>

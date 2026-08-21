@@ -8,20 +8,51 @@
  * sudah dipasang global di `layouts/default.vue` — tidak duplikasi @id.
  *
  * Mascot/logo (§26.8) hanya boleh muncul di halaman ini/footer, bukan di
- * admin/checkout — di sini dipakai `logo-full-sm.webp` (480px) sebagai
- * elemen brand utama section cerita. LOGO.png (8.7MB) sengaja tidak dipakai.
- * favicon.svg tetap dipakai sebagai monogram kecil di header.
+ * admin/checkout — di sini dipakai `logo-full.webp` SATU KALI sebagai elemen
+ * brand di section cerita. favicon.svg tetap dipakai sebagai monogram kecil
+ * terpisah di header (bukan mascot, sekadar brand mark).
  *
- * Foto proses (2 dari 6 aset showcase) dipakai untuk memecah dinding teks di
- * section cerita — bukan klaim/statistik, murni gambar proses cetak asli.
+ * Gambar dari `useSiteMedia()` (slot `tentang_workshop` & `tentang_tim`,
+ * didaftarkan modul lain) dipakai untuk band foto lebar + section split
+ * gambar/teks — dengan fallback statis eksplisit di sisi pemanggil ini
+ * (bukan mengedit useSiteMedia.ts) supaya halaman tetap bergambar penuh
+ * walau backend/API site-media mati. `await siteMediaReady` supaya SSR awal
+ * langsung dapat gambar final, bukan fallback yang lalu "berkedip" ganti.
  *
- * Momen orkestrasi utama halaman ini: blok cerita (emblem logo + foto
- * proses) reveal bersamaan sekali saat masuk viewport. Section lain hanya
- * fade tunggal tanpa stagger — halaman ini harus tetap terasa tenang.
+ * Section "cara kami bekerja" adalah timeline vertikal berbasis alur order
+ * asli (CLAUDE.md §4) — bukan klaim/statistik karangan.
+ *
+ * Momen orkestrasi utama halaman ini: blok cerita (emblem logo + foto tim)
+ * reveal bersamaan sekali saat masuk viewport. Section lain hanya fade
+ * tunggal tanpa stagger — halaman ini harus tetap terasa tenang.
  */
-import { Clock, Mail, MapPin, Phone, ShieldCheck, Sparkles, Truck, Users } from '@lucide/vue'
+import {
+  CheckCircle2,
+  ClipboardList,
+  Clock,
+  Mail,
+  MapPin,
+  PackageCheck,
+  Phone,
+  Printer,
+  ShieldCheck,
+  Sparkles,
+  Truck,
+  Users,
+  Wallet,
+} from '@lucide/vue'
 import { motion } from 'motion-v'
 import { business } from '~/utils/business'
+
+// Fallback statis WAJIB di sisi pemanggil (bukan di useSiteMedia.ts — file
+// itu tidak boleh disentuh di pekerjaan ini). Kalau slot belum diisi admin
+// atau API site-media gagal, `resolve()` sudah jatuh ke fallback bawaan
+// useSiteMedia.ts sendiri; `|| '/proses/...'` di sini jaga-jaga tambahan
+// untuk kasus slot mengembalikan string kosong.
+const { resolve: resolveMedia, ready: siteMediaReady } = useSiteMedia()
+await siteMediaReady
+const workshopImage = computed(() => resolveMedia('tentang_workshop') || '/proses/proses-04.webp')
+const timImage = computed(() => resolveMedia('tentang_tim') || '/proses/proses-02.webp')
 
 const prefersReducedMotion = usePrefersReducedMotion()
 const fadeTransition = computed(() =>
@@ -65,6 +96,42 @@ useHead({
   ],
 })
 
+// Timeline "cara kami bekerja" — berbasis alur order asli §4, disederhanakan
+// jadi 6 langkah supaya terbaca cepat (bukan daftar 20 status state machine
+// mentah). Tidak ada klaim durasi/statistik yang tidak tercatat di sistem.
+const workflowSteps = [
+  {
+    icon: ClipboardList,
+    title: 'Order masuk',
+    desc: 'Pesanan tercatat lewat website (upload desain / request desain) atau langsung di tempat.',
+  },
+  {
+    icon: Wallet,
+    title: 'Ongkir & pembayaran',
+    desc: 'Admin hitung ongkir kalau dikirim, lalu pelanggan bayar transfer/QRIS/cash dan tim memverifikasi bukti transfer.',
+  },
+  {
+    icon: ShieldCheck,
+    title: 'Verifikasi desain',
+    desc: 'File yang diunggah dicek, atau brief request desain dikerjakan tim sampai disetujui.',
+  },
+  {
+    icon: Printer,
+    title: 'Proses cetak',
+    desc: 'Banner dicetak dengan mesin large-format sesuai bahan dan ukuran yang dipilih.',
+  },
+  {
+    icon: CheckCircle2,
+    title: 'Quality control',
+    desc: 'Hasil cetak diperiksa dulu sebelum lanjut ke tahap pengambilan/pengiriman.',
+  },
+  {
+    icon: PackageCheck,
+    title: 'Siap diambil / dikirim',
+    desc: 'Pelanggan ambil langsung di tempat, atau kami kirimkan ke alamat yang tercatat.',
+  },
+]
+
 const values = [
   {
     icon: ShieldCheck,
@@ -96,14 +163,14 @@ function waLink(): string {
 <template>
   <main>
     <!-- Header -->
-    <section class="mx-auto max-w-6xl px-4 pt-16 pb-10 md:pt-24 md:pb-14">
+    <section class="mx-auto max-w-6xl px-4 pt-16 pb-8 md:pt-24 md:pb-10">
       <div class="flex items-start gap-4">
         <img
           src="/favicon.svg"
           alt="Monogram Rajaku Printing"
           width="40"
           height="40"
-          loading="lazy"
+          loading="eager"
           class="mt-1 h-10 w-10 shrink-0 rounded-md ring-1 ring-inset ring-gold-500/30"
         >
         <div>
@@ -120,7 +187,27 @@ function waLink(): string {
       </p>
     </section>
 
-    <!-- Cerita singkat — logo emblem + foto proses memecah dinding teks -->
+    <!-- Band gambar lebar: ruang produksi -->
+    <section class="mx-auto max-w-6xl px-4 pb-16 md:pb-24">
+      <motion.div
+        class="overflow-hidden rounded-lg border border-hairline"
+        :initial="{ opacity: 0, y: 16 }"
+        :while-in-view="{ opacity: 1, y: 0 }"
+        :in-view-options="{ once: true, margin: '-80px' }"
+        :transition="fadeTransition"
+      >
+        <img
+          :src="workshopImage"
+          alt="Ruang produksi Rajaku Printing, tempat mesin cetak large-format bekerja"
+          width="1600"
+          height="686"
+          loading="eager"
+          class="aspect-[4/3] w-full object-cover md:aspect-[21/9]"
+        >
+      </motion.div>
+    </section>
+
+    <!-- Cerita singkat — mascot logo (§26.8, satu-satunya kemunculan di halaman ini) -->
     <section class="mx-auto max-w-6xl px-4 pb-16 md:pb-24">
       <div class="rounded-lg border border-hairline bg-canvas p-6 md:p-10">
         <div class="grid gap-8 md:grid-cols-[220px_1fr] md:items-center">
@@ -132,10 +219,10 @@ function waLink(): string {
             :transition="{ ...fadeTransition, delay: storyDelay(0) }"
           >
             <img
-              src="/brand/logo-full-sm.webp"
+              src="/brand/logo-full.webp"
               alt="Logo Rajaku Printing"
-              width="480"
-              height="461"
+              width="1200"
+              height="1153"
               loading="lazy"
               class="h-full w-full object-contain"
             >
@@ -161,56 +248,82 @@ function waLink(): string {
             </p>
           </motion.div>
         </div>
+      </div>
+    </section>
 
+    <!-- Split gambar + teks: standar kerja, bukan biografi -->
+    <section class="border-y border-hairline bg-canvas-alt">
+      <div class="mx-auto max-w-6xl px-4 py-16 md:py-24">
         <motion.div
-          class="mt-8 overflow-hidden rounded-lg border border-hairline"
+          class="grid gap-8 md:grid-cols-2 md:items-center"
           :initial="{ opacity: 0, y: 16 }"
           :while-in-view="{ opacity: 1, y: 0 }"
-          :in-view-options="{ once: true, margin: '-80px' }"
-          :transition="{ ...fadeTransition, delay: storyDelay(2) }"
+          :in-view-options="{ once: true, margin: '-100px' }"
+          :transition="fadeTransition"
         >
-          <img
-            src="/proses/proses-04.webp"
-            alt="Mesin cetak large-format Rajaku Printing"
-            width="1000"
-            height="562"
-            loading="lazy"
-            class="h-full w-full object-cover"
-          >
+          <div class="overflow-hidden rounded-lg border border-hairline order-2 md:order-1">
+            <img
+              :src="timImage"
+              alt="Tim Rajaku Printing bekerja memeriksa hasil cetak"
+              width="1000"
+              height="750"
+              loading="lazy"
+              class="aspect-[4/3] w-full object-cover"
+            >
+          </div>
+          <div class="order-1 md:order-2">
+            <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Cara kami bekerja</p>
+            <h2 class="mt-3 text-lg md:text-xl font-sans font-semibold text-ink-950">
+              Tiap pesanan diperiksa manusia, bukan cuma mesin
+            </h2>
+            <p class="mt-3 text-sm leading-relaxed text-ink-600">
+              File desain yang Anda kirim dicek dulu sebelum masuk antrean cetak — supaya format,
+              ukuran, dan resolusinya sesuai untuk hasil large-format. Setelah dicetak, hasilnya
+              melewati pemeriksaan kualitas sebelum dinyatakan siap diambil atau dikirim.
+            </p>
+            <p class="mt-3 text-sm leading-relaxed text-ink-600">
+              Pembayaran diverifikasi manual oleh tim kami dari bukti transfer yang Anda unggah —
+              tidak ada proses otomatis yang bisa salah baca nominal. Kalau ada yang perlu
+              direvisi, kami hubungi lewat WhatsApp sebelum lanjut ke tahap berikutnya.
+            </p>
+          </div>
         </motion.div>
       </div>
     </section>
 
-    <!-- Jeda visual: dua foto proses memecah transisi cerita → nilai -->
-    <section class="mx-auto max-w-6xl px-4 pb-16 md:pb-24">
+    <!-- Timeline: cara kami bekerja (alur order §4) -->
+    <section class="mx-auto max-w-6xl px-4 py-16 md:py-24">
       <motion.div
-        class="grid gap-4 sm:grid-cols-2"
+        class="max-w-2xl"
+        :initial="{ opacity: 0, y: 12 }"
+        :while-in-view="{ opacity: 1, y: 0 }"
+        :in-view-options="{ once: true, margin: '-80px' }"
+        :transition="fadeTransition"
+      >
+        <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Alur pesanan</p>
+        <h2 class="mt-3 text-lg md:text-xl font-sans font-semibold text-ink-950">
+          Dari order masuk sampai siap di tangan Anda
+        </h2>
+      </motion.div>
+
+      <motion.ol
+        class="relative mt-10 max-w-2xl border-l border-hairline pl-8 space-y-8"
         :initial="{ opacity: 0, y: 16 }"
         :while-in-view="{ opacity: 1, y: 0 }"
         :in-view-options="{ once: true, margin: '-100px' }"
         :transition="fadeTransition"
       >
-        <div class="overflow-hidden rounded-lg border border-hairline">
-          <img
-            src="/proses/proses-01.webp"
-            alt="Panel kontrol mesin cetak dan tabung tinta"
-            width="1000"
-            height="562"
-            loading="lazy"
-            class="h-full w-full object-cover"
+        <li v-for="(step, idx) in workflowSteps" :key="step.title" class="relative">
+          <span
+            class="absolute -left-[41px] flex h-8 w-8 items-center justify-center rounded-full border border-hairline bg-canvas text-brand-500"
           >
-        </div>
-        <div class="overflow-hidden rounded-lg border border-hairline">
-          <img
-            src="/proses/proses-06.webp"
-            alt="Hasil cetak banner yang sudah selesai"
-            width="1000"
-            height="562"
-            loading="lazy"
-            class="h-full w-full object-cover"
-          >
-        </div>
-      </motion.div>
+            <component :is="step.icon" class="h-4 w-4" :stroke-width="1.5" />
+          </span>
+          <p class="font-mono text-[10px] text-ink-400">Langkah {{ idx + 1 }}</p>
+          <h3 class="mt-0.5 text-sm font-sans font-semibold text-ink-950">{{ step.title }}</h3>
+          <p class="mt-1 text-sm leading-relaxed text-ink-500">{{ step.desc }}</p>
+        </li>
+      </motion.ol>
     </section>
 
     <!-- Keunggulan / values -->

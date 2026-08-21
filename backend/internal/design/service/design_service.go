@@ -508,6 +508,58 @@ func (s *Service) StaffApproveWalkinInstant(ctx context.Context, in WalkinInstan
 	return nil
 }
 
+// StaffSkipUpload — POS shortcut (§11): staff lewati upload file desain
+// karena pelanggan datang bawa desain yang filenya sudah ada di komputer
+// desainer, dan langkah unggah ke sistem hanya untuk maju ke proses cetak
+// jadi mubazir. TIDAK ada pengecekan keberadaan file — justru itu inti
+// fiturnya. Note wajib diisi sebagai jejak audit lokasi file fisik, dan
+// tersimpan di riwayat order lewat MarkDesainDiverifikasi.
+//
+// Wajib: order.channel=pos (order online TIDAK boleh lewat jalur ini —
+// kalau staff salah klik, order online tanpa file desain akan maju ke cetak
+// tanpa ada yang tahu harus mencetak apa), order.design_source=upload,
+// status=dibayar.
+//
+// Sengaja NO notif WA — sama alasan dengan StaffApproveWalkinInstant:
+// pelanggan ada di depan kasir.
+func (s *Service) StaffSkipUpload(ctx context.Context, in SkipUploadInput) error {
+	order, err := s.orderCmd.FindSummaryByResi(ctx, in.Resi)
+	if err != nil {
+		if errors.Is(err, orderapi.ErrOrderNotFound) {
+			return designapi.ErrOrderNotFound
+		}
+		return fmt.Errorf("skip upload: lookup order: %w", err)
+	}
+	if order.Channel != "pos" {
+		return designapi.ErrSkipUploadOnlyForPOS
+	}
+	if order.DesignSource != "upload" {
+		return designapi.ErrDesignSourceMismatch
+	}
+	if order.Status != "dibayar" {
+		return designapi.ErrOrderNotDesignReady
+	}
+	note := strings.TrimSpace(in.Note)
+	if note == "" {
+		return designapi.ErrSkipNoteRequired
+	}
+	actor := in.StaffID
+	if err := s.orderCmd.MarkDesainDiverifikasi(ctx, order.ID, &actor, note); err != nil {
+		if errors.Is(err, orderapi.ErrOrderStateChanged) {
+			return designapi.ErrOrderStateChanged
+		}
+		return fmt.Errorf("skip upload: advance order: %w", err)
+	}
+	log.Ctx(ctx).Info().
+		Str("resi", in.Resi).
+		Str("order_id", order.ID.String()).
+		Str("staff_id", in.StaffID.String()).
+		Str("note", note).
+		Msg("staff skip upload desain — lewati kewajiban unggah file, jejak audit di note")
+	// Sengaja NO notif — §11 pelanggan ada di depan kasir.
+	return nil
+}
+
 // ---- Read paths ----
 
 // ListForOrder returns all design files for an order (customer sees own,

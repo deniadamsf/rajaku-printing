@@ -71,6 +71,15 @@ type WalkinInstantApproveInput struct {
 	Note    string
 }
 
+// SkipUploadInput — staff lewati upload file desain untuk order walk-in
+// (§11): desain sudah ada di komputer desainer, tidak perlu diunggah ke
+// sistem hanya supaya order bisa maju ke proses cetak.
+type SkipUploadInput struct {
+	Resi    string
+	StaffID uuid.UUID
+	Note    string // WAJIB — jejak audit lokasi file fisik
+}
+
 // FileHandle — everything the handler needs to serve a design file.
 type FileHandle struct {
 	File    *model.DesignFile

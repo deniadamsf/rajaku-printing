@@ -26,4 +26,9 @@ var (
 
 	ErrWalkinOnlyForPOS  = errors.New("designapi: instant walk-in approval only valid for POS orders with design_approval_mode=instant_walkin")
 	ErrOrderStateChanged = errors.New("designapi: order state changed concurrently — refresh & retry")
+
+	// Skip-upload flow (§11 POS shortcut) — staff lewati upload file karena
+	// desainer sudah punya filenya di luar sistem.
+	ErrSkipUploadOnlyForPOS = errors.New("designapi: skip upload only valid for POS walk-in orders")
+	ErrSkipNoteRequired     = errors.New("designapi: note required when skipping design upload")
 )

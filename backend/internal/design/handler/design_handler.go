@@ -38,7 +38,9 @@ func mapDomainErr(c *gin.Context, err error) {
 		errors.Is(err, designapi.ErrFileTooLarge),
 		errors.Is(err, designapi.ErrFileEmpty),
 		errors.Is(err, designapi.ErrRevisionNotesRequired),
-		errors.Is(err, designapi.ErrWalkinOnlyForPOS):
+		errors.Is(err, designapi.ErrWalkinOnlyForPOS),
+		errors.Is(err, designapi.ErrSkipUploadOnlyForPOS),
+		errors.Is(err, designapi.ErrSkipNoteRequired):
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, err.Error())
 	case errors.Is(err, designapi.ErrPendingDraftExists),
 		errors.Is(err, designapi.ErrDraftAlreadyReviewed),
@@ -178,6 +180,34 @@ func (h *Handler) StaffApproveWalkin(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&body)
 	if err := h.svc.StaffApproveWalkinInstant(c.Request.Context(), service.WalkinInstantApproveInput{
+		Resi:    c.Param("resi"),
+		StaffID: id.UserID,
+		Note:    body.Note,
+	}); err != nil {
+		mapDomainErr(c, err)
+		return
+	}
+	httpx.OK(c, gin.H{"ok": true})
+}
+
+// POST /admin/orders/:resi/design-skip-upload  (§11 POS shortcut)
+// Staff lewati upload file desain — desain sudah ada di komputer desainer,
+// tidak perlu diunggah ke sistem hanya supaya order bisa maju ke proses
+// cetak. Note wajib, dipakai sebagai jejak audit lokasi file fisik.
+func (h *Handler) StaffSkipUpload(c *gin.Context) {
+	id, err := authapi.IdentityFromContext(c.Request.Context())
+	if err != nil || id == nil {
+		httpx.Error(c, http.StatusUnauthorized, httpx.CodeUnauthorized, "authentication required")
+		return
+	}
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "invalid json body")
+		return
+	}
+	if err := h.svc.StaffSkipUpload(c.Request.Context(), service.SkipUploadInput{
 		Resi:    c.Param("resi"),
 		StaffID: id.UserID,
 		Note:    body.Note,

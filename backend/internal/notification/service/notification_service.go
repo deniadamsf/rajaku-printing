@@ -30,6 +30,8 @@ type JobStore interface {
 	// RedactStaleSensitive — periodic sweep safety net (review finding #3),
 	// see repository.Repository.RedactStaleSensitive.
 	RedactStaleSensitive(ctx context.Context, olderThan time.Time) (int64, error)
+	// CancelOrderJobs — see notificationapi.JobCanceller.
+	CancelOrderJobs(ctx context.Context, orderID uuid.UUID) (int64, error)
 }
 
 // Service — implementasi notificationapi.Enqueuer. Cross-module deps
@@ -68,6 +70,7 @@ var (
 	_ notificationapi.Enqueuer        = (*Service)(nil)
 	_ notificationapi.InternalAlerter = (*Service)(nil)
 	_ notificationapi.OTPSender       = (*Service)(nil)
+	_ notificationapi.JobCanceller    = (*Service)(nil)
 )
 
 func New(jobs JobStore, orderCmd orderapi.OrderCommandService, customers authapi.CustomerService, cfg Config) *Service {
@@ -276,6 +279,15 @@ func (s *Service) RedactStaleSensitiveMessages(ctx context.Context) (int64, erro
 	n, err := s.jobs.RedactStaleSensitive(ctx, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("redact stale sensitive notification messages: %w", err)
+	}
+	return n, nil
+}
+
+// CancelOrderJobs implements notificationapi.JobCanceller.
+func (s *Service) CancelOrderJobs(ctx context.Context, orderID uuid.UUID) (int64, error) {
+	n, err := s.jobs.CancelOrderJobs(ctx, orderID)
+	if err != nil {
+		return 0, fmt.Errorf("cancel notification jobs for order %s: %w", orderID, err)
 	}
 	return n, nil
 }

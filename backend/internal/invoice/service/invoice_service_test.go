@@ -89,13 +89,16 @@ func (f *fakeBlobs) AbsPath(subpath string) (string, error) {
 type fakeOrderCmd struct {
 	view    *orderapi.OrderInvoiceView
 	viewErr error
+
+	summary    *orderapi.OrderSummary
+	summaryErr error
 }
 
 func (f *fakeOrderCmd) FindSummaryByResi(context.Context, string) (*orderapi.OrderSummary, error) {
 	return nil, nil
 }
 func (f *fakeOrderCmd) FindSummaryByID(context.Context, uuid.UUID) (*orderapi.OrderSummary, error) {
-	return nil, nil
+	return f.summary, f.summaryErr
 }
 func (f *fakeOrderCmd) FindInvoiceViewByID(context.Context, uuid.UUID) (*orderapi.OrderInvoiceView, error) {
 	return f.view, f.viewErr
@@ -393,6 +396,22 @@ func TestGetFile_NotFound(t *testing.T) {
 	_, err := svc.GetFile(context.Background(), uuid.New())
 	if !errors.Is(err, invoiceapi.ErrInvoiceNotFound) {
 		t.Fatalf("want ErrInvoiceNotFound, got %v", err)
+	}
+}
+
+// TestGetFile_OrderSoftDeleted_ReturnsNotFound — § super admin order tools
+// review finding #6: an invoice's underlying order being soft-deleted must
+// make the PDF stop being downloadable via this public, no-auth endpoint.
+func TestGetFile_OrderSoftDeleted_ReturnsNotFound(t *testing.T) {
+	invID := uuid.New()
+	inv := &model.Invoice{ID: invID, OrderID: uuid.New(), InvoiceNumber: "INV/2026/00002", PDFPath: "invoices/2026/bar.pdf"}
+	store := &fakeInvoiceStore{byID: inv}
+	cmd := &fakeOrderCmd{summaryErr: orderapi.ErrOrderNotFound}
+	svc := newSvc(store, &fakeBlobs{}, cmd, &fakeCustomers{})
+
+	_, err := svc.GetFile(context.Background(), invID)
+	if !errors.Is(err, invoiceapi.ErrInvoiceNotFound) {
+		t.Fatalf("want ErrInvoiceNotFound for deleted order, got %v", err)
 	}
 }
 

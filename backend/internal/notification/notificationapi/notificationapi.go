@@ -84,6 +84,18 @@ type Enqueuer interface {
 	EnqueueOrderEvent(ctx context.Context, kind Kind, orderID uuid.UUID, extras map[string]any) error
 }
 
+// JobCanceller — kontrak untuk modul lain (order) yang perlu membatalkan job
+// notifikasi yang masih antre untuk sebuah order. Dipakai satu-satunya kasus
+// saat ini: super admin soft-delete order (§ super admin order tools) — WA
+// yang sudah di-enqueue (mis. "siap kirim") tapi belum terkirim TIDAK boleh
+// tetap dikirim membawa link `/lacak/<resi>` yang sekarang 404.
+type JobCanceller interface {
+	// CancelOrderJobs marks every job with status pending/failed for orderID
+	// as cancelled. Idempotent — no matching jobs returns (0, nil). Jobs
+	// already sent/dead/cancelled are left untouched.
+	CancelOrderJobs(ctx context.Context, orderID uuid.UUID) (int64, error)
+}
+
 // InternalAlerter — kontrak untuk notifikasi yang tujuannya TIM SENDIRI, bukan
 // pelanggan (mis. reminder retensi file desain §19, atau alert operasional
 // lain nanti). Recipient-nya satu nomor ops yang di-set lewat env

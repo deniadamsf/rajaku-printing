@@ -18,6 +18,13 @@ const (
 	JobSent    JobStatus = "sent"
 	JobFailed  JobStatus = "failed" // transient — will retry
 	JobDead    JobStatus = "dead"   // exhausted retries; needs human
+	// JobCancelled — deliberately cancelled by a business event BEFORE it was
+	// sent (currently: order soft-deleted by super admin, § super admin order
+	// tools — see order/service.Service.cancelPendingNotifications). Distinct
+	// from JobDead: dead means "retries exhausted, needs human", cancelled
+	// means "no longer relevant, will never be needed". Never auto-claimed
+	// (repository.ClaimBatch only selects pending/failed).
+	JobCancelled JobStatus = "cancelled"
 )
 
 // JSONPayload — GORM (de)serializer for the jsonb `payload` column. Kept tiny

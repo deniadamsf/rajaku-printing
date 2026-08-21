@@ -225,6 +225,26 @@ func (r *Repository) RedactStaleSensitive(ctx context.Context, olderThan time.Ti
 	return res.RowsAffected, nil
 }
 
+// CancelOrderJobs marks every pending/failed job for orderID as cancelled —
+// used when an order is soft-deleted (§ super admin order tools) so a WA
+// already queued isn't sent for an order that's now gone from the customer's
+// perspective (its `/lacak/<resi>` link would 404). Idempotent — jobs
+// already sent/dead/cancelled, or with no order_id match at all, are left
+// untouched; calling this on an order with nothing queued returns (0, nil).
+func (r *Repository) CancelOrderJobs(ctx context.Context, orderID uuid.UUID) (int64, error) {
+	res := r.db.WithContext(ctx).
+		Model(&model.NotificationJob{}).
+		Where("order_id = ? AND status IN ?", orderID, []model.JobStatus{model.JobPending, model.JobFailed}).
+		Updates(map[string]any{
+			"status":     model.JobCancelled,
+			"updated_at": time.Now().UTC(),
+		})
+	if res.Error != nil {
+		return 0, fmt.Errorf("cancel notification jobs for order %s: %w", orderID, res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
 // FindByID — for admin/debug inspection.
 func (r *Repository) FindByID(ctx context.Context, id uuid.UUID) (*model.NotificationJob, error) {
 	var j model.NotificationJob

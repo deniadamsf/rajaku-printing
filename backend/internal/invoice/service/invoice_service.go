@@ -184,6 +184,11 @@ func (s *Service) GenerateForOrder(ctx context.Context, orderID uuid.UUID, actor
 
 // GetFile — resolve invoice by ID + return filesystem handle. Public endpoint:
 // tidak butuh auth (UUID cukup unguessable). Handler stream via http.ServeFile.
+//
+// Also checks the underlying order hasn't been soft-deleted (§ super admin
+// order tools) — orderCmd.FindSummaryByID filters deleted_at IS NULL, so a
+// deleted order's invoice must stop being publicly downloadable, not stay
+// reachable forever via this ID-only, no-auth endpoint.
 func (s *Service) GetFile(ctx context.Context, id uuid.UUID) (*FileHandle, error) {
 	inv, err := s.invoices.FindByID(ctx, id)
 	if err != nil {
@@ -191,6 +196,12 @@ func (s *Service) GetFile(ctx context.Context, id uuid.UUID) (*FileHandle, error
 			return nil, invoiceapi.ErrInvoiceNotFound
 		}
 		return nil, fmt.Errorf("lookup invoice: %w", err)
+	}
+	if _, err := s.orderCmd.FindSummaryByID(ctx, inv.OrderID); err != nil {
+		if errors.Is(err, orderapi.ErrOrderNotFound) {
+			return nil, invoiceapi.ErrInvoiceNotFound
+		}
+		return nil, fmt.Errorf("check order for invoice %s: %w", id, err)
 	}
 	abs, err := s.blobs.AbsPath(inv.PDFPath)
 	if err != nil {

@@ -26,7 +26,14 @@ export interface BusinessInfo {
   streetAddress: string
   addressLocality: string
   addressRegion: string
-  postalCode: string
+  /**
+   * Kode pos. OPSIONAL dengan sengaja: lebih baik tidak dikirim ke Google
+   * daripada dikirim salah. NAP (Name-Address-Phone) yang tidak konsisten
+   * dengan sumber lain justru menurunkan kepercayaan hasil pencarian lokal.
+   * Kalau `undefined`, field ini dihilangkan dari JSON-LD (lihat
+   * layouts/default.vue), bukan dikirim kosong.
+   */
+  postalCode?: string
   addressCountry: string
   /** Format E.164 untuk `tel:` & JSON-LD. */
   telephone: string
@@ -35,17 +42,31 @@ export interface BusinessInfo {
   email: string
   openingHours: BusinessOpeningHours[]
   serviceArea: string[]
-  geo: { latitude: number; longitude: number }
+  /**
+   * Koordinat lokasi toko. OPSIONAL dengan sengaja — koordinat yang meleset
+   * menaruh pin peta di rumah orang lain dan mengirim pelanggan ke alamat
+   * yang salah. Kalau `undefined`, blok `geo` dihilangkan dari JSON-LD.
+   */
+  geo?: { latitude: number; longitude: number }
   /** Skala schema.org priceRange, mis. "$", "$$". */
   priceRange: string
+  /** Metode bayar yang diterima (§7 & §11) — untuk JSON-LD `paymentAccepted`. */
+  paymentAccepted: string[]
 }
 
-// Nama, alamat jalan, kota, dan telepon/WA DIKONFIRMASI ASLI oleh pemilik
-// (21 Agustus 2026) — dipakai apa adanya di struk kasir yang dicetak untuk
-// pelanggan, jadi jangan diubah tanpa konfirmasi ulang.
+// SUMBER TUNGGAL identitas usaha. Dipakai JSON-LD LocalBusiness
+// (layouts/default.vue), footer, halaman tentang-kami, dan struk kasir yang
+// dicetak untuk pelanggan — jadi salah di sini menyebar ke mana-mana.
 //
-// Yang MASIH placeholder ditandai TODO per baris di bawah: postalCode, email,
-// dan geo. Jangan tampilkan ketiganya ke pelanggan sebelum diganti.
+// DIKONFIRMASI ASLI oleh pemilik (21 Agustus 2026): nama, alamat jalan, kota,
+// telepon/WA, dan email. Jangan diubah tanpa konfirmasi ulang.
+//
+// `postalCode` dan `geo` SENGAJA dibiarkan kosong, bukan terlupakan. Nilai
+// sebelumnya (66312 dan -8.0503/111.7096) adalah tebakan pengisi yang tidak
+// pernah diverifikasi. Mengirim NAP yang salah ke Google lebih merugikan
+// daripada tidak mengirimnya sama sekali: kode pos yang bentrok dengan sumber
+// lain menurunkan kepercayaan data, dan koordinat meleset menaruh pin peta di
+// alamat orang lain. Keduanya dihilangkan dari JSON-LD selama masih kosong.
 export const business: BusinessInfo = {
   name: 'Rajaku Printing',
   legalName: 'Rajaku Printing',
@@ -54,11 +75,13 @@ export const business: BusinessInfo = {
   streetAddress: 'Jl. Panglima Sudirman No. 88, Dobangsan, Ngantru',
   addressLocality: 'Trenggalek',
   addressRegion: 'Jawa Timur',
-  postalCode: '66312', // TODO(rajaku): kode pos asli
+  // TODO(rajaku): isi kode pos asli kelurahan Ngantru, Trenggalek. Lihat
+  // catatan di atas — biarkan kosong sampai terverifikasi, jangan ditebak.
+  postalCode: undefined,
   addressCountry: 'ID',
   telephone: '+6282146343549',
   whatsapp: '6282146343549',
-  email: 'halo@rajakuprinting.example', // TODO(rajaku): email asli
+  email: 'rajakuprinting@gmail.com',
   openingHours: [
     {
       days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
@@ -68,6 +91,11 @@ export const business: BusinessInfo = {
     },
   ],
   serviceArea: ['Trenggalek', 'Tulungagung', 'Ponorogo', 'Pacitan'],
-  geo: { latitude: -8.0503, longitude: 111.7096 }, // TODO(rajaku): koordinat lokasi asli
+  // TODO(rajaku): isi koordinat asli toko. Cara tercepat: buka Google Maps,
+  // klik kanan tepat di lokasi toko, angka paling atas di menu itu adalah
+  // latitude, longitude — salin apa adanya ke sini.
+  geo: undefined,
   priceRange: '$$',
+  // §7 & §11 — transfer bank + QRIS untuk order online, tunai + QRIS di kasir.
+  paymentAccepted: ['Cash', 'QRIS', 'Bank Transfer'],
 }

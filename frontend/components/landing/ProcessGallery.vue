@@ -2,10 +2,16 @@
 /**
  * ProcessGallery — galeri proses cetak (deliverable §1 brief "kurang gambar").
  *
- * Layout bento asimetris (2x2 / 2x1 / 1x1) di desktop lewat `grid-template-areas`
- * scoped CSS (lebih terbaca & pasti benar dibanding merangkai banyak nilai
- * arbitrary Tailwind untuk grid-area). Di mobile/tablet turun jadi grid rapi
- * 1-2 kolom, aspect ratio seragam (semua foto sumber 1000x562).
+ * 8 foto: 6 lama (proses-01..06, 1000x562) + 2 baru (proses-07 detail panel
+ * kontrol & tabung tinta CMYK 800x800, proses-08 detail carriage/print-head
+ * di atas banner yang sedang tercetak 1000x750).
+ *
+ * Layout bento asimetris di desktop lewat `grid-template-areas` scoped CSS
+ * (lebih terbaca & pasti benar dibanding merangkai banyak nilai arbitrary
+ * Tailwind untuk grid-area). Baris ketiga sekarang 4 sel tunggal (e,f,g,h)
+ * untuk menampung 2 foto baru tanpa menambah tinggi total galeri. Di
+ * mobile/tablet turun jadi grid rapi 1-2 kolom (Tailwind, di atas CSS bento),
+ * `object-cover` menjaga aspect ratio seragam meski sumber foto beda rasio.
  *
  * Reveal stagger via `useRevealVariants()` — `once: true`, cuma opacity/translateY.
  * Hover: HANYA image di-scale sedikit di dalam container `overflow-hidden`
@@ -16,12 +22,15 @@ import { ZoomIn } from '@lucide/vue'
 import { motion } from 'motion-v'
 
 interface ProcessItem {
-  area: 'a' | 'b' | 'c' | 'd' | 'e' | 'f'
+  area: 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h'
   /** Slot sitemedia (§ modul sitemedia) — dipetakan ke path statis di useSiteMedia.ts. */
   slot: string
   alt: string
   caption: string
   label: string
+  /** Dimensi intrinsik foto asli (bukan semua 1000x562 — proses-07/08 beda rasio). */
+  width: number
+  height: number
 }
 
 const rawItems: ProcessItem[] = [
@@ -31,6 +40,8 @@ const rawItems: ProcessItem[] = [
     alt: 'Mesin cetak large-format Rajaku Printing tampak penuh, siap memproses pesanan',
     caption: 'Mesin cetak large-format Rajaku Printing, siap memproses pesanan banner.',
     label: 'Workshop',
+    width: 1000,
+    height: 562,
   },
   {
     area: 'b',
@@ -38,6 +49,8 @@ const rawItems: ProcessItem[] = [
     alt: 'Panel kontrol mesin cetak dan tabung tinta',
     caption: 'Panel kontrol & tabung tinta dicek sebelum proses cetak dimulai.',
     label: 'Kalibrasi',
+    width: 1000,
+    height: 562,
   },
   {
     area: 'c',
@@ -45,6 +58,8 @@ const rawItems: ProcessItem[] = [
     alt: 'Detail print-head bergerak di atas bahan banner',
     caption: 'Print-head bergerak presisi mengaplikasikan tinta ke bahan banner.',
     label: 'Print-head',
+    width: 1000,
+    height: 562,
   },
   {
     area: 'd',
@@ -52,6 +67,8 @@ const rawItems: ProcessItem[] = [
     alt: 'Banner mulai tercetak keluar dari mesin',
     caption: 'Banner mulai tercetak, keluar dari mesin lembar demi lembar.',
     label: 'Mencetak',
+    width: 1000,
+    height: 562,
   },
   {
     area: 'e',
@@ -59,6 +76,8 @@ const rawItems: ProcessItem[] = [
     alt: 'Banner hasil cetak digulung rapi di atas roll',
     caption: 'Banner hasil cetak digulung rapi setelah proses selesai.',
     label: 'Selesai cetak',
+    width: 1000,
+    height: 562,
   },
   {
     area: 'f',
@@ -66,10 +85,30 @@ const rawItems: ProcessItem[] = [
     alt: 'Hasil akhir cetak banner tampak lebar',
     caption: 'Hasil akhir cetak — warna presisi, siap masuk tahap finishing.',
     label: 'Hasil akhir',
+    width: 1000,
+    height: 562,
+  },
+  {
+    area: 'g',
+    slot: 'proses_7',
+    alt: 'Detail panel kontrol mesin dan tabung tinta CMYK',
+    caption: 'Tabung tinta CMYK dan panel kontrol — dicek rutin untuk warna yang konsisten.',
+    label: 'Tinta CMYK',
+    width: 800,
+    height: 800,
+  },
+  {
+    area: 'h',
+    slot: 'proses_8',
+    alt: 'Carriage print-head melintas di atas banner yang sedang tercetak',
+    caption: 'Carriage print-head melintas di atas banner yang sedang tercetak, lapis demi lapis.',
+    label: 'Carriage',
+    width: 1000,
+    height: 750,
   },
 ]
 
-// Bisa diganti admin (/admin/site-media, slot proses_1..6) tanpa deploy ulang.
+// Bisa diganti admin (/admin/site-media, slot proses_1..8) tanpa deploy ulang.
 // `await ready` — komponen ini SSR normal (tidak di dalam <ClientOnly>), jadi
 // HTML awal wajib sudah dapat gambar final untuk SEO/first paint.
 const { resolve: resolveMedia, ready: siteMediaReady } = useSiteMedia()
@@ -107,7 +146,7 @@ function openAt(i: number, e: MouseEvent) {
     </div>
 
     <motion.div
-      class="process-bento mt-10 grid grid-cols-1 gap-4 sm:grid-cols-2"
+      class="process-bento mt-10 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-2 md:grid md:grid-cols-2 md:gap-4 md:overflow-visible md:pb-0"
       :variants="container"
       initial="hidden"
       while-in-view="show"
@@ -118,15 +157,15 @@ function openAt(i: number, e: MouseEvent) {
         :key="p.area"
         type="button"
         :variants="item"
-        :class="['process-area-' + p.area]"
+        :class="['process-area-' + p.area, 'w-[80%] shrink-0 snap-center md:w-auto md:shrink']"
         class="group relative aspect-[16/10] overflow-hidden rounded-lg border border-hairline bg-canvas-alt text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas lg:aspect-auto"
         @click="openAt(i, $event)"
       >
         <img
           :src="p.src"
           :alt="p.alt"
-          width="1000"
-          height="562"
+          :width="p.width"
+          :height="p.height"
           loading="lazy"
           class="h-full w-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.03]"
         >
@@ -146,6 +185,7 @@ function openAt(i: number, e: MouseEvent) {
         </span>
       </motion.button>
     </motion.div>
+    <p class="mt-3 text-xs text-ink-500 md:hidden">Geser ke samping untuk melihat foto lainnya.</p>
 
     <LandingProcessLightbox
       :open="lightboxOpen"
@@ -161,7 +201,8 @@ function openAt(i: number, e: MouseEvent) {
 /* Bento asimetris — cuma diaktifkan di desktop (lg). Di bawah itu grid biasa
    1-2 kolom (Tailwind, di atas) yang menang. Ditulis di sini (bukan arbitrary
    Tailwind class) supaya `grid-template-areas` tetap terbaca sebagai satu blok
-   dan tidak riskan kena bug "kelas ada di DOM tapi CSS kosong". */
+   dan tidak riskan kena bug "kelas ada di DOM tapi CSS kosong". Baris ketiga
+   sekarang 4 sel tunggal (e,f,g,h) untuk menampung 2 foto baru (07, 08). */
 @media (min-width: 1024px) {
   .process-bento {
     grid-template-columns: repeat(4, 1fr);
@@ -169,7 +210,7 @@ function openAt(i: number, e: MouseEvent) {
     grid-template-areas:
       'a a b c'
       'a a d d'
-      'e f f f';
+      'e f g h';
   }
   .process-area-a {
     grid-area: a;
@@ -188,6 +229,12 @@ function openAt(i: number, e: MouseEvent) {
   }
   .process-area-f {
     grid-area: f;
+  }
+  .process-area-g {
+    grid-area: g;
+  }
+  .process-area-h {
+    grid-area: h;
   }
 }
 </style>

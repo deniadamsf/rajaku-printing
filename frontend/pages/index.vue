@@ -116,12 +116,21 @@ useHead({
       </template>
     </ClientOnly>
 
+    <!--
+      Urutan section sengaja berselang-seling terang/gelap dan grid/split/galeri.
+      Sebelumnya semua section berpola sama (judul + grid kartu teks), yang
+      membuat halaman terasa panjang tapi kosong. Kalau menambah section baru,
+      jaga polanya tetap bergantian, jangan menumpuk dua grid kartu berurutan.
+    -->
     <LandingProductSlider />
     <LandingServicesSection />
     <LandingProcessGallery />
     <LandingHowItWorksSection />
+    <LandingMaterialsSection />
     <LandingPriceTeaser />
     <LandingWhyUsSection />
+    <LandingFaqSection />
+    <LandingArticlesTeaser />
     <LandingClosingCta />
 
     <!-- Reserve ruang footer supaya tidak ketutup sticky bottom CTA mobile (§17). -->

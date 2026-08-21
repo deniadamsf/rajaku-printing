@@ -18,6 +18,7 @@ import {
   Pencil,
   Power,
   ChevronLeft,
+  ImagePlus,
   Loader2,
   Trash2,
 } from '@lucide/vue'
@@ -273,6 +274,85 @@ async function openProductDetail(id: string) {
 function closeProductDetail() {
   detailProduct.value = null
   pricingModalOpen.value = false
+}
+
+// -------------------- foto produk --------------------
+/**
+ * Foto per produk. Kalau kosong, halaman publik memakai artwork vektor
+ * (`utils/artwork.ts`) — jadi mengosongkan foto BUKAN berarti kartu produk jadi
+ * blank, dan itu perlu terbaca jelas oleh admin di UI ini.
+ *
+ * Validasi tipe & ukuran di sini hanya untuk memberi tahu lebih cepat; backend
+ * memvalidasi ulang (termasuk men-decode gambarnya betulan), jadi ini bukan
+ * satu-satunya penjaga.
+ */
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024
+const ALLOWED_IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/webp']
+
+const imageBusy = ref(false)
+const imageInputEl = ref<HTMLInputElement | null>(null)
+
+// Backend menyajikan foto di URL yang sama per produk, jadi setelah unggah
+// browser masih memegang versi lama di cache. Angka ini dibump tiap operasi
+// sukses dan ditempel sebagai query — pola sama dengan /admin/site-media.
+const imageCacheBust = ref(0)
+
+const productImageSrc = computed(() => {
+  const url = detailProduct.value?.image_url
+  if (!url) return null
+  return imageCacheBust.value > 0 ? `${url}?v=${imageCacheBust.value}` : url
+})
+
+function pickProductImage() {
+  imageInputEl.value?.click()
+}
+
+async function onProductImageSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  // Reset lebih dulu supaya memilih file yang SAMA dua kali tetap memicu change.
+  input.value = ''
+  if (!file || !detailProduct.value) return
+
+  if (!ALLOWED_IMAGE_MIMES.includes(file.type)) {
+    errorMsg.value = 'Format foto harus JPG, PNG, atau WebP.'
+    return
+  }
+  if (file.size > MAX_IMAGE_BYTES) {
+    errorMsg.value = 'Ukuran foto maksimal 4 MB.'
+    return
+  }
+
+  imageBusy.value = true
+  errorMsg.value = null
+  try {
+    detailProduct.value = await admin.uploadProductImage(detailProduct.value.id, file)
+    imageCacheBust.value = Date.now()
+    await fetchProducts()
+    showSuccess('Foto produk diperbarui.')
+  } catch (e) {
+    errorMsg.value = toApiError(e, 'Gagal mengunggah foto produk')
+  } finally {
+    imageBusy.value = false
+  }
+}
+
+async function removeProductImage() {
+  const product = detailProduct.value
+  if (!product || imageBusy.value) return
+  imageBusy.value = true
+  errorMsg.value = null
+  try {
+    await admin.deleteProductImage(product.id)
+    await openProductDetail(product.id)
+    imageCacheBust.value = Date.now()
+    await fetchProducts()
+    showSuccess('Foto produk dihapus — halaman publik kembali memakai ilustrasi.')
+  } catch (e) {
+    errorMsg.value = toApiError(e, 'Gagal menghapus foto produk')
+  } finally {
+    imageBusy.value = false
+  }
 }
 
 // Pricing modal
@@ -631,6 +711,79 @@ onMounted(async () => {
           <Plus class="h-4 w-4" :stroke-width="1.75" />
           Tambah pricing
         </button>
+      </div>
+
+      <!--
+        Foto produk. Ditaruh di panel detail (bukan di baris tabel) supaya
+        pratinjaunya cukup besar untuk menilai hasil crop 4:3 yang dipakai kartu
+        produk di landing & katalog.
+      -->
+      <div class="mb-4 rounded-lg border border-hairline bg-canvas p-4 md:p-5">
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-start">
+          <div class="w-full max-w-[220px] shrink-0 overflow-hidden rounded-md border border-hairline bg-canvas-alt">
+            <div class="aspect-[4/3] w-full">
+              <img
+                v-if="productImageSrc"
+                :src="productImageSrc"
+                :alt="`Foto produk ${detailProduct.name}`"
+                width="400"
+                height="300"
+                class="h-full w-full object-cover"
+              >
+              <ArtProduct v-else :variant="artworkVariantFor(detailProduct)" decorative />
+            </div>
+          </div>
+
+          <div class="min-w-0 flex-1">
+            <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
+              Foto produk
+            </p>
+            <p class="mt-1 text-sm leading-relaxed text-ink-500">
+              <template v-if="detailProduct.image_url">
+                Foto ini yang tampil di kartu produk halaman depan dan katalog.
+              </template>
+              <template v-else>
+                Belum ada foto — halaman depan memakai ilustrasi di samping ini.
+                Unggah foto asli untuk menggantikannya.
+              </template>
+            </p>
+            <p class="mt-1 text-xs text-ink-500">
+              JPG, PNG, atau WebP. Maksimal 4 MB. Paling rapi kalau rasionya 4:3
+              (mis. 1200 × 900 px).
+            </p>
+
+            <input
+              ref="imageInputEl"
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              class="sr-only"
+              @change="onProductImageSelected"
+            >
+
+            <div class="mt-4 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                :disabled="imageBusy"
+                class="inline-flex items-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-60"
+                @click="pickProductImage"
+              >
+                <Loader2 v-if="imageBusy" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
+                <ImagePlus v-else class="h-4 w-4" :stroke-width="1.75" />
+                {{ detailProduct.image_url ? 'Ganti foto' : 'Unggah foto' }}
+              </button>
+              <button
+                v-if="detailProduct.image_url"
+                type="button"
+                :disabled="imageBusy"
+                class="inline-flex items-center gap-2 rounded-md border border-hairline bg-canvas px-3 py-2 text-sm font-medium text-ink-700 transition-colors hover:border-ink-300 hover:bg-canvas-alt focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:cursor-not-allowed disabled:opacity-60"
+                @click="removeProductImage"
+              >
+                <Trash2 class="h-4 w-4" :stroke-width="1.75" />
+                Hapus foto
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <p v-if="activeMaterials.length === 0" class="mb-4 rounded-md border border-gold-200 bg-gold-50 p-3 text-xs text-gold-900">

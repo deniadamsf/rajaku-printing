@@ -105,6 +105,9 @@ export const useAuthStore = defineStore('auth', {
     applyAuthResponse(res: AuthResponse) {
       const tokenCookie = useAuthTokenCookie()
       tokenCookie.value = res.token.access_token
+      if (import.meta.client) {
+        document.cookie = `rajaku_token=${res.token.access_token}; path=/; max-age=86400; samesite=lax${process.env.NODE_ENV === 'production' ? '; secure' : ''}`
+      }
       this.user = res.user
       const claims = decodeJWTPayload(res.token.access_token)
       this.roles = claims?.roles ?? []

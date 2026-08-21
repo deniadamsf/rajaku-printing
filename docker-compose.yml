@@ -16,3 +16,42 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: rajaku-backend
+    restart: unless-stopped
+    env_file: .env.docker
+    ports:
+      - "8085:8080"
+    volumes:
+      - ./.docker-data/storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: rajaku-frontend
+    restart: unless-stopped
+    env_file: .env.docker
+    ports:
+      - "127.0.0.1:13000:3000"
+    depends_on:
+      - backend
+
+  worker:
+    build:
+      context: ./services/notification-worker
+    container_name: rajaku-worker
+    restart: unless-stopped
+    env_file: .env.docker
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./.docker-data/worker/session:/app/session
+      - ./.docker-data/worker/wa-state.json:/app/wa-state.json
+
+

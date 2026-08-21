@@ -178,11 +178,65 @@ const trackingUrl = computed(() =>
  */
 const receiptMounted = ref(false)
 
+/**
+ * Status di mana uangnya SUDAH benar-benar diterima — menentukan stempel
+ * LUNAS / BELUM LUNAS di struk.
+ *
+ * Tombol "Cetak struk" di halaman ini sengaja tersedia untuk order status apa
+ * pun (staff kadang perlu lembar rincian sebelum bayar), jadi struk TIDAK
+ * boleh mengasumsikan pesanan sudah lunas. Order online yang masih
+ * `menunggu_pembayaran` lalu dicetak bertuliskan LUNAS = bukti bayar palsu.
+ *
+ * Daftar ini mengikuti §4: `dibayar` dan seluruh status sesudahnya. Sengaja
+ * TIDAK memasukkan `ditolak` (bukti bayar ditolak), `dibatalkan` (bisa sudah
+ * direfund), dan semua status sebelum pembayaran diverifikasi.
+ */
+const PAID_STATUSES = new Set([
+  'dibayar',
+  'desain_dikerjakan',
+  'menunggu_approval_desain',
+  'desain_diverifikasi',
+  'proses_cetak',
+  'qc',
+  'siap_kirim',
+  'siap_ambil',
+  'dikirim',
+  'selesai',
+])
+const orderIsPaid = computed(() => !!order.value && PAID_STATUSES.has(order.value.status))
+
+/**
+ * `nextTick()` SAJA TIDAK CUKUP di sini, dan ini pernah menghasilkan cetakan
+ * kacau di lapangan: nextTick hanya menjamin DOM ter-patch, sementara dua hal
+ * yang menentukan bentuk cetakan justru menyusul setelahnya —
+ *
+ *   1. `<style>` @page (lebar kertas 58/80mm) disuntik `useHead` secara
+ *      ASINKRON, tidak pada tick yang sama dengan mount komponen.
+ *   2. CSS isolasi cetak milik ReceiptStruk (`body *` disembunyikan, `#struk`
+ *      ditampilkan) baru aktif setelah style komponen benar-benar terpasang.
+ *
+ * Kalau `window.print()` dipanggil sebelum keduanya siap, browser mencetak
+ * SELURUH halaman admin dengan ukuran kertas default — bukan struk. Halaman
+ * POS tidak kena karena di sana struk ter-mount permanen di panel sukses.
+ *
+ * Dua rAF berturut-turut menjamin satu siklus render + style flush penuh
+ * selesai. Loop verifikasi di bawahnya adalah jaring pengaman terakhir:
+ * lebih baik menunda cetak beberapa milidetik daripada mengeluarkan kertas
+ * yang salah — kertas thermal yang sudah tercetak tidak bisa ditarik kembali.
+ */
+async function waitForReceiptReady() {
+  await nextTick()
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  })
+  for (let i = 0; i < 20 && !document.getElementById('struk'); i++) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  }
+}
+
 async function printStruk() {
   receiptMounted.value = true
-  // Tunggu satu tick supaya <ReceiptStruk> benar-benar ada di DOM (dan tag
-  // <style> @page-nya ter-inject) sebelum dialog cetak dibuka.
-  await nextTick()
+  await waitForReceiptReady()
   try {
     window.print()
   } finally {
@@ -805,7 +859,7 @@ function waLink(phone: string): string {
          `visibility: visible !important` pada `#struk`, yang tidak bisa
          menembus `display: none` di elemen leluhurnya. -->
     <div v-if="order && receiptMounted" class="hidden print:block">
-      <ReceiptStruk
+      <AdminReceiptStruk
         :resi="order.resi"
         :created-at="order.created_at"
         :customer-name="customer?.name ?? '—'"
@@ -822,6 +876,7 @@ function waLink(phone: string): string {
         :metode-ambil="order.metode_ambil"
         :metode-bayar="order.metode_bayar ?? '-'"
         :tracking-url="trackingUrl"
+        :is-paid="orderIsPaid"
         :width-mm="receiptWidthMm"
       />
     </div>

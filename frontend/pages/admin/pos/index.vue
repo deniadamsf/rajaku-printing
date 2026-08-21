@@ -309,8 +309,13 @@ function printStruk() {
 
       <!-- Struk ringkas (printable) — markup + CSS print + `@page` dinamis
            hidup di ReceiptStruk.vue (dipakai bersama halaman Detail Order
-           untuk cetak ulang, lihat §12). -->
-      <ReceiptStruk
+           untuk cetak ulang, lihat §12).
+
+           `is-paid` hardcoded true dan itu benar di sini: order POS baru
+           dibuat SETELAH kasir menerima uang tunai/QRIS di tempat, dan
+           backend langsung menyetelnya ke status `dibayar` (§11). Panel ini
+           cuma muncul kalau order itu sudah jadi. -->
+      <AdminReceiptStruk
         :resi="successResult.resi"
         :created-at="successResult.created_at"
         :customer-name="successResult.customer_name"
@@ -327,6 +332,7 @@ function printStruk() {
         :metode-ambil="successResult.metode_ambil"
         :metode-bayar="successResult.metode_bayar"
         :tracking-url="successResult.tracking_url"
+        :is-paid="true"
         :width-mm="successResult.receipt_width_mm"
       />
 

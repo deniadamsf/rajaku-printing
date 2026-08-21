@@ -83,6 +83,15 @@ func (f *fakeGoogleUserStore) FindByPhone(_ context.Context, phone string) (*mod
 	return u, nil
 }
 
+// FindByPhoneForUpdate — the fake has no real row locking to offer (it's a
+// single-goroutine in-memory map, not a concurrent DB), so this is simply
+// FindByPhone under a different name; it exists purely so fakeGoogleUserStore
+// satisfies googleOAuthUserStore. The actual locking semantics are exercised
+// against a real Postgres, not this fake (§22 unit tests stay DB-free).
+func (f *fakeGoogleUserStore) FindByPhoneForUpdate(ctx context.Context, phone string) (*model.User, error) {
+	return f.FindByPhone(ctx, phone)
+}
+
 func (f *fakeGoogleUserStore) Create(_ context.Context, u *model.User) error {
 	u.ID = uuid.New()
 	f.index(u)
@@ -121,6 +130,16 @@ func (f *fakeGoogleUserStore) SetPhone(_ context.Context, id uuid.UUID, phone *s
 	if phone != nil && *phone != "" {
 		f.byPhone[*phone] = u
 	}
+	return nil
+}
+
+// SetActive mirrors the real repository's is_active toggle.
+func (f *fakeGoogleUserStore) SetActive(_ context.Context, id uuid.UUID, active bool) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	u.IsActive = active
 	return nil
 }
 
@@ -284,6 +303,13 @@ type fakeOTPStore struct {
 	// CancelPendingForHandoff) landing in the window between verifyOTP's
 	// FindActive call and the gated increment that follows it.
 	beforeIncrement func()
+	// markConsumedErr — test hook (§ phone-claim review finding #3): when
+	// set, every MarkConsumed call fails. claimOther calls MarkConsumed LAST,
+	// after the phone release/order-reassign/tombstone/re-attach writes — so
+	// this simulates a failure ordered AFTER order history has already moved
+	// inside the (still uncommitted) transaction, exercising whether the
+	// rollback genuinely reverts everything, not just users/otps.
+	markConsumedErr error
 }
 
 func newFakeOTPStore() *fakeOTPStore {
@@ -514,6 +540,9 @@ func (f *fakeOTPStore) MarkVerified(_ context.Context, id uuid.UUID) error {
 func (f *fakeOTPStore) MarkConsumed(_ context.Context, id uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.markConsumedErr != nil {
+		return f.markConsumedErr
+	}
 	pv, ok := f.byID[id]
 	if !ok {
 		return repository.ErrNotFound

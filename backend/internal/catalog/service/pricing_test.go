@@ -8,10 +8,10 @@ import (
 	"github.com/rajaku-printing/backend/internal/catalog/model"
 )
 
-func intPtr(v int) *int          { return &v }
-func int64Ptr(v int64) *int64    { return &v }
-func f64Ptr(v float64) *float64  { return &v }
-func strPtr(v string) *string    { return &v }
+func intPtr(v int) *int         { return &v }
+func int64Ptr(v int64) *int64   { return &v }
+func f64Ptr(v float64) *float64 { return &v }
+func strPtr(v string) *string   { return &v }
 
 func TestCalcPerM2_ExactArea(t *testing.T) {
 	row := model.ProductPricing{
@@ -95,13 +95,13 @@ func TestValidateDimensions(t *testing.T) {
 		w, h int
 		want error
 	}{
-		{"in range",         100, 200, nil},
-		{"width too small",  20, 100, catalogapi.ErrDimensionsOutOfRange},
-		{"width too big",    500, 100, catalogapi.ErrDimensionsOutOfRange},
+		{"in range", 100, 200, nil},
+		{"width too small", 20, 100, catalogapi.ErrDimensionsOutOfRange},
+		{"width too big", 500, 100, catalogapi.ErrDimensionsOutOfRange},
 		{"height too small", 100, 10, catalogapi.ErrDimensionsOutOfRange},
-		{"height too big",   100, 2000, catalogapi.ErrDimensionsOutOfRange},
-		{"negative width",   -1, 100, catalogapi.ErrDimensionsInvalid},
-		{"zero height",      100, 0, catalogapi.ErrDimensionsInvalid},
+		{"height too big", 100, 2000, catalogapi.ErrDimensionsOutOfRange},
+		{"negative width", -1, 100, catalogapi.ErrDimensionsInvalid},
+		{"zero height", 100, 0, catalogapi.ErrDimensionsInvalid},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

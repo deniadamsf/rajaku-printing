@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	ErrNotFound          = errors.New("design/repository: not found")
-	ErrPendingDraftExists = errors.New("design/repository: another pending staff_draft exists for this order")
+	ErrNotFound             = errors.New("design/repository: not found")
+	ErrPendingDraftExists   = errors.New("design/repository: another pending staff_draft exists for this order")
 	ErrDraftAlreadyReviewed = errors.New("design/repository: staff_draft already reviewed (status not pending)")
 )
 
@@ -86,11 +86,11 @@ func (r *Repository) ListByOrder(ctx context.Context, orderID uuid.UUID) ([]mode
 
 // ReviewDraftParams — payload untuk customer approve/revision.
 type ReviewDraftParams struct {
-	ID             uuid.UUID
-	NewStatus      model.ApprovalStatus // approved | revision_requested
-	ReviewedBy     uuid.UUID
-	ReviewedAt     time.Time
-	RevisionNotes  string // required kalau revision_requested
+	ID            uuid.UUID
+	NewStatus     model.ApprovalStatus // approved | revision_requested
+	ReviewedBy    uuid.UUID
+	ReviewedAt    time.Time
+	RevisionNotes string // required kalau revision_requested
 }
 
 // ReviewDraft atomically transitions a pending draft. Returns

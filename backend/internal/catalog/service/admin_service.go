@@ -23,13 +23,13 @@ import (
 // --- Extra domain errors (admin-only) ------------------------------------
 
 var (
-	ErrValidation             = errors.New("catalog admin: validation failed")
-	ErrPricingTypeLocked      = errors.New("catalog admin: pricing_type tidak bisa diubah setelah produk punya pricing row")
-	ErrPricingShapeMismatch   = errors.New("catalog admin: bentuk pricing tidak cocok dengan pricing_type produk")
-	ErrDuplicateSlug          = errors.New("catalog admin: slug produk sudah dipakai")
-	ErrDuplicateMaterialCode  = errors.New("catalog admin: code bahan sudah dipakai")
-	ErrDuplicatePricing       = errors.New("catalog admin: pricing untuk kombinasi ini sudah ada")
-	ErrPricingRowNotFound     = errors.New("catalog admin: pricing row tidak ditemukan")
+	ErrValidation            = errors.New("catalog admin: validation failed")
+	ErrPricingTypeLocked     = errors.New("catalog admin: pricing_type tidak bisa diubah setelah produk punya pricing row")
+	ErrPricingShapeMismatch  = errors.New("catalog admin: bentuk pricing tidak cocok dengan pricing_type produk")
+	ErrDuplicateSlug         = errors.New("catalog admin: slug produk sudah dipakai")
+	ErrDuplicateMaterialCode = errors.New("catalog admin: code bahan sudah dipakai")
+	ErrDuplicatePricing      = errors.New("catalog admin: pricing untuk kombinasi ini sudah ada")
+	ErrPricingRowNotFound    = errors.New("catalog admin: pricing row tidak ditemukan")
 )
 
 var slugRe = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
@@ -107,7 +107,7 @@ func (in ProductInput) validate(requirePricingType bool) error {
 // -------------------------------------------------------------------------
 
 type PricingInput struct {
-	MaterialID   uuid.UUID
+	MaterialID uuid.UUID
 	// per_m2:
 	PricePerM2  *int64
 	MinChargeM2 *float64

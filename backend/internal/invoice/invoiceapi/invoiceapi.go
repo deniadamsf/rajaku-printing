@@ -33,9 +33,9 @@ type Generator interface {
 // Info — projection minimal invoice yg dishare ke consumer (payment, notif).
 // Hindari expose full model biar cross-module coupling minim.
 type Info struct {
-	ID             uuid.UUID
-	OrderID        uuid.UUID
-	InvoiceNumber  string
-	Version        int
-	DownloadURL    string // absolute URL (dibangun dari config.App.BaseURL)
+	ID            uuid.UUID
+	OrderID       uuid.UUID
+	InvoiceNumber string
+	Version       int
+	DownloadURL   string // absolute URL (dibangun dari config.App.BaseURL)
 }

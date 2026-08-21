@@ -5,7 +5,21 @@ import (
 
 	"github.com/rajaku-printing/backend/internal/catalog/catalogapi"
 	"github.com/rajaku-printing/backend/internal/catalog/model"
+	"github.com/rajaku-printing/backend/internal/catalog/service"
 )
+
+// productImageURL — URL publik gambar produk, DIHITUNG dari APP_BASE_URL
+// (§2) via service.ProductImageURL saat serialisasi response — DB (model.
+// Product.ImagePath) cuma menyimpan path relatif, tidak pernah dipancarkan
+// mentah ke klien (§22, hindari data lama menunjuk host lama kalau
+// APP_BASE_URL berubah). Nil kalau produk belum punya gambar.
+func productImageURL(svc *service.Service, p model.Product) *string {
+	if p.ImagePath == nil {
+		return nil
+	}
+	url := svc.ProductImageURL(p.ID)
+	return &url
+}
 
 // ---- Request DTOs ----
 
@@ -41,9 +55,10 @@ type productListItem struct {
 	Category     string    `json:"category"`
 	PricingType  string    `json:"pricing_type"`
 	DisplayOrder int       `json:"display_order"`
+	ImageURL     *string   `json:"image_url,omitempty"`
 }
 
-func toProductListItem(p model.Product) productListItem {
+func toProductListItem(svc *service.Service, p model.Product) productListItem {
 	r := productListItem{
 		ID:           p.ID,
 		Slug:         p.Slug,
@@ -51,6 +66,7 @@ func toProductListItem(p model.Product) productListItem {
 		Category:     p.Category,
 		PricingType:  string(p.PricingType),
 		DisplayOrder: p.DisplayOrder,
+		ImageURL:     productImageURL(svc, p),
 	}
 	if p.Description != nil {
 		r.Description = *p.Description
@@ -92,20 +108,21 @@ func toPricingRowResponse(p model.ProductPricing) pricingRowResponse {
 }
 
 type productDetailResponse struct {
-	ID            uuid.UUID            `json:"id"`
-	Slug          string               `json:"slug"`
-	Name          string               `json:"name"`
-	Description   string               `json:"description,omitempty"`
-	Category      string               `json:"category"`
-	PricingType   string               `json:"pricing_type"`
-	MinWidthCm    *int                 `json:"min_width_cm,omitempty"`
-	MinHeightCm   *int                 `json:"min_height_cm,omitempty"`
-	MaxWidthCm    *int                 `json:"max_width_cm,omitempty"`
-	MaxHeightCm   *int                 `json:"max_height_cm,omitempty"`
-	Pricings      []pricingRowResponse `json:"pricings"`
+	ID          uuid.UUID            `json:"id"`
+	Slug        string               `json:"slug"`
+	Name        string               `json:"name"`
+	Description string               `json:"description,omitempty"`
+	Category    string               `json:"category"`
+	PricingType string               `json:"pricing_type"`
+	MinWidthCm  *int                 `json:"min_width_cm,omitempty"`
+	MinHeightCm *int                 `json:"min_height_cm,omitempty"`
+	MaxWidthCm  *int                 `json:"max_width_cm,omitempty"`
+	MaxHeightCm *int                 `json:"max_height_cm,omitempty"`
+	ImageURL    *string              `json:"image_url,omitempty"`
+	Pricings    []pricingRowResponse `json:"pricings"`
 }
 
-func toProductDetailResponse(p model.Product) productDetailResponse {
+func toProductDetailResponse(svc *service.Service, p model.Product) productDetailResponse {
 	rows := make([]pricingRowResponse, 0, len(p.Pricings))
 	for _, pr := range p.Pricings {
 		rows = append(rows, toPricingRowResponse(pr))
@@ -120,6 +137,7 @@ func toProductDetailResponse(p model.Product) productDetailResponse {
 		MinHeightCm: p.MinHeightCm,
 		MaxWidthCm:  p.MaxWidthCm,
 		MaxHeightCm: p.MaxHeightCm,
+		ImageURL:    productImageURL(svc, p),
 		Pricings:    rows,
 	}
 	if p.Description != nil {
@@ -186,13 +204,14 @@ type productAdminListItem struct {
 	MinHeightCm  *int      `json:"min_height_cm,omitempty"`
 	MaxWidthCm   *int      `json:"max_width_cm,omitempty"`
 	MaxHeightCm  *int      `json:"max_height_cm,omitempty"`
+	ImageURL     *string   `json:"image_url,omitempty"`
 	IsActive     bool      `json:"is_active"`
 	DisplayOrder int       `json:"display_order"`
 	CreatedAt    string    `json:"created_at"`
 	UpdatedAt    string    `json:"updated_at"`
 }
 
-func toProductAdminListItem(p model.Product) productAdminListItem {
+func toProductAdminListItem(svc *service.Service, p model.Product) productAdminListItem {
 	r := productAdminListItem{
 		ID:           p.ID,
 		Slug:         p.Slug,
@@ -203,6 +222,7 @@ func toProductAdminListItem(p model.Product) productAdminListItem {
 		MinHeightCm:  p.MinHeightCm,
 		MaxWidthCm:   p.MaxWidthCm,
 		MaxHeightCm:  p.MaxHeightCm,
+		ImageURL:     productImageURL(svc, p),
 		IsActive:     p.IsActive,
 		DisplayOrder: p.DisplayOrder,
 		CreatedAt:    p.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
@@ -254,8 +274,8 @@ type productAdminDetail struct {
 	Pricings []pricingAdminResponse `json:"pricings"`
 }
 
-func toProductAdminDetail(p model.Product) productAdminDetail {
-	base := toProductAdminListItem(p)
+func toProductAdminDetail(svc *service.Service, p model.Product) productAdminDetail {
+	base := toProductAdminListItem(svc, p)
 	rows := make([]pricingAdminResponse, 0, len(p.Pricings))
 	for _, pr := range p.Pricings {
 		rows = append(rows, toPricingAdminResponse(pr))

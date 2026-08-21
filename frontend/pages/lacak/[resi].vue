@@ -31,11 +31,15 @@ import { ApiError } from '~/composables/useApi'
 import type { PublicTracking } from '~/types/tracking'
 import type { DesignFile } from '~/types/design'
 import type { PaymentProofCustomer } from '~/types/payment'
-import { bankInfo } from '~/utils/payment'
 
 // Slot QRIS dikelola admin lewat /admin/site-media. Tidak ada fallback
 // statis: kalau belum diunggah, panel QRIS memang tidak ditampilkan.
 const qrisUrl = computed(() => useSiteMedia().resolve('qris_code'))
+
+// Rekening & QRIS dari modul `settings` (§7). TIDAK ADA fallback hardcode —
+// lihat docblock usePaymentInfo untuk alasan keamanan. Kalau `paymentInfo`
+// null, panel "transfer ke" disembunyikan di template.
+const { info: paymentInfo } = usePaymentInfo()
 
 definePageMeta({ layout: 'default' })
 
@@ -48,7 +52,7 @@ const resi = computed(() => {
 })
 
 useSeoMeta({
-  title: () => `Lacak ${resi.value} — Rajaku Printing`,
+  title: () => `Lacak ${resi.value}`,
   description: 'Cek status pesanan Anda di Rajaku Printing.',
   robots: 'noindex,nofollow', // tracking pages personal — jangan ke-index Google
 })
@@ -119,7 +123,7 @@ async function loadGuestDesignFiles() {
   try {
     const res = await guestDesignApi.listByResi(resi.value)
     guestDesignFiles.value = res.items ?? []
-  } catch (e) {
+  } catch {
     guestDesignFiles.value = []
   } finally {
     loadingGuestDesignFiles.value = false
@@ -167,7 +171,7 @@ async function loadGuestProofs() {
   try {
     const res = await guestPaymentApi.listProofsForOrder(resi.value)
     guestProofs.value = res.items ?? []
-  } catch (e) {
+  } catch {
     guestProofs.value = []
   } finally {
     loadingGuestProofs.value = false
@@ -373,6 +377,50 @@ const sortedHistory = computed(() => {
 // Current status = last history row's status (or data.status fallback).
 const currentStatus = computed(() => data.value?.status || sortedHistory.value.at(-1)?.status || '')
 
+/**
+ * Urutan langkah jalur normal §4, bercabang sesuai `metode_ambil`: pickup
+ * melewati penetapan ongkir dan berhenti di "siap diambil", pengiriman lewat
+ * "siap dikirim → dalam pengiriman".
+ *
+ * Dipakai HANYA untuk menampilkan tahap yang belum terjadi sebagai bayangan di
+ * bawah riwayat. Ini bukan sumber kebenaran transisi status (itu milik backend)
+ * — kalau §4 berubah, daftar ini ikut diperbarui, bukan sebaliknya.
+ */
+function happyPath(metodeAmbil: string): string[] {
+  const isKirim = metodeAmbil === 'kirim'
+  const path = ['order_masuk']
+  if (isKirim) path.push('menunggu_ongkir')
+  path.push(
+    'menunggu_pembayaran',
+    'menunggu_verifikasi',
+    'dibayar',
+    'desain_diverifikasi',
+    'proses_cetak',
+    'qc',
+    isKirim ? 'siap_kirim' : 'siap_ambil',
+  )
+  if (isKirim) path.push('dikirim')
+  path.push('selesai')
+  return path
+}
+
+/**
+ * Tahap yang belum dilalui. Sengaja kosong (tidak menebak) untuk order yang
+ * dibatalkan atau yang statusnya sedang di luar jalur normal — mis. bukti
+ * transfer ditolak atau sedang loop revisi desain. Menampilkan "tahap
+ * berikutnya" yang keliru di situasi begitu lebih membingungkan daripada tidak
+ * menampilkan apa pun.
+ */
+const upcomingSteps = computed(() => {
+  const order = data.value
+  if (!order || currentStatus.value === 'dibatalkan') return []
+  const path = happyPath(order.metode_ambil)
+  const idx = path.indexOf(currentStatus.value)
+  if (idx === -1) return []
+  const reached = new Set(sortedHistory.value.map((row) => row.status))
+  return path.slice(idx + 1).filter((status) => !reached.has(status))
+})
+
 // Copy resi to clipboard convenience.
 const copied = ref(false)
 async function copyResi() {
@@ -441,7 +489,16 @@ async function copyResi() {
               class="group flex items-center gap-2 text-left"
               @click="copyResi"
             >
-              <span class="font-serif text-2xl md:text-3xl font-semibold tracking-tight text-ink-950">{{ data.resi }}</span>
+              <!--
+                Resi = kode, bukan prosa: §26.3 menetapkan JetBrains Mono untuk
+                nomor resi, dan melarang Fraunces di dalam tombol. Ukurannya
+                tetap besar karena ini identitas utama halaman (bukan metadata
+                sisipan), dengan tracking dilonggarkan supaya deret huruf-angka
+                tetap gampang dibaca dan dicocokkan karakter per karakter.
+              -->
+              <span
+                class="font-mono text-xl md:text-2xl font-semibold tracking-[0.08em] text-ink-950"
+              >{{ data.resi }}</span>
               <span
                 :class="[
                   'text-[10px] font-medium uppercase tracking-[0.14em] px-2 py-0.5 rounded-full ring-1 ring-inset transition-colors',
@@ -484,7 +541,8 @@ async function copyResi() {
         </div>
 
         <!-- Shipping address (masked) — hanya kalau kirim -->
-        <div v-if="data.metode_ambil === 'kirim' && (data.shipping_address || data.shipping_phone)"
+        <div
+v-if="data.metode_ambil === 'kirim' && (data.shipping_address || data.shipping_phone)"
              class="mt-4 rounded-md border border-hairline bg-canvas-alt p-3 text-xs text-ink-700">
           <div class="flex items-start gap-2">
             <MapPin class="h-3.5 w-3.5 text-ink-500 mt-0.5 flex-none" :stroke-width="1.75" />
@@ -537,6 +595,28 @@ async function copyResi() {
             </div>
           </li>
         </ol>
+
+        <!--
+          Tahap yang belum terjadi, ditampilkan redup dengan garis putus-putus
+          supaya jelas berbeda dari riwayat nyata di atasnya. Tanpa ini,
+          pelanggan yang statusnya baru "menunggu pembayaran" tidak punya
+          gambaran berapa tahap lagi sampai pesanannya siap.
+        -->
+        <div v-if="upcomingSteps.length > 0" class="mt-6 border-t border-hairline pt-5">
+          <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
+            Tahap berikutnya
+          </p>
+          <ol class="relative mt-4 space-y-3 border-l border-dashed border-ink-200 pl-6">
+            <li v-for="status in upcomingSteps" :key="status" class="relative">
+              <span
+                class="absolute -left-[27px] flex h-4 w-4 items-center justify-center rounded-full bg-canvas ring-4 ring-canvas"
+              >
+                <Circle class="h-3 w-3 text-ink-300" :stroke-width="2" />
+              </span>
+              <p class="text-sm text-ink-400">{{ labelOf(status) }}</p>
+            </li>
+          </ol>
+        </div>
       </div>
 
       <!-- ============ Guest ownership verification ============ -->
@@ -632,14 +712,16 @@ async function copyResi() {
                 upload buktinya di bawah ini.
               </p>
 
-              <!-- Bank info -->
-              <div class="mt-4 rounded-md border border-hairline bg-canvas p-4 text-sm">
+              <!-- Bank info — TIDAK ADA fallback hardcode (lihat usePaymentInfo).
+                   Kalau gagal dimuat, panel ini diganti pesan tenang di bawah
+                   supaya pembeli tidak salah transfer ke rekening basi. -->
+              <div v-if="paymentInfo" class="mt-4 rounded-md border border-hairline bg-canvas p-4 text-sm">
                 <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-2">Transfer ke</p>
                 <div class="space-y-1">
-                  <p class="text-ink-900"><strong>{{ bankInfo.bankName }}</strong> — {{ bankInfo.accountName }}</p>
-                  <p class="font-mono text-base text-ink-950 font-semibold tracking-wider">{{ bankInfo.accountNumber }}</p>
+                  <p class="text-ink-900"><strong>{{ paymentInfo.bank_name }}</strong> — {{ paymentInfo.account_name }}</p>
+                  <p class="font-mono text-base text-ink-950 font-semibold tracking-wider">{{ paymentInfo.account_number }}</p>
                 </div>
-                <p class="mt-2 text-xs text-ink-500">{{ bankInfo.qrisNote }}</p>
+                <p v-if="paymentInfo.qris_note" class="mt-2 text-xs text-ink-500">{{ paymentInfo.qris_note }}</p>
 
                 <!-- QRIS hanya tampil kalau admin sudah mengunggahnya ke slot
                      `qris_code`; tidak ada gambar bawaan, jadi tanpa unggahan
@@ -653,13 +735,29 @@ async function copyResi() {
                     alt="Kode QRIS untuk pembayaran"
                     class="w-full max-w-[260px] rounded-md border border-hairline bg-canvas"
                     loading="lazy"
-                  />
-                  <p class="mt-2 text-xs text-ink-500">
-                    Nama merchant yang muncul:
-                    <span class="font-medium text-ink-700">{{ bankInfo.qrisMerchantName }}</span>
-                    &middot; NMID <span class="font-mono">{{ bankInfo.qrisNmid }}</span>
+                  >
+                  <p v-if="paymentInfo.qris_merchant_name || paymentInfo.qris_nmid" class="mt-2 text-xs text-ink-500">
+                    <template v-if="paymentInfo.qris_merchant_name">
+                      Nama merchant yang muncul:
+                      <span class="font-medium text-ink-700">{{ paymentInfo.qris_merchant_name }}</span>
+                    </template>
+                    <template v-if="paymentInfo.qris_nmid">
+                      <template v-if="paymentInfo.qris_merchant_name">&middot;</template>
+                      NMID <span class="font-mono">{{ paymentInfo.qris_nmid }}</span>
+                    </template>
                   </p>
                 </div>
+              </div>
+
+              <!-- Info pembayaran gagal dimuat — sengaja TIDAK menampilkan
+                   rekening lama/placeholder apa pun (lihat usePaymentInfo). -->
+              <div v-else class="mt-4 flex items-start gap-2 rounded-md border border-hairline bg-canvas-alt/60 p-4 text-sm">
+                <AlertTriangle class="h-4 w-4 text-ink-500 flex-none mt-0.5" :stroke-width="1.75" />
+                <p class="text-ink-700 leading-relaxed">
+                  Informasi rekening tujuan sedang tidak bisa dimuat. Untuk keamanan, kami tidak menampilkan
+                  nomor rekening lama. Mohon hubungi kami dulu via WhatsApp untuk memastikan tujuan transfer
+                  yang benar sebelum mengirim dana.
+                </p>
               </div>
 
               <!-- Upload form -->

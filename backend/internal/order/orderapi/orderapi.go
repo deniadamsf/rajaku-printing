@@ -45,20 +45,31 @@ type OrderSummary struct {
 	Status             string
 	Total              int64
 	MetodeAmbil        string
-	MetodeBayar        string  // "" kalau belum settled
+	MetodeBayar        string // "" kalau belum settled
 	Channel            string
-	DesignSource       string  // "upload" | "request" (§6)
-	DesignApprovalMode *string // "instant_walkin" | "async_notify" (§11); nil kalau belum di-set
+	DesignSource       string     // "upload" | "request" (§6)
+	DesignApprovalMode *string    // "instant_walkin" | "async_notify" (§11); nil kalau belum di-set
 	CreatedBy          *uuid.UUID // kasir POS (nil untuk order online)
 	CreatedAt          time.Time
+
+	// Line item snapshot (§9/§11) — dibutuhkan konsumer yang perlu render
+	// rincian pesanan (mis. struk POS) tanpa query balik ke order/model.
+	ProductName  string
+	MaterialName string
+	WidthCm      int
+	HeightCm     int
+	Quantity     int
+	UnitPrice    int64
+	Subtotal     int64
+	ShippingCost *int64 // nil kalau pickup / belum di-set
 }
 
 // POSCreateOrderInput — payload untuk create walk-in order (§11).
 // Customer sudah harus resolved (nomor WA → CustomerID via authapi.CustomerService).
 // Metode bayar wajib POS-specific: cash atau qris_pos.
 type POSCreateOrderInput struct {
-	CustomerID  uuid.UUID
-	KasirID     uuid.UUID // staff yg input order (untuk rekonsiliasi)
+	CustomerID uuid.UUID
+	KasirID    uuid.UUID // staff yg input order (untuk rekonsiliasi)
 
 	// Product spec — service akan Quote via catalog untuk hitung harga
 	// otoritatif (jangan trust harga dari client).
@@ -90,31 +101,31 @@ type POSCreateOrderInput struct {
 // line item snapshot, alamat, dan total. Tetap terbatas — jangan expose
 // internal seperti design_source atau reject reason.
 type OrderInvoiceView struct {
-	ID                 uuid.UUID
-	Resi               string
-	CustomerID         uuid.UUID
-	CreatedAt          time.Time
-	Channel            string
-	Status             string
-	MetodeAmbil        string
-	MetodeBayar        string // "" kalau belum settled
+	ID          uuid.UUID
+	Resi        string
+	CustomerID  uuid.UUID
+	CreatedAt   time.Time
+	Channel     string
+	Status      string
+	MetodeAmbil string
+	MetodeBayar string // "" kalau belum settled
 
 	// Line item — MVP satu produk per order.
-	ProductName        string
-	MaterialName       string
-	WidthCm            int
-	HeightCm           int
-	Quantity           int
-	UnitPrice          int64
-	Subtotal           int64
+	ProductName  string
+	MaterialName string
+	WidthCm      int
+	HeightCm     int
+	Quantity     int
+	UnitPrice    int64
+	Subtotal     int64
 
 	// Fulfillment
-	ShippingCost         *int64
-	ShippingAddress      *string
-	ShippingRecipient    *string
-	ShippingPhone        *string
-	ShippingCourier      *string
-	ShippingTrackingNo   *string
+	ShippingCost       *int64
+	ShippingAddress    *string
+	ShippingRecipient  *string
+	ShippingPhone      *string
+	ShippingCourier    *string
+	ShippingTrackingNo *string
 
 	Total int64
 	Notes *string
@@ -207,4 +218,13 @@ type OrderCommandService interface {
 	// (WIB timezone). Dipakai modul POS untuk rekonsiliasi harian.
 	// Result ordered by created_at ASC.
 	ListPOSOrdersByDate(ctx context.Context, dateWIB time.Time) ([]OrderSummary, error)
+}
+
+// CustomerMerger — dipakai modul auth saat menyerap identitas guest ke akun
+// terdaftar (§11 satu pelanggan satu riwayat). Mengembalikan ID setiap order
+// yang berpindah — bukan cuma jumlahnya — supaya modul auth bisa menulis
+// baris audit customer_merges (order_ids) tanpa perlu query balik ke modul
+// order untuk tahu order mana saja yang tadi dipindah.
+type CustomerMerger interface {
+	ReassignCustomer(ctx context.Context, fromCustomerID, toCustomerID uuid.UUID) ([]uuid.UUID, error)
 }

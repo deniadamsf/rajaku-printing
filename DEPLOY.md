@@ -187,18 +187,32 @@ npm install && npm start
 
 ### 4.4 Pairing (scan QR) — hanya sekali
 
-Setelah `npm start`, di terminal muncul **QR code berbentuk ASCII**.
+Cara utama: **lewat admin panel**, tidak perlu SSH.
 
-1. Buka **WhatsApp di HP** dengan nomor khusus tadi.
-2. Ketuk **titik tiga → Perangkat Tertaut**.
-3. Ketuk **Tautkan Perangkat**.
-4. Arahkan kamera ke QR di layar terminal.
+1. Login sebagai super admin, buka menu **Pairing WhatsApp** (grup Kelola).
+2. QR tampil di layar. Buka **WhatsApp di HP** dengan nomor khusus tadi.
+3. Ketuk **titik tiga → Perangkat Tertaut → Tautkan Perangkat**.
+4. Arahkan kamera ke QR di layar.
 
-Kalau QR di terminal susah dipindai, buka di browser:
+Halaman memuat ulang QR otomatis tiap 10 detik (QR WhatsApp cepat
+kedaluwarsa), dan berubah jadi "WhatsApp tertaut" beserta nomornya begitu
+berhasil.
 
-```
-http://IP-SERVER:9090/qr
-```
+> **Perlakukan QR seperti password.** Siapa pun yang memindainya menautkan
+> WhatsApp miliknya ke nomor toko dan bisa mengirim pesan atas nama toko ke
+> seluruh pelanggan. Jangan difoto, jangan share screen selagi QR tampil.
+
+**Ganti nomor?** Di halaman yang sama ada tombol **Putuskan pairing**. Selama
+terputus tidak ada notifikasi terkirim ke pelanggan, jadi lakukan saat sepi
+dan langsung pindai QR baru yang muncul.
+
+**Kalau admin panel tidak bisa diakses**, QR ASCII tetap tercetak di log
+worker saat `npm start` — pakai itu sebagai cadangan.
+
+Endpoint worker `:9090/qr` dan `:9090/pairing` **butuh header
+`X-Internal-Secret`**, jadi tidak bisa lagi dibuka langsung dari browser.
+Port 9090 sebaiknya tidak dibuka ke internet sama sekali — cukup diakses
+backend dari localhost.
 
 **Berhasil kalau** di log muncul `WA connected`.
 
@@ -297,15 +311,78 @@ Kerjakan berurutan, semuanya harus lolos:
 
 ---
 
+## Bagian 7 — Menelusuri order yang berpindah pemilik
+
+Kalau pelanggan walk-in kemudian mendaftar dan mengklaim nomor WA-nya, order
+lamanya ikut pindah ke akun barunya. Baris pelanggan tamu yang lama tidak
+dihapus — ia jadi nisan (nonaktif, nomornya dilepas) supaya kolom audit di
+tabel lain tetap punya tujuan.
+
+Setiap perpindahan dicatat permanen di tabel `customer_merges`. Pakai ini
+kalau ada pertanyaan "order ini dulu milik siapa":
+
+```sql
+SELECT o.resi,
+       cm.phone,
+       cm.merged_at,
+       (SELECT name FROM users WHERE id = cm.from_user_id) AS dulu_milik,
+       (SELECT name FROM users WHERE id = cm.to_user_id)   AS sekarang_milik
+FROM customer_merges cm
+JOIN orders o ON o.id = ANY(cm.order_ids)
+WHERE o.resi = 'RJK-XXXXXXXX';
+```
+
+Untuk melihat semua yang pernah diserap ke satu akun:
+
+```sql
+SELECT * FROM customer_merges WHERE to_user_id = 'UUID-AKUN';
+```
+
+Catatan: `orders_moved` bisa `0`. Itu normal — artinya identitas tamunya
+diserap tapi dia memang belum pernah punya order.
+
+### Membatalkan penggabungan yang salah
+
+Penggabungan hanya terjadi setelah pemilik nomor memasukkan kode OTP, jadi
+salah gabung seharusnya sangat jarang. Kalau tetap terjadi, semuanya bisa
+dikembalikan karena baris audit menyimpan daftar order yang berpindah.
+
+Ambil dulu baris auditnya, lalu jalankan **dalam satu transaksi**:
+
+```sql
+BEGIN;
+
+-- 1. Kembalikan ordernya ke pemilik lama.
+UPDATE orders
+SET customer_id = (SELECT from_user_id FROM customer_merges WHERE id = 'UUID-BARIS-AUDIT')
+WHERE id = ANY (SELECT unnest(order_ids) FROM customer_merges WHERE id = 'UUID-BARIS-AUDIT');
+
+-- 2. Lepas nomornya dari akun penyerap LEBIH DULU. Urutan ini wajib:
+--    satu nomor hanya boleh dipegang satu baris, jadi langkah 3 akan
+--    ditolak database kalau nomornya belum dilepas di sini.
+UPDATE users SET phone = NULL, phone_verified_at = NULL
+WHERE id = (SELECT to_user_id FROM customer_merges WHERE id = 'UUID-BARIS-AUDIT');
+
+-- 3. Hidupkan lagi baris tamunya beserta nomornya.
+UPDATE users SET is_active = true,
+                 phone = (SELECT phone FROM customer_merges WHERE id = 'UUID-BARIS-AUDIT')
+WHERE id = (SELECT from_user_id FROM customer_merges WHERE id = 'UUID-BARIS-AUDIT');
+
+COMMIT;
+```
+
+Baris di `customer_merges` sengaja JANGAN dihapus — biarkan sebagai catatan
+bahwa penggabungan pernah terjadi dan dibatalkan.
+
+Sengaja tidak dibuatkan tombol di admin panel: endpoint yang bisa memindahkan
+kepemilikan order adalah kebalikan dari hal yang justru dijaga ketat di alur
+ini, dan menambah permukaan serangan baru demi kejadian yang sangat jarang
+tidak sepadan.
+
+---
+
 ## Diketahui, sengaja belum dikerjakan
 
-- **Order lama milik guest tidak ikut pindah** saat nomornya diklaim lewat
-  menu tambah-nomor di halaman akun; hanya kunci pencocokannya yang berpindah.
-  Registrasi Google yang langsung menyerap guest tetap menggabungkan riwayat
-  seperti biasa.
-- **Halaman pairing WhatsApp di admin panel belum ada** — pairing masih lewat
-  terminal atau `/qr`.
-- **Rekening masih tertulis di kode** (`frontend/utils/payment.ts`);
-  menggantinya berarti deploy ulang.
-- Unggah gambar lewat admin belum pernah diuji ujung-ke-ujung dengan sesi
-  staff sungguhan — Bagian 5 yang akan membuktikannya.
+- Belum ada. Semua butir sebelumnya sudah dikerjakan — lihat riwayat commit
+  kalau perlu menelusuri kapan.
+

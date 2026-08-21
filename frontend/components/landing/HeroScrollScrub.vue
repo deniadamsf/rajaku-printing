@@ -15,7 +15,7 @@
  * - Hormati `prefers-reduced-motion`: kalau reduced, tampilkan frame pertama/poster
  *   statis saja tanpa register ScrollTrigger.
  */
-import { ArrowRight, Search } from '@lucide/vue'
+import { ArrowRight, ChevronDown, Search } from '@lucide/vue'
 
 const TOTAL_FRAMES = 100
 // Poster fallback bisa diganti admin (/admin/site-media, slot hero_poster_desktop)
@@ -28,6 +28,11 @@ const framePath = (i: number) => `/hero/frames/f_${String(i).padStart(3, '0')}.w
 const sectionRef = ref<HTMLElement | null>(null)
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 const framesReady = ref(false)
+// Petunjuk gulir: hero ini setinggi 2,2 viewport dan "diam" di layar selama
+// di-scrub, jadi tanpa penanda apa pun pengunjung gampang mengira halaman
+// memang cuma sebatas hero. Ditampilkan sampai scrub mulai berjalan, lalu
+// hilang supaya tidak menempel permanen di atas konten.
+const showScrollCue = ref(true)
 
 let ctx: CanvasRenderingContext2D | null = null
 const images: (HTMLImageElement | undefined)[] = new Array(TOTAL_FRAMES)
@@ -150,6 +155,7 @@ onMounted(async () => {
         Math.max(1, Math.round(self.progress * (TOTAL_FRAMES - 1)) + 1),
       )
       requestDraw(idx)
+      showScrollCue.value = self.progress < 0.04
     },
   })
 })
@@ -163,7 +169,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section ref="sectionRef" class="relative h-[300vh]">
+  <!--
+    Tinggi section = panjang lintasan scrub. 300vh terasa seperti tiga layar
+    "tidak terjadi apa-apa" karena sequence-nya gerakan kamera pelan; 220vh
+    membuat perpindahan frame terasa mengikuti gulir tanpa memangkas efeknya.
+  -->
+  <section ref="sectionRef" class="relative h-[220vh]">
     <div class="sticky top-0 h-screen w-full overflow-hidden bg-ink-950">
       <!-- Poster — background sampai frame pertama siap -->
       <img
@@ -174,7 +185,7 @@ onUnmounted(() => {
         fetchpriority="high"
         class="absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ease-out"
         :class="framesReady ? 'opacity-0' : 'opacity-100'"
-      />
+      >
 
       <!-- Canvas image-sequence, di-scrub oleh GSAP ScrollTrigger -->
       <canvas
@@ -231,6 +242,20 @@ onUnmounted(() => {
             Lacak Resi
           </NuxtLink>
         </div>
+      </div>
+
+      <!--
+        Penanda gulir. Sengaja diam (fade saja, tanpa bounce): §26.6 melarang
+        elemen bisnis yang bergoyang. `aria-hidden` karena ini isyarat visual
+        murni — pembaca layar tidak butuh instruksi menggulir.
+      -->
+      <div
+        class="pointer-events-none absolute inset-x-0 bottom-6 z-10 flex flex-col items-center gap-1.5 transition-opacity duration-300 ease-out"
+        :class="showScrollCue ? 'opacity-100' : 'opacity-0'"
+        aria-hidden="true"
+      >
+        <span class="text-[10px] font-medium uppercase tracking-[0.14em] text-canvas/60">Gulir</span>
+        <ChevronDown class="h-4 w-4 text-gold-400" :stroke-width="1.5" />
       </div>
     </div>
   </section>

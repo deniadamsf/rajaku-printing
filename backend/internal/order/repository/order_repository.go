@@ -208,9 +208,9 @@ type SetShippingCostParams struct {
 	OrderID      uuid.UUID
 	ShippingCost int64
 	NewTotal     int64
-	FromStatus   string   // current status (for state_history row)
-	NewStatus    string   // usually "menunggu_pembayaran"
-	Intermediate string   // "menunggu_ongkir" if going from order_masuk (extra history row); empty if not needed
+	FromStatus   string // current status (for state_history row)
+	NewStatus    string // usually "menunggu_pembayaran"
+	Intermediate string // "menunggu_ongkir" if going from order_masuk (extra history row); empty if not needed
 	ChangedBy    *uuid.UUID
 	Note         *string
 }
@@ -319,6 +319,43 @@ func (r *OrderRepository) AdvanceStatus(ctx context.Context, p AdvanceStatusPara
 		}
 		return insertHistory(tx, p.OrderID, &current.Status, p.NewStatus, p.ChangedBy, p.Note)
 	})
+}
+
+// ReassignCustomer moves ALL orders currently owned by fromCustomerID to
+// toCustomerID and returns the IDs of every order that moved. Used
+// exclusively by the auth module's phone-claim flow when a registered
+// customer absorbs a GUEST identity that owned the phone number they just
+// claimed (§11 satu pelanggan satu riwayat) — see orderapi.CustomerMerger's
+// doc. `orders.customer_id` is deliberately the ONLY column touched here:
+// every other FK to `users` across the schema (orders.created_by,
+// design_files.uploaded_by, payment_proofs.uploaded_by,
+// order_state_history.changed_by, invoices.generated_by) records who
+// PERFORMED an action, not who OWNS the order, and must keep pointing at the
+// original actor for audit purposes.
+//
+// Uses `UPDATE ... RETURNING id` (via GORM's Clauses(clause.Returning{...}))
+// so the moved IDs come back from the SAME statement that moved them — a
+// separate SELECT-then-UPDATE would be both an extra round trip and racy
+// (rows matching the SELECT could stop matching the WHERE by the time the
+// UPDATE runs).
+func (r *OrderRepository) ReassignCustomer(ctx context.Context, fromCustomerID, toCustomerID uuid.UUID) ([]uuid.UUID, error) {
+	var moved []model.Order
+	err := r.db.WithContext(ctx).
+		Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}}}).
+		Model(&moved).
+		Where("customer_id = ?", fromCustomerID).
+		Updates(map[string]any{
+			"customer_id": toCustomerID,
+			"updated_at":  gorm.Expr("NOW()"),
+		}).Error
+	if err != nil {
+		return nil, fmt.Errorf("reassign customer orders from %s to %s: %w", fromCustomerID, toCustomerID, err)
+	}
+	ids := make([]uuid.UUID, len(moved))
+	for i, o := range moved {
+		ids[i] = o.ID
+	}
+	return ids, nil
 }
 
 func isStatusAllowed(current, from string, allowed []string) bool {

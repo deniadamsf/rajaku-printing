@@ -13,22 +13,22 @@ package state
 type Status string
 
 const (
-	OrderMasuk              Status = "order_masuk"
-	MenungguOngkir          Status = "menunggu_ongkir"
-	MenungguPembayaran      Status = "menunggu_pembayaran"
-	MenungguVerifikasi      Status = "menunggu_verifikasi"
-	Dibayar                 Status = "dibayar"
-	Ditolak                 Status = "ditolak"
-	DesainDiverifikasi      Status = "desain_diverifikasi"
-	DesainDikerjakan        Status = "desain_dikerjakan"
-	MenungguApprovalDesain  Status = "menunggu_approval_desain"
-	ProsesCetak             Status = "proses_cetak"
-	QC                      Status = "qc"
-	SiapKirim               Status = "siap_kirim"
-	SiapAmbil               Status = "siap_ambil"
-	Dikirim                 Status = "dikirim"
-	Selesai                 Status = "selesai"
-	Dibatalkan              Status = "dibatalkan"
+	OrderMasuk             Status = "order_masuk"
+	MenungguOngkir         Status = "menunggu_ongkir"
+	MenungguPembayaran     Status = "menunggu_pembayaran"
+	MenungguVerifikasi     Status = "menunggu_verifikasi"
+	Dibayar                Status = "dibayar"
+	Ditolak                Status = "ditolak"
+	DesainDiverifikasi     Status = "desain_diverifikasi"
+	DesainDikerjakan       Status = "desain_dikerjakan"
+	MenungguApprovalDesain Status = "menunggu_approval_desain"
+	ProsesCetak            Status = "proses_cetak"
+	QC                     Status = "qc"
+	SiapKirim              Status = "siap_kirim"
+	SiapAmbil              Status = "siap_ambil"
+	Dikirim                Status = "dikirim"
+	Selesai                Status = "selesai"
+	Dibatalkan             Status = "dibatalkan"
 )
 
 // All returns semua status yg dikenal — dipakai testing & validation.

@@ -6,13 +6,13 @@ package cmsapi
 import "errors"
 
 var (
-	ErrArticleNotFound  = errors.New("cmsapi: article not found")
-	ErrSlugTaken        = errors.New("cmsapi: slug already used by another article")
-	ErrInvalidSlug      = errors.New("cmsapi: slug format invalid (a-z0-9 + dash)")
-	ErrTitleRequired    = errors.New("cmsapi: title is required")
-	ErrContentRequired  = errors.New("cmsapi: content is required")
-	ErrInvalidStatus    = errors.New("cmsapi: invalid status")
-	ErrNotPublishable   = errors.New("cmsapi: article cannot be published (already archived / missing content)")
+	ErrArticleNotFound = errors.New("cmsapi: article not found")
+	ErrSlugTaken       = errors.New("cmsapi: slug already used by another article")
+	ErrInvalidSlug     = errors.New("cmsapi: slug format invalid (a-z0-9 + dash)")
+	ErrTitleRequired   = errors.New("cmsapi: title is required")
+	ErrContentRequired = errors.New("cmsapi: content is required")
+	ErrInvalidStatus   = errors.New("cmsapi: invalid status")
+	ErrNotPublishable  = errors.New("cmsapi: article cannot be published (already archived / missing content)")
 
 	ErrImageNotFound     = errors.New("cmsapi: image not found")
 	ErrImageEmpty        = errors.New("cmsapi: image file is empty")

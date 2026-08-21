@@ -40,6 +40,13 @@ type googleOAuthUserStore interface {
 	FindByOAuth(ctx context.Context, provider, subject string) (*model.User, error)
 	FindByEmail(ctx context.Context, email string) (*model.User, error)
 	FindByPhone(ctx context.Context, phone string) (*model.User, error)
+	// FindByPhoneForUpdate is FindByPhone's row-locking counterpart — used by
+	// PhoneClaimService.claimOther's authoritative in-transaction re-check
+	// (§ phone-claim review finding #1). MUST only be called against a
+	// transaction-scoped store (see phoneClaimTx). Not used by
+	// GoogleOAuthService itself; kept on this shared interface for the same
+	// least-duplication reason as SetPhone/SetActive above.
+	FindByPhoneForUpdate(ctx context.Context, phone string) (*model.User, error)
 	Create(ctx context.Context, u *model.User) error
 	UpdateLastLogin(ctx context.Context, id uuid.UUID) error
 	ExistsByEmail(ctx context.Context, email string) (bool, error)
@@ -55,6 +62,12 @@ type googleOAuthUserStore interface {
 	// same shared interface avoids a second near-identical user-store
 	// narrowing in phone_claim_service.go (§22 least duplication).
 	SetPhone(ctx context.Context, id uuid.UUID, phone *string, verifiedAt *time.Time) error
+	// SetActive — used by PhoneClaimService to tombstone (is_active=false) a
+	// GUEST row after its phone is released AND its order history reassigned
+	// to the absorbing account. Not used by GoogleOAuthService itself; kept
+	// on this shared interface for the same least-duplication reason as
+	// SetPhone above.
+	SetActive(ctx context.Context, id uuid.UUID, active bool) error
 }
 
 // googleOAuthCodeStore narrows repository.OAuthLoginCodeRepository.

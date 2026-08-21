@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
 	"github.com/rajaku-printing/backend/internal/catalog/catalogapi"
@@ -29,7 +30,7 @@ func (h *Handler) ListProducts(c *gin.Context) {
 	}
 	out := make([]productListItem, 0, len(items))
 	for _, p := range items {
-		out = append(out, toProductListItem(p))
+		out = append(out, toProductListItem(h.svc, p))
 	}
 	httpx.OK(c, gin.H{"products": out})
 }
@@ -46,7 +47,28 @@ func (h *Handler) GetProductBySlug(c *gin.Context) {
 		h.mapErr(c, err)
 		return
 	}
-	httpx.OK(c, toProductDetailResponse(*p))
+	httpx.OK(c, toProductDetailResponse(h.svc, *p))
+}
+
+// GET /catalog/product-images/:id — sajikan gambar produk (WebP) publik.
+// Dipakai kartu produk landing page sebagai src <img>. 404 kalau produk
+// tidak ada atau belum diunggah gambarnya (frontend fallback ke ikon
+// generik, lihat catalogapi.ErrProductNotFound / service.ErrProductImageEmpty).
+func (h *Handler) ServeProductImage(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "invalid product id")
+		return
+	}
+	handle, err := h.svc.GetProductImage(c.Request.Context(), id)
+	if err != nil {
+		h.mapErr(c, err)
+		return
+	}
+	// Cache pendek (bukan immutable — admin bisa timpa gambar kapan saja).
+	c.Header("Content-Type", handle.MimeType)
+	c.Header("Cache-Control", "public, max-age=300")
+	c.File(handle.AbsPath)
 }
 
 // GET /catalog/materials — list bahan aktif.
@@ -86,7 +108,7 @@ func (h *Handler) Quote(c *gin.Context) {
 
 func (h *Handler) mapErr(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, catalogapi.ErrProductNotFound):
+	case errors.Is(err, catalogapi.ErrProductNotFound), errors.Is(err, service.ErrProductImageEmpty):
 		httpx.Error(c, http.StatusNotFound, httpx.CodeNotFound, "produk tidak ditemukan")
 	case errors.Is(err, catalogapi.ErrMaterialNotFound):
 		httpx.Error(c, http.StatusNotFound, httpx.CodeNotFound, "bahan tidak ditemukan")

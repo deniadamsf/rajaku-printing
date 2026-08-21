@@ -38,7 +38,9 @@ func mapDomainErr(c *gin.Context, err error) {
 		errors.Is(err, designapi.ErrFileTooLarge),
 		errors.Is(err, designapi.ErrFileEmpty),
 		errors.Is(err, designapi.ErrRevisionNotesRequired),
-		errors.Is(err, designapi.ErrWalkinOnlyForPOS):
+		errors.Is(err, designapi.ErrWalkinOnlyForPOS),
+		errors.Is(err, designapi.ErrSkipUploadOnlyForPOS),
+		errors.Is(err, designapi.ErrSkipNoteRequired):
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, err.Error())
 	case errors.Is(err, designapi.ErrPendingDraftExists),
 		errors.Is(err, designapi.ErrDraftAlreadyReviewed),
@@ -77,7 +79,11 @@ func (h *Handler) UploadCustomerFile(c *gin.Context) {
 		httpx.Error(c, http.StatusInternalServerError, httpx.CodeInternal, "gagal buka file upload")
 		return
 	}
-	defer f.Close()
+	// Close diabaikan sengaja: f adalah file upload yang hanya DIBACA, jadi
+	// tidak ada buffer tulis yang bisa gagal ter-flush. Ditulis eksplisit
+	// supaya errcheck lolos tanpa mematikan linter, dan supaya jelas ini
+	// keputusan, bukan kelalaian (CLAUDE.md 22).
+	defer func() { _ = f.Close() }()
 
 	saved, err := h.svc.UploadCustomerFile(c.Request.Context(), service.UploadInput{
 		Resi:          resi,
@@ -115,7 +121,11 @@ func (h *Handler) StaffUploadDraft(c *gin.Context) {
 		httpx.Error(c, http.StatusInternalServerError, httpx.CodeInternal, "gagal buka file upload")
 		return
 	}
-	defer f.Close()
+	// Close diabaikan sengaja: f adalah file upload yang hanya DIBACA, jadi
+	// tidak ada buffer tulis yang bisa gagal ter-flush. Ditulis eksplisit
+	// supaya errcheck lolos tanpa mematikan linter, dan supaya jelas ini
+	// keputusan, bukan kelalaian (CLAUDE.md 22).
+	defer func() { _ = f.Close() }()
 
 	saved, err := h.svc.StaffUploadDraft(c.Request.Context(), service.UploadInput{
 		Resi:          c.Param("resi"),
@@ -170,6 +180,34 @@ func (h *Handler) StaffApproveWalkin(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&body)
 	if err := h.svc.StaffApproveWalkinInstant(c.Request.Context(), service.WalkinInstantApproveInput{
+		Resi:    c.Param("resi"),
+		StaffID: id.UserID,
+		Note:    body.Note,
+	}); err != nil {
+		mapDomainErr(c, err)
+		return
+	}
+	httpx.OK(c, gin.H{"ok": true})
+}
+
+// POST /admin/orders/:resi/design-skip-upload  (§11 POS shortcut)
+// Staff lewati upload file desain — desain sudah ada di komputer desainer,
+// tidak perlu diunggah ke sistem hanya supaya order bisa maju ke proses
+// cetak. Note wajib, dipakai sebagai jejak audit lokasi file fisik.
+func (h *Handler) StaffSkipUpload(c *gin.Context) {
+	id, err := authapi.IdentityFromContext(c.Request.Context())
+	if err != nil || id == nil {
+		httpx.Error(c, http.StatusUnauthorized, httpx.CodeUnauthorized, "authentication required")
+		return
+	}
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "invalid json body")
+		return
+	}
+	if err := h.svc.StaffSkipUpload(c.Request.Context(), service.SkipUploadInput{
 		Resi:    c.Param("resi"),
 		StaffID: id.UserID,
 		Note:    body.Note,

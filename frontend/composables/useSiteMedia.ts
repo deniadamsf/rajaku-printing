@@ -32,6 +32,14 @@ export const SITE_MEDIA_FALLBACKS: Readonly<Record<string, string>> = {
   proses_4: '/proses/proses-04.webp',
   proses_5: '/proses/proses-05.webp',
   proses_6: '/proses/proses-06.webp',
+  proses_7: '/proses/proses-07.webp',
+  proses_8: '/proses/proses-08.webp',
+
+  // Cadangan sementara — belum ada foto khusus, pinjam foto proses yang paling
+  // relevan sampai admin mengunggah gambar sendiri lewat /admin/site-media.
+  bahan_detail: '/proses/proses-07.webp',
+  tentang_workshop: '/proses/proses-04.webp',
+  tentang_tim: '/proses/proses-02.webp',
 
   og_image: '/og-image.jpg',
 }

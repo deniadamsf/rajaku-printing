@@ -23,9 +23,9 @@ const (
 )
 
 var (
-	ErrTooShort      = fmt.Errorf("password: kurang dari %d karakter", MinLength)
-	ErrTooLong       = fmt.Errorf("password: lebih dari %d karakter (batas bcrypt)", MaxLength)
-	ErrMismatch      = errors.New("password: tidak cocok")
+	ErrTooShort = fmt.Errorf("password: kurang dari %d karakter", MinLength)
+	ErrTooLong  = fmt.Errorf("password: lebih dari %d karakter (batas bcrypt)", MaxLength)
+	ErrMismatch = errors.New("password: tidak cocok")
 )
 
 // Hash returns the bcrypt hash of the plaintext password. Caller MUST validate

@@ -29,6 +29,13 @@ export interface AdminProduct {
   min_height_cm?: number
   max_width_cm?: number
   max_height_cm?: number
+  /**
+   * URL foto produk yang diunggah admin. Kosong = halaman publik memakai
+   * artwork vektor cadangan (`utils/artwork.ts`). Field ini TIDAK ikut di
+   * `AdminProductInput` — gambar diganti lewat endpoint multipart tersendiri,
+   * bukan lewat PATCH JSON.
+   */
+  image_url?: string | null
   is_active: boolean
   display_order: number
   created_at: string

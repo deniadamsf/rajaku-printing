@@ -127,6 +127,46 @@ func TestUpdate_RejectsOutOfRange(t *testing.T) {
 	}
 }
 
+// ---------- pos.receipt_width_mm (§11/§12 — enum 58/80) ----------
+
+func TestUpdate_AcceptsAllowedReceiptWidths(t *testing.T) {
+	for _, value := range []string{"58", "80"} {
+		store := &fakeStore{row: &model.AppSetting{Key: settingsapi.KeyPOSReceiptWidthMM, Value: "58"}}
+		svc := newTestSvc(store)
+
+		row, err := svc.Update(context.Background(), settingsapi.KeyPOSReceiptWidthMM, value, uuid.New())
+		if err != nil {
+			t.Fatalf("value %q should be accepted, got error: %v", value, err)
+		}
+		if row.Value != value {
+			t.Errorf("want value %q, got %q", value, row.Value)
+		}
+	}
+}
+
+func TestUpdate_RejectsDisallowedReceiptWidth(t *testing.T) {
+	store := &fakeStore{row: &model.AppSetting{Key: settingsapi.KeyPOSReceiptWidthMM, Value: "58"}}
+	svc := newTestSvc(store)
+
+	_, err := svc.Update(context.Background(), settingsapi.KeyPOSReceiptWidthMM, "70", uuid.New())
+	if !errors.Is(err, settingsapi.ErrInvalidValue) {
+		t.Fatalf("want ErrInvalidValue for 70mm, got %v", err)
+	}
+	if len(store.updated) != 0 {
+		t.Error("nilai 70mm tidak boleh sampai ke store")
+	}
+}
+
+func TestUpdate_RejectsNonIntegerReceiptWidth(t *testing.T) {
+	store := &fakeStore{row: &model.AppSetting{Key: settingsapi.KeyPOSReceiptWidthMM, Value: "58"}}
+	svc := newTestSvc(store)
+
+	_, err := svc.Update(context.Background(), settingsapi.KeyPOSReceiptWidthMM, "abc", uuid.New())
+	if !errors.Is(err, settingsapi.ErrInvalidValue) {
+		t.Fatalf("want ErrInvalidValue for non-integer, got %v", err)
+	}
+}
+
 func TestUpdate_RejectsUnknownKey(t *testing.T) {
 	store := &fakeStore{}
 	svc := newTestSvc(store)
@@ -155,5 +195,181 @@ func TestGetInt_CorruptValueSurfacesError(t *testing.T) {
 	_, err := svc.GetInt(context.Background(), settingsapi.KeyDesignRetentionDays)
 	if !errors.Is(err, settingsapi.ErrInvalidValue) {
 		t.Fatalf("want ErrInvalidValue, got %v", err)
+	}
+}
+
+// ---------- payment settings (§7) ----------
+
+// paymentRows — 6 row payment.* seperti hasil migration 000020, dipakai
+// beberapa test GetPaymentInfo di bawah.
+func paymentRows() map[string]*model.AppSetting {
+	return map[string]*model.AppSetting{
+		settingsapi.KeyPaymentBankName:         {Key: settingsapi.KeyPaymentBankName, Value: "BCA"},
+		settingsapi.KeyPaymentAccountName:      {Key: settingsapi.KeyPaymentAccountName, Value: "CV WANSHOU NIAGA UTAMA"},
+		settingsapi.KeyPaymentAccountNumber:    {Key: settingsapi.KeyPaymentAccountNumber, Value: "3245070777"},
+		settingsapi.KeyPaymentQRISNote:         {Key: settingsapi.KeyPaymentQRISNote, Value: "Pindai QRIS lalu unggah bukti bayar."},
+		settingsapi.KeyPaymentQRISMerchantName: {Key: settingsapi.KeyPaymentQRISMerchantName, Value: "EVENT WOWINFOOD"},
+		settingsapi.KeyPaymentQRISNmid:         {Key: settingsapi.KeyPaymentQRISNmid, Value: "ID2026569993978"},
+	}
+}
+
+// keyedStore — fakeStore variant yang menjawab Get per key (dipakai
+// GetPaymentInfo yang query 6 key berbeda, beda dari fakeStore.row tunggal
+// yang dipakai test lain di atas).
+type keyedStore struct {
+	fakeStore
+	rows map[string]*model.AppSetting
+}
+
+func (k *keyedStore) Get(_ context.Context, key string) (*model.AppSetting, error) {
+	row, ok := k.rows[key]
+	if !ok {
+		return nil, settingsrepo.ErrNotFound
+	}
+	return row, nil
+}
+
+func newKeyedTestSvc(store *keyedStore) *Service {
+	s := New(store)
+	s.nowFn = func() time.Time { return time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC) }
+	return s
+}
+
+func TestGetPaymentInfo_MapsAllSixKeys(t *testing.T) {
+	store := &keyedStore{rows: paymentRows()}
+	svc := newKeyedTestSvc(store)
+
+	info, err := svc.GetPaymentInfo(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info.BankName != "BCA" {
+		t.Errorf("bank_name want BCA, got %q", info.BankName)
+	}
+	if info.AccountName != "CV WANSHOU NIAGA UTAMA" {
+		t.Errorf("account_name salah: %q", info.AccountName)
+	}
+	if info.AccountNumber != "3245070777" {
+		t.Errorf("account_number salah: %q", info.AccountNumber)
+	}
+	if info.QRISMerchantName != "EVENT WOWINFOOD" {
+		t.Errorf("qris_merchant_name salah: %q", info.QRISMerchantName)
+	}
+	if info.QRISNmid != "ID2026569993978" {
+		t.Errorf("qris_nmid salah: %q", info.QRISNmid)
+	}
+	if info.QRISNote == "" {
+		t.Error("qris_note tidak boleh kosong pada test ini (row-nya terisi)")
+	}
+}
+
+func TestGetPaymentInfo_MissingRequiredKeySurfacesError(t *testing.T) {
+	rows := paymentRows()
+	delete(rows, settingsapi.KeyPaymentAccountNumber) // simulasikan migration belum jalan
+	store := &keyedStore{rows: rows}
+	svc := newKeyedTestSvc(store)
+
+	_, err := svc.GetPaymentInfo(context.Background())
+	if err == nil {
+		t.Fatal("want error ketika key wajib hilang dari DB, got nil")
+	}
+}
+
+func TestUpdate_NormalizesAccountNumber(t *testing.T) {
+	store := &fakeStore{row: &model.AppSetting{Key: settingsapi.KeyPaymentAccountNumber, Value: "3245070777"}}
+	svc := newTestSvc(store)
+
+	row, err := svc.Update(context.Background(), settingsapi.KeyPaymentAccountNumber, "3245 070-777", uuid.New())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if row.Value != "3245070777" {
+		t.Errorf("account_number want ternormalisasi 3245070777, got %q", row.Value)
+	}
+}
+
+func TestUpdate_RejectsAccountNumberWithLetters(t *testing.T) {
+	store := &fakeStore{row: &model.AppSetting{Key: settingsapi.KeyPaymentAccountNumber, Value: "3245070777"}}
+	svc := newTestSvc(store)
+
+	_, err := svc.Update(context.Background(), settingsapi.KeyPaymentAccountNumber, "3245O70777", uuid.New())
+	if !errors.Is(err, settingsapi.ErrInvalidValue) {
+		t.Fatalf("want ErrInvalidValue, got %v", err)
+	}
+	if len(store.updated) != 0 {
+		t.Error("nomor rekening berisi huruf tidak boleh sampai ke store")
+	}
+}
+
+func TestUpdate_RejectsEmptyRequiredPaymentFields(t *testing.T) {
+	for _, key := range []string{
+		settingsapi.KeyPaymentBankName,
+		settingsapi.KeyPaymentAccountName,
+		settingsapi.KeyPaymentAccountNumber,
+	} {
+		store := &fakeStore{row: &model.AppSetting{Key: key, Value: "isi lama"}}
+		svc := newTestSvc(store)
+
+		_, err := svc.Update(context.Background(), key, "   ", uuid.New())
+		if !errors.Is(err, settingsapi.ErrInvalidValue) {
+			t.Errorf("%s: want ErrInvalidValue untuk nilai kosong, got %v", key, err)
+		}
+		if len(store.updated) != 0 {
+			t.Errorf("%s: nilai kosong tidak boleh sampai ke store", key)
+		}
+	}
+}
+
+// ---------- List (§ tugas C — allowed_values proyeksi enum) ----------
+
+func TestList_EnumKeyCarriesAllowedValues(t *testing.T) {
+	store := &fakeStore{listResult: []model.AppSetting{
+		{Key: settingsapi.KeyPOSReceiptWidthMM, Value: "58", DisplayName: "Lebar Struk"},
+		{Key: settingsapi.KeyDesignRetentionDays, Value: "30", DisplayName: "Retensi Desain"},
+	}}
+	svc := newTestSvc(store)
+
+	items, err := svc.List(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(items))
+	}
+
+	receipt := items[0]
+	if receipt.Key != settingsapi.KeyPOSReceiptWidthMM {
+		t.Fatalf("unexpected order, item[0].Key=%q", receipt.Key)
+	}
+	if len(receipt.AllowedValues) != 2 || receipt.AllowedValues[0] != "58" || receipt.AllowedValues[1] != "80" {
+		t.Errorf("pos.receipt_width_mm allowed_values want [58 80], got %v", receipt.AllowedValues)
+	}
+
+	retention := items[1]
+	if retention.Key != settingsapi.KeyDesignRetentionDays {
+		t.Fatalf("unexpected order, item[1].Key=%q", retention.Key)
+	}
+	if retention.AllowedValues != nil {
+		t.Errorf("design_retention_days harus TIDAK membawa allowed_values (free-form range), got %v", retention.AllowedValues)
+	}
+}
+
+func TestUpdate_AcceptsEmptyQRISFields(t *testing.T) {
+	for _, key := range []string{
+		settingsapi.KeyPaymentQRISNote,
+		settingsapi.KeyPaymentQRISMerchantName,
+		settingsapi.KeyPaymentQRISNmid,
+	} {
+		store := &fakeStore{row: &model.AppSetting{Key: key, Value: "isi lama"}}
+		svc := newTestSvc(store)
+
+		row, err := svc.Update(context.Background(), key, "  ", uuid.New())
+		if err != nil {
+			t.Errorf("%s: QRIS boleh kosong, unexpected error: %v", key, err)
+			continue
+		}
+		if row.Value != "" {
+			t.Errorf("%s: want value kosong, got %q", key, row.Value)
+		}
 	}
 }

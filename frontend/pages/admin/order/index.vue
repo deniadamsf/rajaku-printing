@@ -141,7 +141,7 @@ function statusLabel(s: string): string {
           type="search"
           placeholder="Cari resi…"
           class="rounded-md border border-hairline bg-canvas px-3 py-1.5 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-        />
+        >
       </div>
     </div>
 

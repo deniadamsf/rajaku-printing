@@ -5,9 +5,23 @@
  * Design: patuh CLAUDE.md §26 (Fraunces headline + Inter body, brand/ink/hairline,
  * Lucide icon — tanpa rose/slate/emoji).
  */
-import { LogIn, Loader2 } from '@lucide/vue'
+import { History, LayoutDashboard, LogIn, Loader2, PackageSearch } from '@lucide/vue'
 import { ApiError } from '~/composables/useApi'
 import { googleErrorMessage } from '~/composables/useGoogleAuth'
+
+// Poin panel brand — semuanya perilaku sistem yang memang ada (§10 satu form
+// untuk semua tipe user, §11 riwayat gabung lintas channel, §5 lacak resi).
+const panelPoints = [
+  { icon: PackageSearch, text: 'Lacak status semua pesanan Anda dari satu halaman akun.' },
+  {
+    icon: History,
+    text: 'Riwayat order online dan pesanan di tempat tergabung dalam satu identitas pelanggan.',
+  },
+  {
+    icon: LayoutDashboard,
+    text: 'Staf memakai form login yang sama, lalu diarahkan ke panel sesuai perannya.',
+  },
+]
 
 definePageMeta({
   middleware: ['guest'],
@@ -63,7 +77,10 @@ async function onSubmit() {
 </script>
 
 <template>
-  <section class="mx-auto max-w-md px-4 py-16 md:py-24">
+  <AuthShell
+    panel-title="Satu akun untuk pelanggan dan tim."
+    :panel-points="panelPoints"
+  >
     <div class="text-center">
       <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
         Rajaku Printing
@@ -128,5 +145,5 @@ async function onSubmit() {
         </NuxtLink>
       </p>
     </form>
-  </section>
+  </AuthShell>
 </template>

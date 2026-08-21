@@ -73,6 +73,7 @@ func (s *Service) StartQC(ctx context.Context, in AdvanceInput) error {
 // MarkSiap — lulus QC. Trigger WA:
 //   - metode_ambil=kirim  → KindReadyShip
 //   - metode_ambil=pickup → KindReadyPickup
+//
 // (order service auto-branch status internally).
 func (s *Service) MarkSiap(ctx context.Context, in AdvanceInput) error {
 	orderID, sum, err := s.resolveOrderID(ctx, in.Resi)

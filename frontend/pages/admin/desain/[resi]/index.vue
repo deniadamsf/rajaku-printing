@@ -11,6 +11,15 @@
  *     menunggu_approval_desain.
  *   - Walk-in Approve: kalau channel=pos, status=desain_dikerjakan → tombol
  *     shortcut (perm design.approve). Backend enforce channel+mode di service.
+ *   - Skip Upload: kalau channel=pos, design_source=upload, status=dibayar,
+ *     dan BELUM ada file customer_upload → tombol "Lewati Upload — Langsung
+ *     Cetak" (perm design.approve). Untuk walk-in yang bawa desain siap
+ *     cetak tapi filenya cuma ada di komputer desainer (tidak diupload ke
+ *     sistem). Wajib isi catatan lokasi file — dikirim sbg `note` ke backend
+ *     sebagai jejak audit. Aksi ini irreversible (order lanjut ke tahap cetak
+ *     tanpa file tersimpan di sistem), jadi diamankan lewat
+ *     `<AdminConfirmDialog>` (variant danger) yang menampilkan ulang catatan
+ *     lokasi file sebelum staff menekan konfirmasi.
  *
  * File preview: image/pdf/webp langsung inline lewat blob URL (Bearer token
  * dikirim via fetch, bukan lewat <img src=…>). CDR/AI tidak previewable —
@@ -19,7 +28,7 @@
 import type { Order } from '~/types/order'
 import type { DesignFile } from '~/types/design'
 import { ApiError } from '~/composables/useApi'
-import { FileCheck2, Upload, Sparkles, Download, XCircle } from '@lucide/vue'
+import { FileCheck2, Upload, Sparkles, Download, XCircle, Printer } from '@lucide/vue'
 
 definePageMeta({
   middleware: ['staff-only'],
@@ -43,6 +52,9 @@ useSeoMeta({ title: () => `Desain ${resi.value} — Admin` })
 
 // Permissions
 const canApprove = computed(() => auth.hasPermission('design.approve'))
+// Permission tersendiri (§10) — kasir boleh melewati upload untuk walk-in di
+// depannya tanpa ikut dapat kuasa verifikasi desain order online.
+const canSkip = computed(() => auth.hasPermission('design.skip_upload'))
 const canWork = computed(() => auth.hasPermission('design.work'))
 
 // --- Derived state ---
@@ -55,8 +67,6 @@ const customerAssets = computed(() =>
 const staffDrafts = computed(() =>
   files.value.filter((f) => f.role === 'staff_draft').sort((a, b) => (a.uploaded_at < b.uploaded_at ? 1 : -1)),
 )
-const latestDraft = computed<DesignFile | null>(() => staffDrafts.value[0] ?? null)
-
 const canVerifyUpload = computed(
   () =>
     canApprove.value &&
@@ -76,6 +86,14 @@ const canWalkinApprove = computed(
     canApprove.value &&
     order.value?.channel === 'pos' &&
     order.value?.status === 'desain_dikerjakan',
+)
+const canSkipUpload = computed(
+  () =>
+    canSkip.value &&
+    order.value?.channel === 'pos' &&
+    order.value?.design_source === 'upload' &&
+    order.value?.status === 'dibayar' &&
+    !customerUpload.value,
 )
 
 async function load() {
@@ -129,6 +147,27 @@ async function doWalkin() {
     errorMsg.value = e instanceof ApiError ? e.message : 'Gagal walk-in approve'
   } finally {
     walkinBusy.value = false
+  }
+}
+
+const skipUploadBusy = ref(false)
+const skipUploadNote = ref('')
+const skipUploadDialogOpen = ref(false)
+async function doSkipUpload() {
+  if (!skipUploadNote.value.trim()) return
+  skipUploadBusy.value = true
+  errorMsg.value = null
+  try {
+    await designSvc.skipUpload(resi.value, skipUploadNote.value.trim())
+    successMsg.value = 'Order lanjut ke desain_diverifikasi tanpa file. Catatan tersimpan di riwayat.'
+    setTimeout(() => (successMsg.value = null), 3000)
+    skipUploadNote.value = ''
+    skipUploadDialogOpen.value = false
+    await load()
+  } catch (e: unknown) {
+    errorMsg.value = e instanceof ApiError ? e.message : 'Gagal melewati upload'
+  } finally {
+    skipUploadBusy.value = false
   }
 }
 
@@ -289,7 +328,8 @@ function statusLabel(s: string): string {
         </div>
 
         <!-- Brief (request path) -->
-        <div v-if="order.design_source === 'request' && (order.design_brief || customerAssets.length)"
+        <div
+v-if="order.design_source === 'request' && (order.design_brief || customerAssets.length)"
              class="rounded-lg border border-hairline bg-canvas p-5">
           <h2 class="text-xs font-medium uppercase tracking-[0.14em] text-ink-500">Brief</h2>
           <p v-if="order.design_brief" class="mt-3 text-sm text-ink-800 leading-relaxed border-l-2 border-gold-400 pl-3 whitespace-pre-line">
@@ -418,7 +458,7 @@ function statusLabel(s: string): string {
             maxlength="500"
             placeholder="Catatan (opsional)"
             class="mt-3 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-          />
+          >
           <button
             type="button"
             class="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
@@ -451,7 +491,7 @@ function statusLabel(s: string): string {
               accept="image/jpeg,image/png,image/webp,application/pdf,.cdr,.ai"
               class="hidden"
               @change="onDraftFileChange"
-            />
+            >
           </label>
           <p class="mt-1 text-[10px] text-ink-500">
             Format: JPG/PNG/WebP/PDF/CDR/AI. Max {{ Math.round(25) }} MB.
@@ -462,7 +502,7 @@ function statusLabel(s: string): string {
             maxlength="500"
             placeholder="Catatan draft (opsional)"
             class="mt-3 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-          />
+          >
           <button
             type="button"
             class="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
@@ -489,7 +529,7 @@ function statusLabel(s: string): string {
           </p>
           <button
             type="button"
-            class="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-md bg-gold-500 px-3 py-2 text-sm font-semibold text-canvas hover:bg-gold-600 disabled:opacity-60 transition-colors"
+            class="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-md bg-gold-500 px-3 py-2 text-sm font-semibold text-canvas transition-colors hover:bg-gold-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:opacity-60"
             :disabled="walkinBusy"
             @click="doWalkin"
           >
@@ -502,9 +542,40 @@ function statusLabel(s: string): string {
           </button>
         </div>
 
+        <!-- Skip upload (POS: file ada di komputer desainer, tidak masuk sistem) -->
+        <div v-if="canSkipUpload" class="rounded-lg border border-hairline bg-canvas p-6">
+          <h3 class="flex items-center gap-2 text-sm font-semibold text-ink-900">
+            <Printer class="h-4 w-4 text-ink-500" :stroke-width="1.75" />
+            Lewati Upload
+          </h3>
+          <p class="mt-1 text-xs text-ink-500 leading-relaxed">
+            Untuk walk-in yang bawa desain siap cetak tapi filenya cuma ada di komputer desainer, bukan diupload ke sistem.
+          </p>
+          <label class="mt-3 block text-xs font-medium text-ink-700">Lokasi file desain</label>
+          <textarea
+            v-model="skipUploadNote"
+            rows="2"
+            maxlength="500"
+            placeholder="PC desain — folder Agustus/spanduk-warung-bu-sri"
+            class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+          />
+          <p class="mt-1 text-xs text-ink-500">
+            Wajib diisi. Dicatat di riwayat order sebagai jejak, karena filenya tidak masuk sistem.
+          </p>
+          <button
+            type="button"
+            class="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-md border border-hairline bg-canvas px-3 py-2 text-sm font-semibold text-ink-900 hover:bg-canvas-alt disabled:opacity-60 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
+            :disabled="!skipUploadNote.trim()"
+            @click="skipUploadDialogOpen = true"
+          >
+            <Printer class="h-4 w-4" :stroke-width="1.75" />
+            Lewati Upload — Langsung Cetak
+          </button>
+        </div>
+
         <!-- Fallback: no actions available -->
         <div
-          v-if="!canVerifyUpload && !canUploadDraft && !canWalkinApprove"
+          v-if="!canVerifyUpload && !canUploadDraft && !canWalkinApprove && !canSkipUpload"
           class="rounded-lg border border-dashed border-hairline bg-canvas p-5 text-xs text-ink-500 leading-relaxed"
         >
           <p class="font-medium text-ink-700 mb-1">Tidak ada aksi tersedia</p>
@@ -531,6 +602,22 @@ function statusLabel(s: string): string {
         </div>
       </aside>
     </div>
+
+    <!-- Konfirmasi lewati upload (§26.7 — irreversible, wajib confirm dialog) -->
+    <AdminConfirmDialog
+      v-model:open="skipUploadDialogOpen"
+      title="Lewati upload dan langsung cetak?"
+      message="Order akan lanjut ke tahap cetak tanpa file desain tersimpan di sistem. Tindakan ini tidak bisa dibatalkan."
+      confirm-label="Ya, lanjut cetak"
+      variant="danger"
+      :loading="skipUploadBusy"
+      @confirm="doSkipUpload"
+    >
+      <div class="mt-4 rounded-md bg-canvas-alt p-3">
+        <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Lokasi file desain</p>
+        <p class="mt-1 text-sm text-ink-700 whitespace-pre-line">{{ skipUploadNote }}</p>
+      </div>
+    </AdminConfirmDialog>
 
     <!-- Preview modal -->
     <Teleport to="body">
@@ -567,7 +654,7 @@ function statusLabel(s: string): string {
                 :src="preview.url"
                 :alt="preview.file.file_original_name"
                 class="mx-auto max-h-[65vh] rounded border border-hairline"
-              />
+              >
               <object
                 v-else-if="previewIsPDF && preview"
                 :data="preview.url"

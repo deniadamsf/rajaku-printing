@@ -37,7 +37,7 @@ async function onLogout() {
 <template>
   <div class="min-h-screen bg-canvas-alt text-ink-900 font-sans">
     <!-- Topbar mobile -->
-    <header class="lg:hidden sticky top-0 z-30 flex items-center justify-between border-b border-hairline bg-canvas px-4 h-12">
+    <header class="lg:hidden sticky top-0 z-30 flex items-center justify-between border-b border-hairline bg-canvas px-4 h-12 print:hidden">
       <button
         type="button"
         class="rounded-md p-2 text-ink-600 hover:bg-canvas-alt"
@@ -54,7 +54,7 @@ async function onLogout() {
       <!-- Sidebar -->
       <aside
         :class="[
-          'fixed inset-y-0 left-0 z-40 w-64 shrink-0 bg-ink-950 text-ink-100 transform transition-transform lg:static lg:translate-x-0',
+          'fixed inset-y-0 left-0 z-40 w-64 shrink-0 bg-ink-950 text-ink-100 transform transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 print:hidden',
           sidebarOpen ? 'translate-x-0' : '-translate-x-full',
         ]"
       >
@@ -77,7 +77,7 @@ async function onLogout() {
           </button>
         </div>
 
-        <nav class="px-3 py-5 space-y-6 overflow-y-auto max-h-[calc(100vh-3.5rem)]">
+        <nav class="nav-scroll px-3 py-5 space-y-6 overflow-y-auto h-[calc(100vh-3.5rem)]">
           <div>
             <NuxtLink
               to="/admin"
@@ -133,7 +133,7 @@ async function onLogout() {
 
       <!-- Main -->
       <div class="flex-1 min-w-0 flex flex-col">
-        <header class="hidden lg:flex sticky top-0 z-20 h-14 items-center justify-between bg-canvas border-b border-hairline px-8">
+        <header class="hidden lg:flex sticky top-0 z-20 h-14 items-center justify-between bg-canvas border-b border-hairline px-8 print:hidden">
           <div class="text-sm text-ink-500">
             Halo, <span class="font-medium text-ink-900">{{ auth.user?.name }}</span>
             <span v-if="auth.roles.length" class="ml-2 text-xs text-ink-400">
@@ -149,10 +149,47 @@ async function onLogout() {
           </button>
         </header>
 
-        <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-10 py-8">
+        <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-10 py-8 print:p-0">
           <slot />
         </main>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+/*
+ * Scrollbar nav sidebar disembunyikan sampai di-hover — scrollbar tebal bawaan
+ * Windows (dengan tombol panah) merusak kesan minimalis sidebar (CLAUDE.md §26).
+ * Area tetap bisa di-scroll wheel/keyboard, jadi tidak ada konten yang hilang.
+ */
+.nav-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 200ms ease-out;
+}
+
+.nav-scroll:hover,
+.nav-scroll:focus-within {
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.nav-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.nav-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nav-scroll::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 9999px;
+  transition: background-color 200ms ease-out;
+}
+
+.nav-scroll:hover::-webkit-scrollbar-thumb,
+.nav-scroll:focus-within::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.18);
+}
+</style>

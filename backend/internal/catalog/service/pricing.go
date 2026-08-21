@@ -13,7 +13,8 @@ import (
 // calcPerM2 computes total price for a per_m2 pricing row.
 //
 // Formula: chargeable_m2 = max(width_m × height_m, min_charge_m2)
-//          total         = round(chargeable_m2 × price_per_m2)
+//
+//	total         = round(chargeable_m2 × price_per_m2)
 //
 // Rounding: HALF-UP ke rupiah terdekat (praktik toko cetak umum — customer
 // jarang dihadapkan angka desimal).

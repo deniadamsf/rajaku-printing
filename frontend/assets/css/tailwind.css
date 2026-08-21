@@ -56,3 +56,43 @@ html:not(.motion-ready) [style*="opacity:0;transform:translateY("] {
 html:not(.motion-ready) [data-carousel-slide]:not([data-carousel-slide='0']) {
   display: none !important;
 }
+
+/*
+ * Scrollbar halaman (window). Bawaan Windows tebal, kotak, dan track-nya ikut
+ * gelap kalau OS pakai dark mode — bertabrakan dengan canvas off-white hangat
+ * (§26.1). Diseragamkan jadi tipis dengan warna ink.
+ *
+ * `color-scheme: light` mengunci widget bawaan browser (scrollbar, dropdown
+ * select, date picker) ke varian terang, karena seluruh design language app ini
+ * memang light-only — tanpa ini scrollbar tetap gelap di OS dark mode meski
+ * warnanya sudah di-override.
+ */
+html {
+  color-scheme: light;
+  scrollbar-width: thin;
+  scrollbar-color: theme('colors.ink.300') theme('colors.canvas.alt');
+}
+
+/*
+ * Fallback WebKit untuk Safari & Chrome lama yang belum dukung
+ * `scrollbar-color`. Chrome baru mengabaikan blok ini saat properti standar di
+ * atas ada — itu disengaja, hasil visualnya sama.
+ */
+html::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+html::-webkit-scrollbar-track {
+  background: theme('colors.canvas.alt');
+}
+
+html::-webkit-scrollbar-thumb {
+  background-color: theme('colors.ink.300');
+  border: 2px solid theme('colors.canvas.alt');
+  border-radius: 9999px;
+}
+
+html::-webkit-scrollbar-thumb:hover {
+  background-color: theme('colors.ink.400');
+}

@@ -40,8 +40,12 @@ export interface BusinessInfo {
   priceRange: string
 }
 
-// TODO(rajaku): data NAP asli belum diberikan pemilik — placeholder, wajib diganti
-// sebelum produksi.
+// Nama, alamat jalan, kota, dan telepon/WA DIKONFIRMASI ASLI oleh pemilik
+// (21 Agustus 2026) — dipakai apa adanya di struk kasir yang dicetak untuk
+// pelanggan, jadi jangan diubah tanpa konfirmasi ulang.
+//
+// Yang MASIH placeholder ditandai TODO per baris di bawah: postalCode, email,
+// dan geo. Jangan tampilkan ketiganya ke pelanggan sebelum diganti.
 export const business: BusinessInfo = {
   name: 'Rajaku Printing',
   legalName: 'Rajaku Printing',

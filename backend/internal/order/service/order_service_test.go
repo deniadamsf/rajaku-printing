@@ -51,6 +51,19 @@ type fakeStore struct {
 	advanceParams repository.AdvanceStatusParams
 	advanceErr    error
 	advanceCalls  int
+
+	// Super admin order tools (§ super admin order tools):
+	updateFieldsParams repository.UpdateFieldsParams
+	updateFieldsErr    error
+	updateFieldsCalls  int
+
+	overrideStatusParams repository.OverrideStatusParams
+	overrideStatusErr    error
+	overrideStatusCalls  int
+
+	softDeleteParams repository.SoftDeleteParams
+	softDeleteErr    error
+	softDeleteCalls  int
 }
 
 func (f *fakeStore) CreateWithHistory(_ context.Context, o *model.Order, h *model.OrderStateHistory) error {
@@ -132,6 +145,44 @@ func (f *fakeStore) FindHistoryByOrderID(_ context.Context, _ uuid.UUID) ([]mode
 
 func (f *fakeStore) ListPOSByDateRange(_ context.Context, _, _ time.Time) ([]model.Order, error) {
 	return nil, nil
+}
+
+func (f *fakeStore) UpdateFields(_ context.Context, p repository.UpdateFieldsParams) error {
+	f.updateFieldsCalls++
+	f.updateFieldsParams = p
+	return f.updateFieldsErr
+}
+
+func (f *fakeStore) OverrideStatus(_ context.Context, p repository.OverrideStatusParams) (string, error) {
+	f.overrideStatusCalls++
+	f.overrideStatusParams = p
+	if f.overrideStatusErr != nil {
+		return "", f.overrideStatusErr
+	}
+	return "dibayar", nil
+}
+
+func (f *fakeStore) SoftDelete(_ context.Context, p repository.SoftDeleteParams) error {
+	f.softDeleteCalls++
+	f.softDeleteParams = p
+	return f.softDeleteErr
+}
+
+// fakeAuditStore implements AuditStore for ListAuditLog tests.
+type fakeAuditStore struct {
+	rows   []model.AdminAuditLog
+	err    error
+	filter repository.AdminAuditListFilter
+	calls  int
+}
+
+func (f *fakeAuditStore) ListByEntity(_ context.Context, filter repository.AdminAuditListFilter) ([]model.AdminAuditLog, error) {
+	f.calls++
+	f.filter = filter
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.rows, nil
 }
 
 type fakeCatalog struct {

@@ -6,8 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"log"
 	"github.com/rajaku-printing/backend/internal/httpx"
+	"log"
 )
 
 // RequireAuth returns a gin middleware that extracts the Bearer token from the
@@ -37,7 +37,8 @@ func requireAuth(svc Service, allowedScopes []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := extractBearer(c.GetHeader("Authorization"))
 		if raw == "" {
-			log.Printf("RequireAuth failed 401 for path %s\n", c.Request.URL.Path); httpx.Error(c, 401, httpx.CodeUnauthorized, "missing or invalid Authorization header")
+			log.Printf("RequireAuth failed 401 for path %s\n", c.Request.URL.Path)
+			httpx.Error(c, 401, httpx.CodeUnauthorized, "missing or invalid Authorization header")
 			return
 		}
 

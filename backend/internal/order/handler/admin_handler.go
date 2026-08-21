@@ -182,6 +182,20 @@ func (h *Handler) mapAdminErr(c *gin.Context, err error) {
 	case errors.Is(err, orderapi.ErrInvalidShippingCost):
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation,
 			"shipping_cost harus >= 0")
+
+	// --- Super admin order tools (§ super admin order tools) ---
+	case errors.Is(err, orderapi.ErrReasonRequired):
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation,
+			"alasan wajib diisi (minimal 10 karakter untuk perubahan data finansial pasca-pembayaran, override status, atau hapus pesanan)")
+	case errors.Is(err, orderapi.ErrFieldNotEditable):
+		httpx.Error(c, http.StatusUnprocessableEntity, httpx.CodeUnprocessable,
+			"pesanan dengan status ini (selesai/dibatalkan) tidak boleh diedit — override status dulu kalau perlu dibuka lagi")
+	case errors.Is(err, orderapi.ErrStatusUnknown):
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "status tujuan tidak dikenal")
+	case errors.Is(err, orderapi.ErrDeleteNotAllowedPaid):
+		httpx.Error(c, http.StatusConflict, httpx.CodeConflict,
+			"pesanan sudah dibayar — batalkan dulu (override status ke dibatalkan) sebelum bisa dihapus")
+
 	default:
 		h.mapErr(c, err)
 	}

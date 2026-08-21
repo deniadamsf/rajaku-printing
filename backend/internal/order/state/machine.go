@@ -164,3 +164,33 @@ func NextStates(from Status) []Status {
 	}
 	return out
 }
+
+// preDibayarStatuses — statuses BEFORE the order has been paid (§4). Dipakai
+// (a) modul order/service untuk menentukan field finansial mana yg boleh
+// diedit bebas oleh super admin tanpa reason panjang (§ super admin order
+// tools), dan (b) IsDeletable di bawah.
+var preDibayarStatuses = map[Status]struct{}{
+	OrderMasuk:         {},
+	MenungguOngkir:     {},
+	MenungguPembayaran: {},
+	MenungguVerifikasi: {},
+	Ditolak:            {},
+}
+
+// IsPreDibayar returns true kalau s adalah status SEBELUM order dibayar.
+func IsPreDibayar(s Status) bool {
+	_, ok := preDibayarStatuses[s]
+	return ok
+}
+
+// IsDeletable returns true kalau order berstatus s boleh di-soft-delete oleh
+// super admin (§ super admin order tools). Order yang SUDAH dibayar (atau
+// lanjut ke status manapun sesudahnya) TIDAK boleh langsung dihapus — uangnya
+// sudah di tangan toko, menghapus order itu akan membuatnya lenyap dari
+// rekap kas (ListPOSByDateRange dkk. memfilter deleted_at IS NULL) tanpa
+// jejak. Satu-satunya jalan keluar untuk order berbayar adalah dibatalkan
+// dulu (lewat cancel/OverrideStatus ke Dibatalkan) — status Dibatalkan itu
+// sendiri TETAP boleh dihapus (order gagal/dibatalkan tidak menyumbang kas).
+func IsDeletable(s Status) bool {
+	return IsPreDibayar(s) || s == Dibatalkan
+}

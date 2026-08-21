@@ -129,3 +129,34 @@ func TestNextStates_IncludesCancelWhenAllowed(t *testing.T) {
 		t.Fatalf("NextStates(Selesai) should be empty (terminal), got %v", NextStates(Selesai))
 	}
 }
+
+func TestIsPreDibayar(t *testing.T) {
+	pre := []Status{OrderMasuk, MenungguOngkir, MenungguPembayaran, MenungguVerifikasi, Ditolak}
+	for _, s := range pre {
+		if !IsPreDibayar(s) {
+			t.Errorf("%s should be pre-dibayar", s)
+		}
+	}
+	post := []Status{Dibayar, DesainDiverifikasi, ProsesCetak, QC, Selesai, Dibatalkan}
+	for _, s := range post {
+		if IsPreDibayar(s) {
+			t.Errorf("%s should NOT be pre-dibayar", s)
+		}
+	}
+}
+
+func TestIsDeletable(t *testing.T) {
+	deletable := []Status{OrderMasuk, MenungguOngkir, MenungguPembayaran, MenungguVerifikasi, Ditolak, Dibatalkan}
+	for _, s := range deletable {
+		if !IsDeletable(s) {
+			t.Errorf("%s should be deletable", s)
+		}
+	}
+	notDeletable := []Status{Dibayar, DesainDiverifikasi, DesainDikerjakan, MenungguApprovalDesain,
+		ProsesCetak, QC, SiapKirim, SiapAmbil, Dikirim, Selesai}
+	for _, s := range notDeletable {
+		if IsDeletable(s) {
+			t.Errorf("%s should NOT be deletable — must be cancelled first", s)
+		}
+	}
+}

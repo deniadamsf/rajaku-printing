@@ -36,7 +36,23 @@ type OrderStore interface {
 	ListPOSByDateRange(ctx context.Context, start, end time.Time) ([]model.Order, error)
 	SetShippingCostAndAdvance(ctx context.Context, p repository.SetShippingCostParams) error
 	AdvanceStatus(ctx context.Context, p repository.AdvanceStatusParams) error
+
+	// --- Super admin order tools (§ super admin order tools) ---
+	UpdateFields(ctx context.Context, p repository.UpdateFieldsParams) error
+	OverrideStatus(ctx context.Context, p repository.OverrideStatusParams) (string, error)
+	SoftDelete(ctx context.Context, p repository.SoftDeleteParams) error
 }
+
+// AuditStore is the narrow read contract for admin_audit_log — kept separate
+// from OrderStore because it isn't order-table-specific (entity_type may grow
+// beyond "order" later). Wired via SetAuditStore (same pattern as
+// SetNotifier) so New()'s existing call sites/tests don't need updating.
+type AuditStore interface {
+	ListByEntity(ctx context.Context, f repository.AdminAuditListFilter) ([]model.AdminAuditLog, error)
+}
+
+// Compile-time assertion — concrete audit repo satisfies the interface.
+var _ AuditStore = (*repository.AdminAuditLogRepository)(nil)
 
 // Compile-time assertion — concrete repo satisfies the interface.
 var _ OrderStore = (*repository.OrderRepository)(nil)
@@ -55,6 +71,14 @@ type Service struct {
 	// notifier — opsional; kalau nil, transisi status tidak trigger WA.
 	// Best-effort per §13: enqueue error di-log, tidak rollback transaksi.
 	notifier notificationapi.Enqueuer
+	// audit — opsional; kalau nil, ListAuditLog error (§ super admin order
+	// tools). Wired via SetAuditStore after router builds the repository.
+	audit AuditStore
+	// notifCanceller — opsional; kalau nil, SoftDeleteOrder tidak membatalkan
+	// job WA yang masih antre untuk order yang dihapus (§ super admin order
+	// tools review finding #5). Wired via SetNotificationCanceller, same
+	// pattern as SetNotifier.
+	notifCanceller notificationapi.JobCanceller
 }
 
 func New(orders OrderStore, catalog catalogapi.CatalogService, customers authapi.CustomerService) *Service {
@@ -69,6 +93,15 @@ func New(orders OrderStore, catalog catalogapi.CatalogService, customers authapi
 // Aman dipanggil sekali saat startup; setelah router siap, tidak boleh diubah
 // runtime (no concurrent write protection here).
 func (s *Service) SetNotifier(n notificationapi.Enqueuer) { s.notifier = n }
+
+// SetAuditStore wires the admin_audit_log reader. Same rationale/pattern as
+// SetNotifier — see admin_override.go for consumers (ListAuditLog).
+func (s *Service) SetAuditStore(a AuditStore) { s.audit = a }
+
+// SetNotificationCanceller wires an optional JobCanceller. Same
+// rationale/pattern as SetNotifier — see admin_override.go's
+// cancelPendingNotifications (SoftDeleteOrder).
+func (s *Service) SetNotificationCanceller(c notificationapi.JobCanceller) { s.notifCanceller = c }
 
 // CreateOnlineOrder creates a new order coming from the web (channel=online).
 // Kalau CustomerID nil, service akan resolve/create guest via CustomerService

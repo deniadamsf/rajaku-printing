@@ -207,11 +207,19 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	roleAdminSvc := authservice.NewRoleAdminService(roleRepo)
 	adminH := authhandler.NewAdminHandler(staffAdminSvc, roleAdminSvc, inviteSvc)
 
+	// filestore backing customer-uploaded proofs & admin-managed images; disk
+	// local per spec §19. Dibuat di sini (sebelum catalog) supaya bisa
+	// dishare ke banyak modul (catalog gambar produk, payment, design, cms,
+	// sitemedia, invoice) — root sama, subdir beda per modul.
+	fs := filestore.New(d.Config.Storage.LocalRoot)
+
 	// --- Wiring modul catalog ---
 	catalogProductRepo := catalogrepo.NewProductRepository(d.DB)
 	catalogMaterialRepo := catalogrepo.NewMaterialRepository(d.DB)
 	catalogPricingRepo := catalogrepo.NewPricingRepository(d.DB)
-	catalogSvc := catalogservice.New(catalogProductRepo, catalogMaterialRepo, catalogPricingRepo)
+	catalogSvc := catalogservice.New(catalogProductRepo, catalogMaterialRepo, catalogPricingRepo, fs, catalogservice.Config{
+		BaseURL: d.Config.App.BaseURL,
+	})
 	catalogH := cataloghandler.New(catalogSvc)
 
 	// --- Wiring modul order ---
@@ -223,8 +231,6 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	guestOrderSvc.SetOrderCommandService(orderSvc)
 
 	// --- Wiring modul payment ---
-	// filestore backing customer-uploaded proofs; disk local per spec §19.
-	fs := filestore.New(d.Config.Storage.LocalRoot)
 	paymentProofRepo := paymentrepo.NewProofRepository(d.DB)
 	// orderSvc satisfies orderapi.OrderCommandService — payment triggers order
 	// state transitions via that interface (spec §22: no cross-module internal imports).

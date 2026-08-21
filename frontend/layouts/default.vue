@@ -56,12 +56,20 @@ const jsonLd = computed(() =>
       postalCode: business.postalCode,
       addressCountry: business.addressCountry,
     },
-    geo: {
-      '@type': 'GeoCoordinates',
-      latitude: business.geo.latitude,
-      longitude: business.geo.longitude,
-    },
+    // `undefined` otomatis dihilangkan JSON.stringify — jadi kalau koordinat
+    // belum diverifikasi, blok `geo` tidak ikut terkirim sama sekali (lihat
+    // alasannya di utils/business.ts). Jangan diganti jadi objek berisi 0/null:
+    // koordinat 0,0 menaruh toko di Samudra Atlantik.
+    geo: business.geo
+      ? {
+          '@type': 'GeoCoordinates',
+          latitude: business.geo.latitude,
+          longitude: business.geo.longitude,
+        }
+      : undefined,
     areaServed: business.serviceArea,
+    paymentAccepted: business.paymentAccepted.join(', '),
+    currenciesAccepted: 'IDR',
     openingHoursSpecification: business.openingHours.map((h) => ({
       '@type': 'OpeningHoursSpecification',
       dayOfWeek: h.days,

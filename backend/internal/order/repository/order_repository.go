@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/rajaku-printing/backend/internal/order/model"
+	"github.com/rajaku-printing/backend/internal/order/state"
 )
 
 func gormForUpdate() clause.Locking { return clause.Locking{Strength: "UPDATE"} }
@@ -25,6 +26,11 @@ var (
 	// (concurrent staff action). Caller should re-read + retry or surface a
 	// "state changed, refresh" message to the user.
 	ErrStaleState = errors.New("order/repository: order status changed under concurrent update")
+	// ErrDeleteForbiddenStatus — SoftDelete's row-locked re-check found the
+	// order's CURRENT status disallows deletion (state.IsDeletable false),
+	// even though the caller may have validated against an earlier read.
+	// Mapped by the service to orderapi.ErrDeleteNotAllowedPaid.
+	ErrDeleteForbiddenStatus = errors.New("order/repository: order status does not allow deletion")
 )
 
 // pgUniqueViolationCode is the SQLSTATE returned by Postgres on unique index
@@ -60,10 +66,12 @@ func (r *OrderRepository) CreateWithHistory(ctx context.Context, order *model.Or
 	return nil
 }
 
-// FindByResi returns the order (without history) or ErrNotFound.
+// FindByResi returns the order (without history) or ErrNotFound. Soft-deleted
+// orders (§ super admin order tools) are treated as not found — once an order
+// is deleted it must vanish from every reading path, this one included.
 func (r *OrderRepository) FindByResi(ctx context.Context, resi string) (*model.Order, error) {
 	var o model.Order
-	err := r.db.WithContext(ctx).Where("resi = ?", resi).First(&o).Error
+	err := r.db.WithContext(ctx).Where("resi = ? AND deleted_at IS NULL", resi).First(&o).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -73,10 +81,13 @@ func (r *OrderRepository) FindByResi(ctx context.Context, resi string) (*model.O
 	return &o, nil
 }
 
-// FindByID returns the order or ErrNotFound.
+// FindByID returns the order or ErrNotFound. Same deleted_at exclusion as
+// FindByResi — every consumer module (payment, design, production, invoice,
+// notification) reaches orders exclusively through orderapi.OrderCommandService,
+// which is backed by FindByResi/FindByID, so this one filter covers them all.
 func (r *OrderRepository) FindByID(ctx context.Context, id uuid.UUID) (*model.Order, error) {
 	var o model.Order
-	err := r.db.WithContext(ctx).First(&o, "id = ?", id).Error
+	err := r.db.WithContext(ctx).Where("deleted_at IS NULL").First(&o, "id = ?", id).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -127,7 +138,7 @@ func (r *OrderRepository) ListForAdmin(ctx context.Context, f AdminListFilter) (
 		f.PageSize = 20
 	}
 
-	q := r.db.WithContext(ctx).Model(&model.Order{})
+	q := r.db.WithContext(ctx).Model(&model.Order{}).Where("deleted_at IS NULL")
 	if f.Status != "" {
 		q = q.Where("status = ?", f.Status)
 	}
@@ -169,7 +180,8 @@ func (r *OrderRepository) ListByCustomer(ctx context.Context, f CustomerListFilt
 	if f.PageSize < 1 || f.PageSize > 100 {
 		f.PageSize = 20
 	}
-	q := r.db.WithContext(ctx).Model(&model.Order{}).Where("customer_id = ?", f.CustomerID)
+	q := r.db.WithContext(ctx).Model(&model.Order{}).
+		Where("customer_id = ? AND deleted_at IS NULL", f.CustomerID)
 	if f.Status != "" {
 		q = q.Where("status = ?", f.Status)
 	}
@@ -190,11 +202,13 @@ func (r *OrderRepository) ListByCustomer(ctx context.Context, f CustomerListFilt
 }
 
 // ListPOSByDateRange returns POS orders (channel=pos) with created_at in
-// [start, end). Ordered by created_at ASC. Dipakai untuk rekonsiliasi harian.
+// [start, end). Ordered by created_at ASC. Dipakai untuk rekonsiliasi harian —
+// deleted_at exclusion is critical here: a deleted order must NOT inflate the
+// cash reconciliation total.
 func (r *OrderRepository) ListPOSByDateRange(ctx context.Context, start, end time.Time) ([]model.Order, error) {
 	var items []model.Order
 	err := r.db.WithContext(ctx).
-		Where("channel = ? AND created_at >= ? AND created_at < ?", model.ChannelPOS, start, end).
+		Where("channel = ? AND created_at >= ? AND created_at < ? AND deleted_at IS NULL", model.ChannelPOS, start, end).
 		Order("created_at ASC").
 		Find(&items).Error
 	if err != nil {
@@ -223,7 +237,7 @@ type SetShippingCostParams struct {
 func (r *OrderRepository) SetShippingCostAndAdvance(ctx context.Context, p SetShippingCostParams) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		res := tx.Model(&model.Order{}).
-			Where("id = ? AND status = ?", p.OrderID, p.FromStatus).
+			Where("id = ? AND status = ? AND deleted_at IS NULL", p.OrderID, p.FromStatus).
 			Updates(map[string]any{
 				"shipping_cost": p.ShippingCost,
 				"total":         p.NewTotal,
@@ -285,7 +299,7 @@ func (r *OrderRepository) AdvanceStatus(ctx context.Context, p AdvanceStatusPara
 		}
 		err := tx.Table("orders").
 			Select("status").
-			Where("id = ?", p.OrderID).
+			Where("id = ? AND deleted_at IS NULL", p.OrderID).
 			Clauses(gormForUpdate()).
 			Take(&current).Error
 		if err != nil {
@@ -343,7 +357,7 @@ func (r *OrderRepository) ReassignCustomer(ctx context.Context, fromCustomerID, 
 	err := r.db.WithContext(ctx).
 		Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}}}).
 		Model(&moved).
-		Where("customer_id = ?", fromCustomerID).
+		Where("customer_id = ? AND deleted_at IS NULL", fromCustomerID).
 		Updates(map[string]any{
 			"customer_id": toCustomerID,
 			"updated_at":  gorm.Expr("NOW()"),
@@ -356,6 +370,190 @@ func (r *OrderRepository) ReassignCustomer(ctx context.Context, fromCustomerID, 
 		ids[i] = o.ID
 	}
 	return ids, nil
+}
+
+// ---------------------------------------------------------------------------
+// Super admin order tools (§ super admin order tools, migration 000025):
+// edit data pesanan, override status ke status manapun, soft-delete pesanan.
+// Each of the three methods below writes its `orders`/`order_state_history`
+// mutation AND its admin_audit_log row in the SAME transaction — an audit
+// entry must never exist without the change it describes actually landing,
+// or vice versa.
+// ---------------------------------------------------------------------------
+
+// UpdateFieldsParams — payload for a super-admin field-level correction
+// (order.edit). Fields is a raw column→value map (caller/service decides
+// which columns are allowed given the order's current status) — MAY be
+// empty (audit-only write, e.g. a call where every requested change turned
+// out to be a no-op against the CURRENT row).
+//
+// ExpectedStatus — the order status the SERVICE validated `Fields` against
+// (e.g. which fields are editable, whether the >=10-char financial reason
+// threshold applies) BEFORE opening this transaction. Non-empty means: lock
+// the row, and if its status has since changed, abort with ErrStaleState
+// instead of writing a validation the current row no longer matches (TOCTOU
+// guard — see EditOrder doc). Empty = no status guard (used by callers that
+// don't validate against status, if any).
+type UpdateFieldsParams struct {
+	OrderID        uuid.UUID
+	ExpectedStatus string
+	Fields         map[string]any
+	Audit          *model.AdminAuditLog
+}
+
+// UpdateFields applies an admin-driven partial update to `orders` columns +
+// writes the matching admin_audit_log row atomically. The order row is
+// locked (SELECT ... FOR UPDATE) FIRST — same pattern as AdvanceStatus/
+// OverrideStatus — so ExpectedStatus is checked against the true concurrent
+// state, not a possibly-stale value the caller read earlier. Returns
+// ErrNotFound if the order doesn't exist or is already soft-deleted, or
+// ErrStaleState if ExpectedStatus no longer matches.
+func (r *OrderRepository) UpdateFields(ctx context.Context, p UpdateFieldsParams) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current struct{ Status string }
+		err := tx.Table("orders").
+			Select("status").
+			Where("id = ? AND deleted_at IS NULL", p.OrderID).
+			Clauses(gormForUpdate()).
+			Take(&current).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("lock order row: %w", err)
+		}
+		if p.ExpectedStatus != "" && current.Status != p.ExpectedStatus {
+			return ErrStaleState
+		}
+
+		if len(p.Fields) > 0 {
+			updates := make(map[string]any, len(p.Fields)+1)
+			for k, v := range p.Fields {
+				updates[k] = v
+			}
+			updates["updated_at"] = gorm.Expr("NOW()")
+			if err := tx.Model(&model.Order{}).
+				Where("id = ?", p.OrderID).
+				Updates(updates).Error; err != nil {
+				return fmt.Errorf("update order fields: %w", err)
+			}
+		}
+		return insertAuditLog(tx, p.Audit)
+	})
+}
+
+// OverrideStatusParams — payload for a super-admin forced status change
+// (order.override_status). Unlike AdvanceStatus, this does NOT validate
+// state.IsValidTransition — the service layer is the one that enforces
+// state.IsKnown(NewStatus) before calling this; the repository just moves it.
+type OverrideStatusParams struct {
+	OrderID   uuid.UUID
+	NewStatus string
+	ChangedBy *uuid.UUID
+	Note      *string // prefixed "[OVERRIDE] <reason>" by the service
+	Audit     *model.AdminAuditLog
+}
+
+// OverrideStatus force-sets an order's status, recording the ACTUAL previous
+// status (read under row lock, same pattern as AdvanceStatus) in
+// order_state_history + the admin_audit_log row, atomically. Returns the
+// previous status and ErrNotFound if the order doesn't exist / is deleted.
+func (r *OrderRepository) OverrideStatus(ctx context.Context, p OverrideStatusParams) (string, error) {
+	var fromStatus string
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current struct{ Status string }
+		err := tx.Table("orders").
+			Select("status").
+			Where("id = ? AND deleted_at IS NULL", p.OrderID).
+			Clauses(gormForUpdate()).
+			Take(&current).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("lock order row: %w", err)
+		}
+		fromStatus = current.Status
+
+		if err := tx.Model(&model.Order{}).
+			Where("id = ?", p.OrderID).
+			Updates(map[string]any{
+				"status":     p.NewStatus,
+				"updated_at": gorm.Expr("NOW()"),
+			}).Error; err != nil {
+			return fmt.Errorf("override status: %w", err)
+		}
+		if err := insertHistory(tx, p.OrderID, &fromStatus, p.NewStatus, p.ChangedBy, p.Note); err != nil {
+			return err
+		}
+		return insertAuditLog(tx, p.Audit)
+	})
+	if err != nil {
+		return "", err
+	}
+	return fromStatus, nil
+}
+
+// SoftDeleteParams — payload for a super-admin soft-delete (order.delete).
+type SoftDeleteParams struct {
+	OrderID uuid.UUID
+	ActorID uuid.UUID
+	Reason  string
+	Audit   *model.AdminAuditLog
+}
+
+// SoftDelete stamps deleted_at/deleted_by/delete_reason + writes the
+// admin_audit_log row atomically. NEVER removes the row or anything
+// referencing it — every reading query elsewhere in this file filters
+// `deleted_at IS NULL` so the order simply stops appearing.
+//
+// The row is locked (SELECT ... FOR UPDATE) FIRST and its status re-checked
+// against state.IsDeletable — closing the TOCTOU window where the order gets
+// paid (or otherwise advanced) between the service's earlier read and this
+// write. Returns ErrNotFound if the order doesn't exist or is already
+// deleted (idempotent guard — a double-delete is rejected rather than
+// silently no-op'd), or ErrDeleteForbiddenStatus if the CURRENT status
+// disallows deletion (§ super admin order tools — order sudah dibayar harus
+// dibatalkan dulu).
+func (r *OrderRepository) SoftDelete(ctx context.Context, p SoftDeleteParams) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current struct{ Status string }
+		err := tx.Table("orders").
+			Select("status").
+			Where("id = ? AND deleted_at IS NULL", p.OrderID).
+			Clauses(gormForUpdate()).
+			Take(&current).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("lock order row: %w", err)
+		}
+		if !state.IsDeletable(state.Status(current.Status)) {
+			return ErrDeleteForbiddenStatus
+		}
+
+		if err := tx.Model(&model.Order{}).
+			Where("id = ?", p.OrderID).
+			Updates(map[string]any{
+				"deleted_at":    gorm.Expr("NOW()"),
+				"deleted_by":    p.ActorID,
+				"delete_reason": p.Reason,
+				"updated_at":    gorm.Expr("NOW()"),
+			}).Error; err != nil {
+			return fmt.Errorf("soft delete order: %w", err)
+		}
+		return insertAuditLog(tx, p.Audit)
+	})
+}
+
+// insertAuditLog writes one admin_audit_log row inside the caller's open
+// transaction `tx`. Shared by UpdateFields/OverrideStatus/SoftDelete above.
+func insertAuditLog(tx *gorm.DB, entry *model.AdminAuditLog) error {
+	if err := tx.Create(entry).Error; err != nil {
+		return fmt.Errorf("insert admin_audit_log: %w", err)
+	}
+	return nil
 }
 
 func isStatusAllowed(current, from string, allowed []string) bool {

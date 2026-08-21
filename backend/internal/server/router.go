@@ -229,6 +229,10 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	// orderSvc satisfies orderapi.OrderCommandService — needed by guest order
 	// verification (resi → order → CustomerID).
 	guestOrderSvc.SetOrderCommandService(orderSvc)
+	// Super admin order tools (§ super admin order tools) — audit log reader,
+	// wired via setter like SetNotifier so New()'s signature stays stable.
+	adminAuditRepo := orderrepo.NewAdminAuditLogRepository(d.DB)
+	orderSvc.SetAuditStore(adminAuditRepo)
 
 	// --- Wiring modul payment ---
 	paymentProofRepo := paymentrepo.NewProofRepository(d.DB)
@@ -308,6 +312,7 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 		SensitiveMessageTTL: d.Config.Notification.SensitiveMessageTTL,
 	})
 	orderSvc.SetNotifier(notifSvc)
+	orderSvc.SetNotificationCanceller(notifSvc)
 	paymentSvc.SetNotifier(notifSvc)
 	designSvc.SetNotifier(notifSvc)
 	productionSvc.SetNotifier(notifSvc)

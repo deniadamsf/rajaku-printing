@@ -34,4 +34,17 @@ func (h *Handler) RegisterRoutes(v1, public *gin.RouterGroup, auth authapi.Servi
 	admin.POST("/:resi/shipping-cost", authapi.RequirePermission("shipping.set_cost"), h.AdminSetShippingCost)
 	admin.POST("/:resi/confirm-pickup", authapi.RequirePermission("order.update_status"), h.AdminConfirmPickup)
 	admin.POST("/:resi/cancel", authapi.RequirePermission("order.cancel"), h.AdminCancel)
+
+	// Super admin order tools (§ super admin order tools) — edit data
+	// pesanan, override status ke status manapun, soft-delete pesanan.
+	admin.PATCH("/:resi", authapi.RequirePermission("order.edit"), h.AdminEditOrder)
+	admin.POST("/:resi/override-status", authapi.RequirePermission("order.override_status"), h.AdminOverrideStatus)
+	admin.DELETE("/:resi", authapi.RequirePermission("order.delete"), h.AdminDeleteOrder)
+
+	// GET /admin/audit-log — bukan sub-resource /admin/orders, jadi mount
+	// grup terpisah langsung di v1 (pola sama seperti modul lain mounting
+	// beberapa /admin/* subgroup — lihat router.go).
+	auditAdmin := v1.Group("/admin/audit-log")
+	auditAdmin.Use(authapi.RequireAuth(auth), authapi.RequireUserType(authapi.UserTypeStaff))
+	auditAdmin.GET("", authapi.RequirePermission("audit.view"), h.AdminListAuditLog)
 }

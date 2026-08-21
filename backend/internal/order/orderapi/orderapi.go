@@ -34,6 +34,27 @@ var (
 	ErrDikirimOnPickup = errors.New("orderapi: mark-shipped only valid for metode_ambil=kirim")
 	// ErrShippingTrackingRequired — courier/tracking wajib saat mark dikirim.
 	ErrShippingTrackingRequired = errors.New("orderapi: courier & tracking number required when marking shipped")
+
+	// --- Super admin order tools (§ super admin order tools) ---
+
+	// ErrReasonRequired — admin tried to edit financial fields post-payment,
+	// override status, or soft-delete an order without a sufficiently
+	// detailed reason (min 10 chars for those; see EditOrder/OverrideStatus/
+	// SoftDeleteOrder doc for exactly when this applies).
+	ErrReasonRequired = errors.New("orderapi: reason required for this admin action")
+	// ErrFieldNotEditable — admin tried to edit an order that's in a terminal
+	// status (selesai/dibatalkan) — those are closed records; use
+	// OverrideStatus first if genuinely need to reopen one.
+	ErrFieldNotEditable = errors.New("orderapi: order status does not allow editing")
+	// ErrStatusUnknown — OverrideStatus target isn't a status state.IsKnown() recognizes.
+	ErrStatusUnknown = errors.New("orderapi: unknown target status")
+	// ErrDeleteNotAllowedPaid — SoftDeleteOrder was called on an order whose
+	// status is at/after `dibayar` (and isn't `dibatalkan`) — see
+	// state.IsDeletable. A paid order must be cancelled first (via
+	// OverrideStatus → dibatalkan) before it can be soft-deleted, otherwise it
+	// would vanish from cash reconciliation (ListPOSByDateRange etc. filter
+	// deleted_at IS NULL) without a trace.
+	ErrDeleteNotAllowedPaid = errors.New("orderapi: order already paid — batalkan dulu sebelum dihapus")
 )
 
 // OrderSummary — projection modul lain (payment, notification, POS) butuh baca

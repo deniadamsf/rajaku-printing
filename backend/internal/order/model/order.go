@@ -90,6 +90,26 @@ type Order struct {
 	CreatedBy *uuid.UUID `gorm:"type:uuid"                              json:"created_by,omitempty"`
 	CreatedAt time.Time  `gorm:"not null;default:now()"                 json:"created_at"`
 	UpdatedAt time.Time  `gorm:"not null;default:now()"                 json:"updated_at"`
+
+	// Soft delete (§ super admin order tools, migration 000025). NEVER hard
+	// delete an order — every reading query in repository.go MUST filter
+	// `deleted_at IS NULL` so a "deleted" order stops showing up anywhere
+	// (admin list, resi lookup, customer history, POS rekap, public tracking)
+	// while the row + everything referencing it (payment proofs, design
+	// files, invoices, state history) stays intact for audit/rekap.
+	//
+	// PRECISELY BECAUSE deletion makes an order invisible to POS
+	// rekonsiliasi (ListPOSByDateRange also filters deleted_at IS NULL),
+	// an order that's already `dibayar` or later CANNOT be soft-deleted
+	// directly — state.IsDeletable(Status) gates this in both
+	// service.SoftDeleteOrder (early check) and
+	// repository.OrderRepository.SoftDelete (authoritative, row-locked
+	// re-check). A paid order must be cancelled (→ Dibatalkan) FIRST; only
+	// pre-payment statuses and Dibatalkan itself may be deleted, so a
+	// deleted order was, by construction, never counted as revenue.
+	DeletedAt    *time.Time `gorm:"column:deleted_at"                     json:"deleted_at,omitempty"`
+	DeletedBy    *uuid.UUID `gorm:"type:uuid;column:deleted_by"           json:"deleted_by,omitempty"`
+	DeleteReason *string    `gorm:"column:delete_reason"                  json:"delete_reason,omitempty"`
 }
 
 func (Order) TableName() string { return "orders" }

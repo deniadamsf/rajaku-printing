@@ -51,3 +51,9 @@ logs/
 
 # ==== Docker volumes (local dev) ====
 .docker-data/
+
+# Berkas kredensial yang tidak boleh ikut ter-commit
+Oauth*
+oauth*.txt
+*credentials*.json
+client_secret*.json

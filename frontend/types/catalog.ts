@@ -17,6 +17,8 @@ export interface CatalogProduct {
   category: string
   pricing_type: PricingType | string
   display_order: number
+  /** Foto produk asli diunggah admin. Kosong/null → UI jatuh ke artwork ilustrasi. */
+  image_url?: string | null
 }
 
 export interface CatalogPricingRow {

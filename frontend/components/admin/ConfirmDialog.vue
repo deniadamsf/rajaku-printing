@@ -6,6 +6,11 @@
  * Variant:
  *   - default: primary CTA warna ink-950 (netral serious)
  *   - danger:  primary CTA brand crimson (§26.5 destructive pakai brand, bukan rose)
+ *
+ * Slot default (opsional): konten tambahan yang dirender antara `message` dan
+ * tombol aksi — dipakai mis. saat perubahan butuh tampilan nilai lama vs baru
+ * berdampingan (`/admin/pengaturan` nomor rekening) supaya admin bisa baca
+ * ulang sebelum konfirmasi, bukan cuma kalimat prosa.
  */
 const props = withDefaults(
   defineProps<{
@@ -21,6 +26,7 @@ const props = withDefaults(
   {
     confirmLabel: 'Konfirmasi',
     cancelLabel: 'Batal',
+    message: '',
     variant: 'default',
     loading: false,
   },
@@ -28,8 +34,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'update:open', v: boolean): void
-  (e: 'confirm'): void
-  (e: 'cancel'): void
+  (e: 'confirm' | 'cancel'): void
 }>()
 
 function close() {
@@ -59,6 +64,9 @@ const confirmClass = computed(() =>
         >
           <h3 class="font-serif text-lg font-semibold text-ink-950">{{ title }}</h3>
           <p v-if="message" class="mt-2 text-sm text-ink-500 leading-relaxed">{{ message }}</p>
+          <!-- Slot opsional: konten tambahan sebelum tombol aksi, mis. bandingkan
+               nilai lama vs baru berdampingan untuk perubahan sensitif (§26). -->
+          <slot />
           <div class="mt-5 flex justify-end gap-2">
             <button
               type="button"

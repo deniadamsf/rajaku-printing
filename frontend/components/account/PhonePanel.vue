@@ -26,6 +26,14 @@ import { isValidIndonesianPhone, maskPhoneDisplay } from '~/utils/phone'
 const auth = useAuthStore()
 const accountPhone = useAccountPhone()
 
+/**
+ * `merged` — dipancarkan setelah nomor tersimpan DAN ada order lama yang ikut
+ * pindah ke akun ini (§11). Halaman akun memakainya untuk memuat ulang daftar
+ * pesanan: tanpa ini, pesan sukses menjanjikan riwayat bertambah sementara
+ * daftar di bawahnya masih menampilkan keadaan lama sampai user reload manual.
+ */
+const emit = defineEmits<{ merged: [count: number] }>()
+
 type Phase = 'view' | 'edit' | 'conflict' | 'otp' | 'blocked'
 const phase = ref<Phase>('view')
 // Pesan untuk phase 'blocked' — nomor yang tidak bisa direbut dengan cara apa pun.
@@ -74,6 +82,10 @@ const attemptsExhausted = ref(false)
 const resendIn = ref(0)
 const otpInputRef = ref<HTMLInputElement | null>(null)
 const successMsg = ref('')
+// Jumlah order lama (mis. bekas order kasir) yang ikut pindah ke akun ini
+// pada penyimpanan terakhir — dipakai untuk menampilkan tautan "Lihat
+// riwayat pesanan" di bawah successMsg. Selalu diset bareng successMsg.
+const mergedOrders = ref(0)
 
 const canResend = computed(() => resendIn.value <= 0)
 
@@ -136,8 +148,13 @@ async function proceedWithPhone(phone: string) {
   if (!check.otp_required) {
     const res = await accountPhone.savePhone({ phone })
     auth.setPhone(res.phone, res.phone_verified)
+    mergedOrders.value = res.merged_orders
+    if (res.merged_orders > 0) emit('merged', res.merged_orders)
+    const baseMsg = check.reason === 'self_verified' ? 'Nomor WA sudah terverifikasi.' : 'Nomor WA tersimpan.'
     successMsg.value =
-      check.reason === 'self_verified' ? 'Nomor WA sudah terverifikasi.' : 'Nomor WA tersimpan.'
+      res.merged_orders > 0
+        ? `${baseMsg} ${res.merged_orders} pesanan lama dari nomor ini ikut masuk ke riwayatmu.`
+        : baseMsg
     phase.value = 'view'
     clearSuccessSoon()
     return
@@ -299,7 +316,12 @@ async function onSubmitOtp() {
   try {
     const res = await accountPhone.savePhone({ phone: conflictPhone.value, otp: otpCode.value })
     auth.setPhone(res.phone, res.phone_verified)
-    successMsg.value = 'Nomor WA terverifikasi.'
+    mergedOrders.value = res.merged_orders
+    if (res.merged_orders > 0) emit('merged', res.merged_orders)
+    successMsg.value =
+      res.merged_orders > 0
+        ? `Nomor WA terverifikasi. ${res.merged_orders} pesanan lama dari nomor ini ikut masuk ke riwayatmu.`
+        : 'Nomor WA terverifikasi.'
     clearAllTimers()
     phase.value = 'view'
     clearSuccessSoon()
@@ -317,10 +339,19 @@ async function onSubmitOtp() {
     <template v-if="phase === 'view' && !currentPhone">
       <dt class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Nomor WA</dt>
       <dd class="mt-1 text-sm text-ink-500">Belum ada nomor tersimpan.</dd>
-      <p v-if="successMsg" class="mt-2 flex items-center gap-1.5 text-xs text-emerald-700">
-        <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-        {{ successMsg }}
-      </p>
+      <div v-if="successMsg" class="mt-2 text-xs">
+        <p class="flex items-center gap-1.5 text-emerald-700">
+          <CheckCircle2 class="h-3.5 w-3.5 flex-none" :stroke-width="1.75" />
+          {{ successMsg }}
+        </p>
+        <NuxtLink
+          v-if="mergedOrders > 0"
+          to="/akun#pesanan"
+          class="mt-1 inline-block font-medium text-brand-500 transition-colors hover:text-brand-600 hover:underline"
+        >
+          Lihat riwayat pesanan
+        </NuxtLink>
+      </div>
       <button
         type="button"
         class="mt-2 inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs font-semibold text-ink-900 transition-colors hover:bg-canvas-alt focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
@@ -353,10 +384,19 @@ async function onSubmitOtp() {
           Ubah
         </button>
       </div>
-      <p v-if="successMsg" class="mt-2 flex items-center gap-1.5 text-xs text-emerald-700">
-        <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-        {{ successMsg }}
-      </p>
+      <div v-if="successMsg" class="mt-2 text-xs">
+        <p class="flex items-center gap-1.5 text-emerald-700">
+          <CheckCircle2 class="h-3.5 w-3.5 flex-none" :stroke-width="1.75" />
+          {{ successMsg }}
+        </p>
+        <NuxtLink
+          v-if="mergedOrders > 0"
+          to="/akun#pesanan"
+          class="mt-1 inline-block font-medium text-brand-500 transition-colors hover:text-brand-600 hover:underline"
+        >
+          Lihat riwayat pesanan
+        </NuxtLink>
+      </div>
       <p v-else-if="isUnverified" class="mt-2 text-xs text-ink-500 leading-relaxed">
         Nomor ini belum dibuktikan kepemilikannya — normal untuk nomor yang disimpan tanpa verifikasi.
         <button

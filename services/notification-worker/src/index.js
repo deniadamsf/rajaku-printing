@@ -4,8 +4,10 @@
 import http from 'node:http';
 import pino from 'pino';
 import QRCode from 'qrcode-terminal';
+import QRImage from 'qrcode';
+import crypto from 'node:crypto';
 import { config } from './config.js';
-import { startWA, isReady, getLastQR } from './wa.js';
+import { startWA, isReady, getLastQR, getSelfNumber, unlinkSession } from './wa.js';
 import { startDispatcher, stopDispatcher } from './dispatcher.js';
 import { quotaSnapshot } from './quota.js';
 import { circuitSnapshot } from './circuit.js';
@@ -44,6 +46,58 @@ async function main() {
       }));
       return;
     }
+    // ---- Gerbang auth untuk endpoint yang membocorkan kredensial ----
+    // QR pairing SETARA kredensial: siapa pun yang memindainya menautkan
+    // WhatsApp-nya sendiri ke nomor toko dan bisa membaca/mengirim pesan
+    // atas nama toko. Sebelumnya endpoint ini terbuka tanpa auth sama
+    // sekali. /healthz sengaja tetap terbuka — cuma sinyal hidup/mati.
+    if (req.url === '/pairing' || req.url === '/pairing/logout' || req.url === '/qr') {
+      if (!hasValidSecret(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+    }
+
+    // GET /pairing — dipakai backend Go untuk halaman pairing di admin panel.
+    if (req.method === 'GET' && req.url === '/pairing') {
+      const qr = getLastQR();
+      const done = (dataUrl) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          wa_ready: isReady(),
+          self_number: getSelfNumber(),
+          qr_data_url: dataUrl,
+          quota: quotaSnapshot(),
+          circuit: circuitSnapshot(),
+          pacing: pacingSnapshot(),
+        }));
+      };
+      if (!qr) { done(null); return; }
+      QRImage.toDataURL(qr, { errorCorrectionLevel: 'M', margin: 1, width: 320 })
+        .then(done)
+        .catch((e) => {
+          log.error({ err: e.message }, 'gagal render QR jadi gambar');
+          done(null);
+        });
+      return;
+    }
+
+    // POST /pairing/logout — putuskan pairing supaya QR baru terbit.
+    if (req.method === 'POST' && req.url === '/pairing/logout') {
+      unlinkSession()
+        .then(() => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        })
+        .catch((e) => {
+          log.error({ err: e.message }, 'unlink session gagal');
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e.message }));
+        });
+      return;
+    }
+
     if (req.method === 'GET' && req.url === '/qr') {
       const qr = getLastQR();
       if (!qr) {
@@ -77,3 +131,15 @@ main().catch((err) => {
   log.fatal({ err: err.message, stack: err.stack }, 'worker failed to start');
   process.exit(1);
 });
+
+// hasValidSecret membandingkan header X-Internal-Secret dengan secret bersama
+// secara timing-safe. Header yang sama dipakai worker saat memanggil backend
+// (backendClient.js) — arah sebaliknya kini ikut terlindungi.
+function hasValidSecret(req) {
+  const got = req.headers['x-internal-secret'];
+  if (typeof got !== 'string') return false;
+  const a = Buffer.from(got);
+  const b = Buffer.from(config.internalSecret);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}

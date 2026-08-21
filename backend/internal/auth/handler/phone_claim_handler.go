@@ -77,18 +77,22 @@ func (h *PhoneClaimHandler) Claim(c *gin.Context) {
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, err.Error())
 		return
 	}
-	u, err := h.svc.Claim(c.Request.Context(), service.PhoneClaimInput{
+	out, err := h.svc.Claim(c.Request.Context(), service.PhoneClaimInput{
 		UserID: id.UserID,
 		Phone:  req.Phone,
 		OTP:    req.OTP,
+		// CallerIsStaff — gates ONLY the guest-absorption branch inside
+		// claimOther (§ phone-claim review finding #2); a staff caller can
+		// still freely add/change their own number via this same endpoint.
+		CallerIsStaff: id.UserType == authapi.UserTypeStaff,
 	})
 	if err != nil {
 		h.mapError(c, err)
 		return
 	}
-	resp := phoneClaimResponse{PhoneVerified: u.PhoneVerifiedAt != nil}
-	if u.Phone != nil {
-		resp.Phone = *u.Phone
+	resp := phoneClaimResponse{PhoneVerified: out.User.PhoneVerifiedAt != nil, MergedOrders: out.MergedOrders}
+	if out.User.Phone != nil {
+		resp.Phone = *out.User.Phone
 	}
 	httpx.OK(c, resp)
 }

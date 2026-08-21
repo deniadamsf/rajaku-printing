@@ -222,20 +222,6 @@ function fmtIDR(v?: number | null): string {
   }).format(v)
 }
 
-function fmtDateTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString('id-ID', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-  } catch {
-    return iso
-  }
-}
-
 // -------------------- submit --------------------
 async function onSubmit() {
   if (!canSubmit.value) return
@@ -303,6 +289,7 @@ function printStruk() {
     <AdminPageHeader
       title="POS / Kasir"
       subtitle="Buat order walk-in — pelanggan tidak perlu daftar. Nomor WA jadi identitas, bayar langsung di tempat."
+      class="print:hidden"
     />
 
     <!-- ============================ Sukses panel ============================ -->
@@ -320,40 +307,34 @@ function printStruk() {
         </div>
       </div>
 
-      <!-- Struk ringkas (printable) -->
-      <div id="struk" class="rounded-lg border border-hairline bg-canvas p-6 max-w-md print:border-0 print:shadow-none print:p-0">
-        <div class="text-center">
-          <p class="font-serif text-lg font-semibold text-ink-950">Rajaku Printing</p>
-          <p class="mt-0.5 text-xs text-ink-500">Struk Order Walk-in</p>
-        </div>
-        <div class="mt-4 border-t border-dashed border-hairline pt-4 space-y-1.5 text-sm">
-          <div class="flex justify-between">
-            <span class="text-ink-500">Resi</span>
-            <span class="font-mono font-semibold text-ink-950">{{ successResult.resi }}</span>
-          </div>
-          <div class="flex justify-between">
-            <span class="text-ink-500">Tanggal</span>
-            <span class="text-ink-900">{{ fmtDateTime(successResult.created_at) }}</span>
-          </div>
-          <div class="flex justify-between">
-            <span class="text-ink-500">Ambil</span>
-            <span class="text-ink-900 capitalize">{{ successResult.metode_ambil }}</span>
-          </div>
-          <div class="flex justify-between">
-            <span class="text-ink-500">Bayar</span>
-            <span class="text-ink-900 uppercase">{{ successResult.metode_bayar }}</span>
-          </div>
-          <div class="flex justify-between border-t border-dashed border-hairline pt-2 mt-2">
-            <span class="font-semibold text-ink-950">Total</span>
-            <span class="font-semibold text-ink-950">{{ fmtIDR(successResult.total) }}</span>
-          </div>
-        </div>
-        <div class="mt-4 border-t border-dashed border-hairline pt-4 text-center">
-          <p class="text-xs text-ink-500">Lacak pesanan Anda:</p>
-          <p class="mt-1 font-mono text-xs text-ink-700 break-all">{{ successResult.tracking_url }}</p>
-        </div>
-        <p class="mt-4 text-center text-xs text-ink-500">Terima kasih 🙏</p>
-      </div>
+      <!-- Struk ringkas (printable) — markup + CSS print + `@page` dinamis
+           hidup di ReceiptStruk.vue (dipakai bersama halaman Detail Order
+           untuk cetak ulang, lihat §12).
+
+           `is-paid` hardcoded true dan itu benar di sini: order POS baru
+           dibuat SETELAH kasir menerima uang tunai/QRIS di tempat, dan
+           backend langsung menyetelnya ke status `dibayar` (§11). Panel ini
+           cuma muncul kalau order itu sudah jadi. -->
+      <AdminReceiptStruk
+        :resi="successResult.resi"
+        :created-at="successResult.created_at"
+        :customer-name="successResult.customer_name"
+        :customer-phone="successResult.customer_phone"
+        :product-name="successResult.product_name"
+        :material-name="successResult.material_name"
+        :width-cm="successResult.width_cm"
+        :height-cm="successResult.height_cm"
+        :quantity="successResult.quantity"
+        :unit-price="successResult.unit_price"
+        :subtotal="successResult.subtotal"
+        :shipping-cost="successResult.shipping_cost"
+        :total="successResult.total"
+        :metode-ambil="successResult.metode_ambil"
+        :metode-bayar="successResult.metode_bayar"
+        :tracking-url="successResult.tracking_url"
+        :is-paid="true"
+        :width-mm="successResult.receipt_width_mm"
+      />
 
       <div class="flex flex-wrap gap-2 print:hidden">
         <button
@@ -859,10 +840,5 @@ function printStruk() {
   </section>
 </template>
 
-<style scoped>
-@media print {
-  :global(body) {
-    background: white;
-  }
-}
-</style>
+<!-- CSS print & isolasi #struk sekarang hidup di components/admin/ReceiptStruk.vue
+     (dipakai bersama halaman Detail Order untuk cetak ulang, §12). -->

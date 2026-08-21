@@ -12,6 +12,10 @@ export default defineNuxtConfig({
     '@vueuse/nuxt',
     '@nuxtjs/google-fonts',
     '@tresjs/nuxt',
+    // Menyediakan `eslint.config.mjs` yang sadar auto-import Nuxt (useHead,
+    // ref, computed, dst tidak dilaporkan sebagai undefined) — lihat
+    // eslint.config.mjs di root frontend.
+    '@nuxt/eslint',
   ],
 
   // TresJS devtools tab hanya berguna waktu dev; matikan di build produksi

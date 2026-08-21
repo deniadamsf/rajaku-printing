@@ -170,7 +170,7 @@ onUnmounted(() => {
             width="1000"
             height="562"
             class="w-full rounded-lg object-contain"
-          />
+          >
 
           <div class="mt-4 text-center">
             <p class="text-sm text-canvas/80">{{ current.caption }}</p>

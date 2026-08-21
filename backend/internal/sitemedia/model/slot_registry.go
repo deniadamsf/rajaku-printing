@@ -38,6 +38,13 @@ const (
 	SlotProses4 SlotKey = "proses_4"
 	SlotProses5 SlotKey = "proses_5"
 	SlotProses6 SlotKey = "proses_6"
+	SlotProses7 SlotKey = "proses_7"
+	SlotProses8 SlotKey = "proses_8"
+
+	SlotBahanDetail SlotKey = "bahan_detail"
+
+	SlotTentangWorkshop SlotKey = "tentang_workshop"
+	SlotTentangTim      SlotKey = "tentang_tim"
 
 	SlotOGImage SlotKey = "og_image"
 
@@ -123,6 +130,41 @@ var Registry = []SlotDef{
 		Description:       "Ilustrasi langkah keenam alur proses cetak di landing page.",
 		SuggestedWidthPx:  800,
 		SuggestedHeightPx: 600,
+	},
+	{
+		Key:               SlotProses7,
+		Label:             "Langkah Proses 7",
+		Description:       "Detail panel kontrol & tabung tinta CMYK mesin cetak, dipakai alur proses cetak di landing page.",
+		SuggestedWidthPx:  800,
+		SuggestedHeightPx: 800,
+	},
+	{
+		Key:               SlotProses8,
+		Label:             "Langkah Proses 8",
+		Description:       "Detail print-head/carriage saat mencetak, dipakai alur proses cetak di landing page.",
+		SuggestedWidthPx:  1000,
+		SuggestedHeightPx: 750,
+	},
+	{
+		Key:               SlotBahanDetail,
+		Label:             "Foto Bahan & Material",
+		Description:       "Foto close-up bahan/roll banner untuk section spesifikasi bahan di landing page.",
+		SuggestedWidthPx:  1200,
+		SuggestedHeightPx: 900,
+	},
+	{
+		Key:               SlotTentangWorkshop,
+		Label:             "Foto Workshop (Tentang Kami)",
+		Description:       "Foto tempat/workshop untuk halaman Tentang Kami.",
+		SuggestedWidthPx:  1600,
+		SuggestedHeightPx: 1000,
+	},
+	{
+		Key:               SlotTentangTim,
+		Label:             "Foto Tim (Tentang Kami)",
+		Description:       "Foto tim/operator untuk halaman Tentang Kami.",
+		SuggestedWidthPx:  1200,
+		SuggestedHeightPx: 900,
 	},
 	{
 		Key:               SlotOGImage,

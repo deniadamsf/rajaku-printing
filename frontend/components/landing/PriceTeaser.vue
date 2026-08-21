@@ -11,7 +11,7 @@
  * quote gagal), empty (katalog belum di-seed) — semua degrade rapi, tidak pernah
  * pecah kalau backend kosong.
  */
-import { ArrowRight, Calculator, Loader2, PackageSearch } from '@lucide/vue'
+import { ArrowRight, Calculator, Loader2 } from '@lucide/vue'
 import type { CatalogProduct, CatalogProductDetail, CatalogQuote } from '~/types/catalog'
 import { ApiError } from '~/composables/useApi'
 
@@ -129,7 +129,21 @@ function fmtIDR(v?: number | null): string {
 </script>
 
 <template>
-  <section id="estimasi-harga" class="bg-canvas-alt">
+  <!--
+    Section ini HILANG total kalau katalog tidak bisa dimuat, bukan berubah jadi
+    kotak "kalkulator belum bisa dimuat". Alasannya: backend sering mati di
+    lingkungan pemilik, dan kotak error sepanjang satu layar adalah yang paling
+    membuat landing terasa rusak. Daftar produk & tautan katalog sudah dijamin
+    tampil oleh `ServicesSection` (punya fallback statis), jadi menyembunyikan
+    kalkulator tidak menghilangkan informasi apa pun dari halaman.
+    `productsPending` tetap dipertahankan supaya skeleton muncul saat navigasi
+    sisi klien, bukan section yang berkedip hilang lalu muncul.
+  -->
+  <section
+    v-if="!productsError && (productsPending || products.length > 0)"
+    id="estimasi-harga"
+    class="bg-canvas-alt"
+  >
     <div class="mx-auto max-w-6xl px-4 py-16 md:py-24">
       <div class="max-w-2xl">
         <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Estimasi Harga</p>
@@ -142,41 +156,11 @@ function fmtIDR(v?: number | null): string {
         </p>
       </div>
 
-      <!-- Error fetch produk -->
-      <div
-        v-if="productsError"
-        class="mt-8 rounded-lg border border-hairline bg-canvas p-6 text-sm text-ink-500 md:p-8"
-      >
-        Kalkulator belum bisa dimuat saat ini. Silakan cek langsung di
-        <NuxtLink to="/katalog" class="font-medium text-brand-500 underline underline-offset-2">
-          halaman katalog
-        </NuxtLink>.
-      </div>
-
       <!-- Loading skeleton -->
       <div
-        v-else-if="productsPending"
+        v-if="productsPending"
         class="mt-8 h-56 animate-pulse rounded-lg border border-hairline bg-canvas md:p-8"
       />
-
-      <!-- Empty state -->
-      <div
-        v-else-if="products.length === 0"
-        class="mt-8 rounded-lg border border-hairline bg-canvas p-8 text-center md:p-10"
-      >
-        <PackageSearch class="mx-auto h-6 w-6 text-ink-400" :stroke-width="1.5" />
-        <p class="mt-3 text-sm font-semibold text-ink-900">Katalog sedang disiapkan</p>
-        <p class="mt-1 text-sm text-ink-500">
-          Estimasi harga akan tersedia setelah katalog produk lengkap. Hubungi kami langsung untuk
-          kebutuhan cetak Anda.
-        </p>
-        <NuxtLink
-          to="/order"
-          class="mt-5 inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-5 py-2.5 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
-        >
-          Order Banner
-        </NuxtLink>
-      </div>
 
       <!-- Widget -->
       <div v-else class="mt-8 rounded-lg border border-hairline bg-canvas p-6 shadow-sm md:p-8">

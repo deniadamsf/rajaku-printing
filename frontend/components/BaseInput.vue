@@ -12,7 +12,7 @@ interface Props {
   helper?: string
 }
 
-const props = withDefaults(defineProps<Props>(), {
+withDefaults(defineProps<Props>(), {
   type: 'text',
   placeholder: '',
   autocomplete: 'off',

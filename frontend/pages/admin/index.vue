@@ -5,7 +5,7 @@ definePageMeta({
 })
 
 useSeoMeta({
-  title: 'Dashboard — Admin Rajaku Printing',
+  title: 'Dashboard — Admin',
 })
 
 const auth = useAuthStore()

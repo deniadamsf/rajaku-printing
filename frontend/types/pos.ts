@@ -36,4 +36,27 @@ export interface PosCreateOrderResult {
   tracking_url: string
   invoice_url?: string
   invoice_number?: string
+  /** Lebar kertas struk kasir (58 atau 80mm) — dipakai untuk `@page` saat cetak struk. */
+  receipt_width_mm: number
+
+  // Rincian pelanggan & item — dipakai `ReceiptStruk.vue` supaya struk yang
+  // dicetak menyebut nama pembeli & barang yang dibeli, bukan cuma
+  // resi/tanggal/total.
+  customer_name: string
+  customer_phone: string
+  product_name: string
+  material_name: string
+  width_cm: number
+  height_cm: number
+  quantity: number
+  unit_price: number
+  subtotal: number
+  /** undefined kalau pickup / belum di-set (§8). */
+  shipping_cost?: number
+}
+
+/** Konfigurasi lebar kertas struk aktif — GET /admin/pos/receipt-config (§12, dipakai fitur cetak ulang di Detail Order). */
+export interface PosReceiptConfig {
+  width_mm: number
+  allowed_widths_mm: number[]
 }

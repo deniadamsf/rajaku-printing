@@ -13,6 +13,7 @@ func (h *Handler) RegisterRoutes(v1 *gin.RouterGroup) {
 	{
 		g.GET("/products", h.ListProducts)
 		g.GET("/products/:slug", h.GetProductBySlug)
+		g.GET("/product-images/:id", h.ServeProductImage)
 		g.GET("/materials", h.ListMaterials)
 		g.POST("/quote", h.Quote)
 	}
@@ -34,6 +35,8 @@ func (h *Handler) RegisterRoutes(v1 *gin.RouterGroup) {
 //	PATCH  /admin/catalog/products/:id             update
 //	POST   /admin/catalog/products/:id/activate
 //	POST   /admin/catalog/products/:id/deactivate
+//	POST   /admin/catalog/products/:id/image       upload/ganti gambar kartu produk (multipart, field "file")
+//	DELETE /admin/catalog/products/:id/image       kosongkan gambar produk
 //
 //	POST   /admin/catalog/products/:id/pricings    add pricing row
 //	PATCH  /admin/catalog/pricings/:pid            update pricing row
@@ -62,6 +65,8 @@ func (h *Handler) RegisterAdminRoutes(v1 *gin.RouterGroup, auth authapi.Service)
 	g.PATCH("/products/:id", h.AdminUpdateProduct)
 	g.POST("/products/:id/activate", h.AdminActivateProduct)
 	g.POST("/products/:id/deactivate", h.AdminDeactivateProduct)
+	g.POST("/products/:id/image", h.AdminUploadProductImage)
+	g.DELETE("/products/:id/image", h.AdminDeleteProductImage)
 
 	// Pricings (nested create under product; individual ops use /pricings/:pid)
 	g.POST("/products/:id/pricings", h.AdminCreatePricing)

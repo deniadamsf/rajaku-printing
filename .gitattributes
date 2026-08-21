@@ -1,0 +1,35 @@
+# Normalisasi akhir-baris lintas platform.
+#
+# Repo ini dikerjakan dari Windows (CRLF) dan macOS (LF) sekaligus. Tanpa
+# aturan ini, satu commit dari OS yang berbeda bisa membuat SELURUH baris di
+# sebuah file terlihat berubah, sehingga penggabungan cabang menghasilkan
+# konflik palsu di puluhan file padahal isinya identik.
+#
+# `text=auto` = git menyimpan semua file teks dengan LF di dalam repo, lalu
+# mengubahnya ke akhir-baris asli tiap OS saat file diambil ke folder kerja.
+* text=auto
+
+# Skrip shell & Dockerfile WAJIB LF walau diambil di Windows — CRLF membuat
+# skrip gagal jalan di dalam container Linux.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+docker-entrypoint* text eol=lf
+
+# File biner: jangan pernah diutak-atik git, konversi akhir-baris akan
+# merusaknya.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.avif binary
+*.mp4 binary
+*.webm binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.zip binary

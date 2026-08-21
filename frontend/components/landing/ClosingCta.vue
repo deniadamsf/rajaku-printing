@@ -13,11 +13,21 @@
  * Reveal fade+y sekali saat masuk viewport, bukan bagian dari momen orkestrasi
  * utama (hero) — tenang & singkat.
  */
-import { ArrowRight, Clock, MapPin, Phone, Search } from '@lucide/vue'
+import { ArrowRight, Clock, MapPin, MessageCircle, Phone, Search } from '@lucide/vue'
 import { motion } from 'motion-v'
 import { business } from '~/utils/business'
 
 const prefersReduced = usePrefersReducedMotion()
+
+// Nomor WA dari sumber tunggal `business.whatsapp` (§13: sudah format 62xxx,
+// syarat wajib supaya tautan wa.me valid). Pesan awal di-encode di sini,
+// jangan ditulis manual dengan %20 — gampang salah dan sulit diaudit.
+const waHref = computed(() => {
+  const text = encodeURIComponent(
+    'Halo Rajaku Printing, saya mau tanya soal cetak banner.',
+  )
+  return `https://wa.me/${business.whatsapp}?text=${text}`
+})
 
 // Bisa diganti admin (/admin/site-media, slot brand_logo_mark) tanpa deploy
 // ulang. `await ready` — komponen ini SSR normal (tidak di dalam <ClientOnly>).
@@ -27,9 +37,19 @@ const logoMark = computed(() => resolveMedia('brand_logo_mark'))
 </script>
 
 <template>
-  <section class="mx-auto max-w-6xl px-4 py-16 md:py-24">
+  <!--
+    Penutup halaman sengaja full-bleed gelap, bukan kartu gelap di atas canvas
+    terang: section terakhir yang melebar penuh memberi "titik akhir" yang tegas
+    dan menutup ritme terang-gelap halaman. Ornamen busur emas dipasang sangat
+    tipis di belakang — dekorasi, tidak boleh sampai bersaing dengan teks.
+  -->
+  <section class="relative overflow-hidden bg-ink-950">
+    <div class="absolute inset-0" aria-hidden="true">
+      <ArtOrnament variant="arc" :opacity="0.5" />
+    </div>
+
     <motion.div
-      class="rounded-lg border border-hairline bg-ink-950 p-8 md:p-12"
+      class="relative mx-auto max-w-6xl px-4 py-20 md:py-28"
       :initial="{ opacity: 0, y: prefersReduced ? 0 : 16 }"
       :while-in-view="{ opacity: 1, y: 0 }"
       :in-view-options="{ once: true, margin: '-100px' }"
@@ -45,7 +65,7 @@ const logoMark = computed(() => resolveMedia('brand_logo_mark'))
             height="512"
             loading="lazy"
             class="mx-auto h-12 w-12 opacity-90 md:mx-0"
-          />
+          >
           <h2 class="mt-5 text-2xl md:text-3xl font-serif font-semibold tracking-tight text-canvas">
             Siap cetak banner Anda?
           </h2>
@@ -70,6 +90,19 @@ const logoMark = computed(() => resolveMedia('brand_logo_mark'))
               Lacak Resi
             </NuxtLink>
           </div>
+
+          <p class="mt-6 text-sm text-canvas/60">
+            Mau tanya-tanya dulu?
+            <a
+              :href="waHref"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="ml-1 inline-flex items-center gap-1.5 rounded-sm font-medium text-gold-400 transition-colors hover:text-gold-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/50 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950"
+            >
+              <MessageCircle class="h-4 w-4" :stroke-width="1.5" />
+              Chat WhatsApp
+            </a>
+          </p>
         </div>
 
         <dl class="space-y-4 border-t border-canvas/15 pt-6 md:border-t-0 md:border-l md:pt-0 md:pl-10">

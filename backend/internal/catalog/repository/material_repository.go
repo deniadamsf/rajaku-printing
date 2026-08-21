@@ -43,6 +43,20 @@ func (r *MaterialRepository) FindByID(ctx context.Context, id uuid.UUID) (*model
 	return &m, nil
 }
 
+// FindByCode returns the material with the given unique code, or ErrNotFound.
+// Dipakai untuk idempotency check (mis. cmd/seedcatalog get-or-create by code).
+func (r *MaterialRepository) FindByCode(ctx context.Context, code string) (*model.Material, error) {
+	var m model.Material
+	err := r.db.WithContext(ctx).Where("code = ?", code).First(&m).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("find material by code %q: %w", code, err)
+	}
+	return &m, nil
+}
+
 // ListAll returns every material, active + inactive. Admin-only.
 func (r *MaterialRepository) ListAll(ctx context.Context) ([]model.Material, error) {
 	var items []model.Material

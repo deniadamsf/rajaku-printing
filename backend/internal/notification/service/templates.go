@@ -30,9 +30,9 @@ func (c templateCtx) trackingURL() string {
 //   - payment_verified      — dari payment.ApproveProof
 //   - payment_rejected      — dari payment.RejectProof
 //   - design_approved       — dari design.StaffVerifyUpload (upload path) atau
-//                              design.ApproveDraft (request path — konfirmasi ke customer)
+//     design.ApproveDraft (request path — konfirmasi ke customer)
 //   - design_needs_revision — dari design.RequestRevision (konfirmasi ke customer
-//                              bahwa revisi diteruskan ke desainer)
+//     bahwa revisi diteruskan ke desainer)
 //   - ready_pickup          — dari production.MarkSiapKirimAtauAmbil (pickup path)
 //   - ready_ship            — dari production.MarkSiapKirimAtauAmbil (kirim path)
 //   - shipped               — dari production.MarkDikirim (dgn courier + tracking)

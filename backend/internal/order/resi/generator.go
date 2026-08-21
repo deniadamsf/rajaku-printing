@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	Prefix     = "RJK-"
-	SuffixLen  = 8
-	Charset    = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // 32 chars, aman dari confusables
+	Prefix    = "RJK-"
+	SuffixLen = 8
+	Charset   = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // 32 chars, aman dari confusables
 )
 
 var (

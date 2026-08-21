@@ -232,7 +232,7 @@ function fmtDate(s: string | null | undefined): string {
               v-model="form.slug"
               type="text"
               class="flex-1 bg-transparent outline-none font-mono text-xs text-ink-900"
-            />
+            >
           </div>
         </div>
 
@@ -306,7 +306,7 @@ function fmtDate(s: string | null | undefined): string {
               alt="cover"
               class="w-full rounded-md border border-hairline aspect-video object-cover"
               loading="lazy"
-            />
+            >
             <button
               type="button"
               class="mt-2 text-xs text-brand-700 hover:text-brand-800 transition-colors"
@@ -331,7 +331,7 @@ function fmtDate(s: string | null | undefined): string {
               accept="image/jpeg,image/png,image/webp"
               class="hidden"
               @change="onCoverChange"
-            />
+            >
           </label>
         </div>
 

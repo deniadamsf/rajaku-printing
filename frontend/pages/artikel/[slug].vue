@@ -8,11 +8,21 @@
  * Rendering:
  *   - Markdown → HTML server-side via `marked` di useAsyncData (bundle
  *     ke server chunk saja saat SSR; client hydration hanya butuh HTML string).
+ *   - Hasil `marked` WAJIB lewat DOMPurify sebelum masuk `v-html`. Markdown
+ *     mengizinkan HTML mentah, dan `marked` tidak menyanitasi apa pun sejak
+ *     opsi `sanitize`-nya dihapus. Tanpa ini, pemegang role "Admin Artikel"
+ *     (§10 — bukan super admin) bisa menanam <script> di badan artikel yang
+ *     lalu dieksekusi di browser SETIAP pengunjung halaman publik, termasuk
+ *     super admin — jalur naik hak akses, bukan sekadar defacement.
+ *     DOMPurify juga menutup vektor yang tidak tertutup oleh sekadar
+ *     melarang HTML mentah, mis. tautan `javascript:` dari sintaks Markdown
+ *     biasa `[teks](javascript:...)`.
  * Design:
  *   - Fraunces headline, Inter body dengan leading-relaxed, max-w-2xl untuk
  *     text-heavy, generous spacing.
  */
 import { marked } from 'marked'
+import DOMPurify from 'isomorphic-dompurify'
 import type { Article } from '~/types/cms'
 import { ApiError } from '~/composables/useApi'
 
@@ -34,7 +44,9 @@ const { data, error } = await useAsyncData<DetailPayload>(
   async () => {
     const article = await cms.getBySlug(slug.value)
     // marked.parse selalu string kalau input sync → cast safe.
-    const contentHTML = marked.parse(article.content_md, { async: false }) as string
+    const contentHTML = DOMPurify.sanitize(
+      marked.parse(article.content_md, { async: false }) as string,
+    )
     return { article, contentHTML }
   },
   { watch: [slug] },
@@ -53,6 +65,16 @@ if (error.value) {
 const article = computed(() => data.value?.article ?? null)
 const contentHTML = computed(() => data.value?.contentHTML ?? '')
 
+/**
+ * Estimasi waktu baca dari jumlah kata sumber Markdown (~200 kata/menit).
+ * Ini hitungan nyata dari isi artikel, bukan angka hiasan — dibulatkan ke atas
+ * dan minimal 1 menit supaya artikel pendek tidak tertulis "0 menit".
+ */
+const readingMinutes = computed(() => {
+  const words = (article.value?.content_md || '').trim().split(/\s+/).filter(Boolean).length
+  return Math.max(1, Math.ceil(words / 200))
+})
+
 const canonical = computed(() =>
   article.value ? `${config.public.appBaseUrl}/artikel/${article.value.slug}` : '',
 )
@@ -61,9 +83,10 @@ const coverURL = computed(() =>
   article.value?.cover_image_id ? cms.imageUrl(article.value.cover_image_id) : null,
 )
 
-const metaTitle = computed(() =>
-  (article.value?.meta_title || article.value?.title || '') + ' — Rajaku Printing',
-)
+// Tanpa suffix brand — `app.vue` titleTemplate sudah menambahkan
+// " — Rajaku Printing"; menambahkannya lagi di sini membuat judul tab berbunyi
+// "Judul — Rajaku Printing — Rajaku Printing".
+const metaTitle = computed(() => article.value?.meta_title || article.value?.title || '')
 const metaDesc = computed(
   () => article.value?.meta_description || article.value?.excerpt || '',
 )
@@ -152,6 +175,8 @@ function fmtDate(s?: string | null): string {
     <!-- Meta line -->
     <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
       {{ fmtDate(article.published_at) }}
+      <span class="mx-1.5 text-ink-300">&middot;</span>
+      {{ readingMinutes }} menit baca
     </p>
 
     <!-- Headline -->
@@ -168,12 +193,37 @@ function fmtDate(s?: string | null): string {
       <img
         :src="coverURL"
         :alt="article.title"
+        width="1280"
+        height="720"
         class="w-full aspect-[16/9] object-cover"
         loading="eager"
-      />
+      >
     </figure>
 
+    <!--
+      Artikel tanpa cover tetap dapat pemisah visual antara kepala dan badan
+      teks — pita ornamen tipis, bukan foto palsu. Bahasa visualnya sama dengan
+      kartu tanpa cover di /artikel supaya terbaca sebagai keputusan desain.
+    -->
+    <div
+      v-else
+      class="relative mt-10 aspect-[21/9] overflow-hidden rounded-lg border border-hairline bg-canvas-alt"
+      aria-hidden="true"
+    >
+      <div class="absolute inset-0">
+        <ArtOrnament variant="halftone" :opacity="0.8" />
+      </div>
+      <span
+        class="absolute inset-0 flex select-none items-center justify-center font-serif text-7xl font-semibold text-ink-200"
+      >
+        {{ article.title.trim().charAt(0).toUpperCase() }}
+      </span>
+    </div>
+
     <!-- Body -->
+    <!-- contentHTML sudah disanitasi DOMPurify di script setup di atas.
+         Lihat catatan XSS di header file sebelum mengubah baris ini. -->
+    <!-- eslint-disable-next-line vue/no-v-html -->
     <div class="mt-10 article-body" v-html="contentHTML" />
 
     <!-- Footer nav -->

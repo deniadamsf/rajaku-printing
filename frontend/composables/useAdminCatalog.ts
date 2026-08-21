@@ -52,6 +52,24 @@ export function useAdminCatalog() {
     return api.post<{ ok: boolean; is_active: boolean }>(`/admin/catalog/products/${id}/deactivate`)
   }
 
+  /**
+   * Ganti foto produk (multipart, field "file" — kontrak sama dengan
+   * `useAdminSiteMedia().upload`). Backend membalas detail produk terbaru,
+   * jadi pemanggil bisa langsung memakai `image_url` hasilnya tanpa refetch.
+   * Tipe file & ukuran divalidasi ulang di backend; validasi di UI hanya untuk
+   * memberi pesan lebih cepat, bukan pengganti.
+   */
+  function uploadProductImage(id: string, file: File): Promise<AdminProductDetail> {
+    const form = new FormData()
+    form.append('file', file)
+    return api.post<AdminProductDetail>(`/admin/catalog/products/${id}/image`, form)
+  }
+
+  /** Kosongkan foto produk — halaman publik kembali memakai artwork cadangan. */
+  function deleteProductImage(id: string): Promise<{ ok: boolean }> {
+    return api.delete<{ ok: boolean }>(`/admin/catalog/products/${id}/image`)
+  }
+
   // ---------- Pricings ----------
   function createPricing(productId: string, body: AdminPricingInput): Promise<AdminPricingRow> {
     return api.post<AdminPricingRow>(`/admin/catalog/products/${productId}/pricings`, body)
@@ -81,6 +99,8 @@ export function useAdminCatalog() {
     updateProduct,
     activateProduct,
     deactivateProduct,
+    uploadProductImage,
+    deleteProductImage,
     createPricing,
     updatePricing,
     activatePricing,

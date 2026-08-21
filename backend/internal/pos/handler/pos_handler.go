@@ -43,8 +43,8 @@ func mapDomainErr(c *gin.Context, err error) {
 }
 
 type createOrderBody struct {
-	CustomerName  string    `json:"customer_name"`
-	CustomerPhone string    `json:"customer_phone"`
+	CustomerName  string `json:"customer_name"`
+	CustomerPhone string `json:"customer_phone"`
 
 	ProductID  string `json:"product_id"`
 	MaterialID string `json:"material_id"`
@@ -115,6 +115,14 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 		return
 	}
 	httpx.Created(c, result)
+}
+
+// GET /admin/pos/receipt-config — lebar kertas struk aktif + daftar yang
+// didukung. Config display, bukan data kritis: kegagalan baca setting sudah
+// ditangani service (jatuh ke default), jadi endpoint ini selalu 200.
+func (h *Handler) ReceiptConfig(c *gin.Context) {
+	cfg := h.svc.ReceiptConfig(c.Request.Context())
+	httpx.OK(c, cfg)
 }
 
 // GET /admin/pos/reconciliation?date=YYYY-MM-DD — laporan harian.

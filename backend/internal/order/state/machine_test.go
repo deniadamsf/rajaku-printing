@@ -67,11 +67,11 @@ func TestValidTransitions_PickupPath(t *testing.T) {
 
 func TestInvalidTransitions(t *testing.T) {
 	cases := []struct{ from, to Status }{
-		{OrderMasuk, ProsesCetak},           // skip banyak step
-		{ProsesCetak, MenungguPembayaran},   // tidak boleh mundur
-		{Selesai, ProsesCetak},              // terminal
-		{Dibatalkan, ProsesCetak},           // terminal
-		{QC, "unknown"},                     // unknown target
+		{OrderMasuk, ProsesCetak},         // skip banyak step
+		{ProsesCetak, MenungguPembayaran}, // tidak boleh mundur
+		{Selesai, ProsesCetak},            // terminal
+		{Dibatalkan, ProsesCetak},         // terminal
+		{QC, "unknown"},                   // unknown target
 	}
 	for _, tc := range cases {
 		if IsValidTransition(tc.from, tc.to) {

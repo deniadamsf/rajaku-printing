@@ -16,17 +16,17 @@ import (
 // ---------- fakes ----------
 
 type fakeOrderCmd struct {
-	summary                 *orderapi.OrderSummary
-	summaryErr              error
-	cetakCalls              int
-	cetakErr                error
-	qcCalls                 int
-	siapCalls               int
-	dikirimCalls            int
-	dikirimLastCourier      string
-	dikirimLastTracking     string
-	dikirimErr              error
-	selesaiCalls            int
+	summary             *orderapi.OrderSummary
+	summaryErr          error
+	cetakCalls          int
+	cetakErr            error
+	qcCalls             int
+	siapCalls           int
+	dikirimCalls        int
+	dikirimLastCourier  string
+	dikirimLastTracking string
+	dikirimErr          error
+	selesaiCalls        int
 }
 
 func (f *fakeOrderCmd) FindSummaryByResi(context.Context, string) (*orderapi.OrderSummary, error) {
@@ -86,9 +86,9 @@ func (f *fakeOrderCmd) ListPOSOrdersByDate(_ context.Context, _ time.Time) ([]or
 }
 
 type fakeNotifier struct {
-	calls     int
-	lastKind  notificationapi.Kind
-	lastOrder uuid.UUID
+	calls      int
+	lastKind   notificationapi.Kind
+	lastOrder  uuid.UUID
 	lastExtras map[string]any
 }
 

@@ -6,6 +6,10 @@
  *   POST /admin/orders/:resi/design-drafts      — staff upload draft (multipart) — perm design.work
  *   POST /admin/orders/:resi/design-verify      — verifikasi customer_upload — perm design.approve
  *   POST /admin/orders/:resi/design-walkin-approve — POS instant approve (§11) — perm design.approve
+ *   POST /admin/orders/:resi/design-skip-upload — POS: lewati upload, file ada di
+ *                                                  komputer desainer bukan di sistem — wajib
+ *                                                  `note` (lokasi file) sbg jejak audit —
+ *                                                  perm design.approve
  *   GET  /design-files/:id/file                 — stream (auth req, Bearer header) — dipakai fetchFileBlob
  *
  * Endpoint yg dipakai customer:
@@ -38,6 +42,13 @@ export function useDesign(options: UseApiOptions = {}) {
 
   function walkinApprove(resi: string, note?: string): Promise<{ ok: boolean }> {
     return api.post<{ ok: boolean }>(`/admin/orders/${resi}/design-walkin-approve`, note ? { note } : undefined)
+  }
+
+  // skipUpload — lewati kewajiban upload untuk order POS: file desain sudah
+  // ada fisik di komputer desainer, tidak masuk sistem. `note` WAJIB diisi
+  // (lokasi file) sebagai jejak audit — backend menolak kalau kosong.
+  function skipUpload(resi: string, note: string): Promise<{ ok: boolean }> {
+    return api.post<{ ok: boolean }>(`/admin/orders/${resi}/design-skip-upload`, { note })
   }
 
   // Customer-side actions on a staff draft.
@@ -93,6 +104,7 @@ export function useDesign(options: UseApiOptions = {}) {
     listByResi,
     verifyUpload,
     walkinApprove,
+    skipUpload,
     approveDraft,
     requestRevision,
     uploadDraft,

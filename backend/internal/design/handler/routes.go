@@ -28,6 +28,7 @@ import (
 //	POST   /admin/orders/:resi/design-drafts          staff upload draft (design.work)
 //	POST   /admin/orders/:resi/design-verify          staff verify customer upload (design.approve)
 //	POST   /admin/orders/:resi/design-walkin-approve  POS instant approve (§11) (design.approve)
+//	POST   /admin/orders/:resi/design-skip-upload     POS skip upload — file sudah ada di komputer desainer (§11) (design.skip_upload)
 func (h *Handler) RegisterRoutes(v1 *gin.RouterGroup, auth authapi.Service) {
 	authed := v1.Group("")
 	authed.Use(authapi.RequireAuthAllowScope(auth, authapi.ScopeGuestOrder))
@@ -48,5 +49,7 @@ func (h *Handler) RegisterRoutes(v1 *gin.RouterGroup, auth authapi.Service) {
 			authapi.RequirePermission("design.approve"), h.StaffVerifyUpload)
 		admin.POST("/design-walkin-approve",
 			authapi.RequirePermission("design.approve"), h.StaffApproveWalkin)
+		admin.POST("/design-skip-upload",
+			authapi.RequirePermission("design.skip_upload"), h.StaffSkipUpload)
 	}
 }

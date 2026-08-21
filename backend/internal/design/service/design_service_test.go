@@ -14,6 +14,7 @@ import (
 	"github.com/rajaku-printing/backend/internal/design/designapi"
 	"github.com/rajaku-printing/backend/internal/design/model"
 	designrepo "github.com/rajaku-printing/backend/internal/design/repository"
+	"github.com/rajaku-printing/backend/internal/notification/notificationapi"
 	"github.com/rajaku-printing/backend/internal/order/orderapi"
 )
 
@@ -149,6 +150,8 @@ type fakeOrderCmd struct {
 	menungguApprovalErr   error
 	diverifikasiCalls     int
 	diverifikasiErr       error
+	diverifikasiNote      string
+	diverifikasiActor     *uuid.UUID
 }
 
 func (f *fakeOrderCmd) FindSummaryByResi(context.Context, string) (*orderapi.OrderSummary, error) {
@@ -174,8 +177,10 @@ func (f *fakeOrderCmd) MarkMenungguApprovalDesain(context.Context, uuid.UUID, *u
 	f.menungguApprovalCalls++
 	return f.menungguApprovalErr
 }
-func (f *fakeOrderCmd) MarkDesainDiverifikasi(context.Context, uuid.UUID, *uuid.UUID, string) error {
+func (f *fakeOrderCmd) MarkDesainDiverifikasi(_ context.Context, _ uuid.UUID, actor *uuid.UUID, note string) error {
 	f.diverifikasiCalls++
+	f.diverifikasiActor = actor
+	f.diverifikasiNote = note
 	return f.diverifikasiErr
 }
 func (f *fakeOrderCmd) MarkProsesCetak(context.Context, uuid.UUID, *uuid.UUID, string) error {
@@ -201,6 +206,15 @@ func (f *fakeOrderCmd) CreatePOSOrder(context.Context, orderapi.POSCreateOrderIn
 }
 func (f *fakeOrderCmd) ListPOSOrdersByDate(context.Context, time.Time) ([]orderapi.OrderSummary, error) {
 	return nil, nil
+}
+
+type fakeNotifier struct {
+	calls int
+}
+
+func (f *fakeNotifier) EnqueueOrderEvent(context.Context, notificationapi.Kind, uuid.UUID, map[string]any) error {
+	f.calls++
+	return nil
 }
 
 // ---------- helpers ----------
@@ -876,5 +890,137 @@ func TestUploadCustomerFile_StoresCanonicalMimeNotClientMime(t *testing.T) {
 	}
 	if !got.IsPreviewable {
 		t.Errorf("png must stay previewable")
+	}
+}
+
+// ---------- StaffSkipUpload (§11 POS shortcut — skip file upload) ----------
+
+func TestStaffSkipUpload_HappyPath(t *testing.T) {
+	staff := uuid.New()
+	orderID := uuid.New()
+	store := &fakeStore{}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: orderID, Resi: "RJK-POS1", CustomerID: uuid.New(),
+		Status: "dibayar", DesignSource: "upload", Channel: "pos",
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+	notifier := &fakeNotifier{}
+	svc.SetNotifier(notifier)
+
+	err := svc.StaffSkipUpload(context.Background(), SkipUploadInput{
+		Resi: "RJK-POS1", StaffID: staff, Note: "  file ada di komputer desainer, folder client/RJK-POS1  ",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if cmd.diverifikasiCalls != 1 {
+		t.Errorf("want MarkDesainDiverifikasi called, got %d", cmd.diverifikasiCalls)
+	}
+	// Note wajib tersimpan sebagai jejak audit — satu-satunya kompensasi atas
+	// file yang tidak masuk sistem — dan harus sudah ter-trim.
+	wantNote := "file ada di komputer desainer, folder client/RJK-POS1"
+	if cmd.diverifikasiNote != wantNote {
+		t.Errorf("note tersimpan want %q, got %q", wantNote, cmd.diverifikasiNote)
+	}
+	if cmd.diverifikasiActor == nil || *cmd.diverifikasiActor != staff {
+		t.Errorf("actor tersimpan want %s, got %v", staff, cmd.diverifikasiActor)
+	}
+	if notifier.calls != 0 {
+		t.Errorf("skip-upload flow harus tidak kirim notif WA (§11 pelanggan di depan kasir), got %d calls", notifier.calls)
+	}
+}
+
+func TestStaffSkipUpload_RequestSource_Rejected(t *testing.T) {
+	store := &fakeStore{}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-POS3", CustomerID: uuid.New(),
+		Status: "dibayar", DesignSource: "request", Channel: "pos",
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	err := svc.StaffSkipUpload(context.Background(), SkipUploadInput{
+		Resi: "RJK-POS3", StaffID: uuid.New(), Note: "salah pilih order",
+	})
+	if !errors.Is(err, designapi.ErrDesignSourceMismatch) {
+		t.Fatalf("want ErrDesignSourceMismatch, got %v", err)
+	}
+	if cmd.diverifikasiCalls != 0 {
+		t.Errorf("must not advance order request-desain lewat jalur skip-upload")
+	}
+}
+
+func TestStaffSkipUpload_WrongStatus_Rejected(t *testing.T) {
+	store := &fakeStore{}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-POS4", CustomerID: uuid.New(),
+		Status: "desain_diverifikasi", DesignSource: "upload", Channel: "pos",
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	err := svc.StaffSkipUpload(context.Background(), SkipUploadInput{
+		Resi: "RJK-POS4", StaffID: uuid.New(), Note: "klik dua kali",
+	})
+	if !errors.Is(err, designapi.ErrOrderNotDesignReady) {
+		t.Fatalf("want ErrOrderNotDesignReady, got %v", err)
+	}
+	if cmd.diverifikasiCalls != 0 {
+		t.Errorf("must not advance order yang sudah lewat status dibayar")
+	}
+}
+
+func TestStaffSkipUpload_ConcurrentStateChange_MapsToOrderStateChanged(t *testing.T) {
+	store := &fakeStore{}
+	cmd := &fakeOrderCmd{
+		summary: &orderapi.OrderSummary{
+			ID: uuid.New(), Resi: "RJK-POS5", CustomerID: uuid.New(),
+			Status: "dibayar", DesignSource: "upload", Channel: "pos",
+		},
+		diverifikasiErr: orderapi.ErrOrderStateChanged,
+	}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	err := svc.StaffSkipUpload(context.Background(), SkipUploadInput{
+		Resi: "RJK-POS5", StaffID: uuid.New(), Note: "staff lain klik bersamaan",
+	})
+	if !errors.Is(err, designapi.ErrOrderStateChanged) {
+		t.Fatalf("want designapi.ErrOrderStateChanged, got %v", err)
+	}
+}
+
+func TestStaffSkipUpload_OnlineChannel_Rejected(t *testing.T) {
+	store := &fakeStore{}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-ONLINE1", CustomerID: uuid.New(),
+		Status: "dibayar", DesignSource: "upload", Channel: "online",
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	err := svc.StaffSkipUpload(context.Background(), SkipUploadInput{
+		Resi: "RJK-ONLINE1", StaffID: uuid.New(), Note: "salah klik test",
+	})
+	if !errors.Is(err, designapi.ErrSkipUploadOnlyForPOS) {
+		t.Fatalf("want ErrSkipUploadOnlyForPOS, got %v", err)
+	}
+	if cmd.diverifikasiCalls != 0 {
+		t.Errorf("must not advance order online lewat jalur skip-upload")
+	}
+}
+
+func TestStaffSkipUpload_EmptyNote_Rejected(t *testing.T) {
+	store := &fakeStore{}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-POS2", CustomerID: uuid.New(),
+		Status: "dibayar", DesignSource: "upload", Channel: "pos",
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	err := svc.StaffSkipUpload(context.Background(), SkipUploadInput{
+		Resi: "RJK-POS2", StaffID: uuid.New(), Note: "   ",
+	})
+	if !errors.Is(err, designapi.ErrSkipNoteRequired) {
+		t.Fatalf("want ErrSkipNoteRequired, got %v", err)
+	}
+	if cmd.diverifikasiCalls != 0 {
+		t.Errorf("must not advance order tanpa note")
 	}
 }

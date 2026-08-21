@@ -54,7 +54,7 @@ async function onLogout() {
       <!-- Sidebar -->
       <aside
         :class="[
-          'fixed inset-y-0 left-0 z-40 w-64 shrink-0 bg-ink-950 text-ink-100 transform transition-transform lg:static lg:translate-x-0 print:hidden',
+          'fixed inset-y-0 left-0 z-40 w-64 shrink-0 bg-ink-950 text-ink-100 transform transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 print:hidden',
           sidebarOpen ? 'translate-x-0' : '-translate-x-full',
         ]"
       >
@@ -77,7 +77,7 @@ async function onLogout() {
           </button>
         </div>
 
-        <nav class="px-3 py-5 space-y-6 overflow-y-auto max-h-[calc(100vh-3.5rem)]">
+        <nav class="nav-scroll px-3 py-5 space-y-6 overflow-y-auto h-[calc(100vh-3.5rem)]">
           <div>
             <NuxtLink
               to="/admin"
@@ -156,3 +156,40 @@ async function onLogout() {
     </div>
   </div>
 </template>
+
+<style scoped>
+/*
+ * Scrollbar nav sidebar disembunyikan sampai di-hover — scrollbar tebal bawaan
+ * Windows (dengan tombol panah) merusak kesan minimalis sidebar (CLAUDE.md §26).
+ * Area tetap bisa di-scroll wheel/keyboard, jadi tidak ada konten yang hilang.
+ */
+.nav-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 200ms ease-out;
+}
+
+.nav-scroll:hover,
+.nav-scroll:focus-within {
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.nav-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.nav-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nav-scroll::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 9999px;
+  transition: background-color 200ms ease-out;
+}
+
+.nav-scroll:hover::-webkit-scrollbar-thumb,
+.nav-scroll:focus-within::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.18);
+}
+</style>

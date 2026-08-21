@@ -108,6 +108,12 @@ Di file `.vue` yang sama juga diperbaiki satu hal lama yang tidak berkaitan deng
 
 ---
 
+## Saat merilis: staff harus login ulang
+
+Token sesi menyimpan daftar izin **di dalamnya, pada saat login**. Jadi staff yang sudah login sebelum migration `000024` diterapkan tidak akan melihat tombol ini sampai mereka **logout lalu login lagi**.
+
+Ini bukan kerusakan, tapi wajib diberitahukan saat fitur diumumkan — kalau tidak, kasir akan melapor "tombolnya tidak muncul" padahal semuanya berjalan normal, dan waktu terbuang mencari masalah yang tidak ada.
+
 ## Catatan untuk ke depan
 
 Kalau nanti muncul kebutuhan agar order online juga bisa dilewati, **jangan** sekadar melonggarkan guard `channel = pos`. Pikirkan dulu bagaimana staff produksi tahu apa yang harus dicetak, karena untuk order online tidak ada file dan tidak ada pelanggan di tempat yang bisa ditanya.

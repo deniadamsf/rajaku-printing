@@ -15,10 +15,11 @@
  *
  * Design: patuh CLAUDE.md §26 (Fraunces + Inter + Lucide, brand/ink/hairline).
  */
-import type { Order } from '~/types/order'
+import type { Order, OrderStatus } from '~/types/order'
 import type { PaymentProof } from '~/types/payment'
 import type { DesignFile } from '~/types/design'
-import type { AdminOrderCustomer, AdminOrderHistoryRow } from '~/composables/useOrder'
+import type { AuditLogEntry } from '~/types/audit'
+import type { AdminOrderCustomer, AdminOrderHistoryRow, AdminOrderEditInput } from '~/composables/useOrder'
 import { ApiError } from '~/composables/useApi'
 import {
   CreditCard,
@@ -38,6 +39,11 @@ import {
   CheckCircle2,
   Loader2,
   Phone,
+  Pencil,
+  RefreshCw,
+  Trash2,
+  History,
+  AlertTriangle,
 } from '@lucide/vue'
 
 definePageMeta({
@@ -52,6 +58,7 @@ const orderSvc = useOrder()
 const paymentSvc = usePayment()
 const designSvc = useDesign()
 const pos = usePos()
+const auditSvc = useAuditLog()
 
 const resi = computed(() => String(route.params.resi))
 
@@ -67,6 +74,9 @@ const proofsLoading = ref(false)
 const designFiles = ref<DesignFile[]>([])
 const designLoading = ref(false)
 
+const auditLog = ref<AuditLogEntry[]>([])
+const auditLoading = ref(false)
+
 const errorMsg = ref<string | null>(null)
 const successMsg = ref<string | null>(null)
 
@@ -77,8 +87,27 @@ function showSuccess(msg: string) {
   setTimeout(() => (successMsg.value = null), 3000)
 }
 
+/**
+ * Beberapa error code backend butuh pesan yang lebih ramah daripada
+ * `e.message` mentah:
+ *   - `STALE_STATE`   — status pesanan berubah di tempat lain saat form ini
+ *     terbuka (mis. staff lain memproses order). Jangan tampilkan pesan
+ *     teknis, suruh admin muat ulang.
+ *   - `DELETE_NOT_ALLOWED_PAID` — pesanan sudah dibayar, backend menolak
+ *     hapus (409). Tombol hapus sudah di-disable duluan untuk kasus ini,
+ *     tapi status bisa berubah di tab lain sehingga tetap perlu ditangani.
+ */
 function toApiError(e: unknown, fallback: string): string {
-  return e instanceof ApiError ? e.message : fallback
+  if (e instanceof ApiError) {
+    if (e.code === 'STALE_STATE') {
+      return 'Status pesanan ini berubah sejak halaman dibuka (mungkin diproses staff lain). Muat ulang halaman, lalu coba lagi.'
+    }
+    if (e.code === 'DELETE_NOT_ALLOWED_PAID') {
+      return 'Pesanan ini sudah dibayar sehingga tidak bisa dihapus. Batalkan pesanan terlebih dahulu, baru bisa dihapus.'
+    }
+    return e.message
+  }
+  return fallback
 }
 
 // -------------------- fetch --------------------
@@ -126,12 +155,27 @@ async function loadDesignFiles() {
   }
 }
 
+async function loadAuditLog() {
+  if (!order.value || !auth.hasPermission('audit.view')) return
+  auditLoading.value = true
+  try {
+    auditLog.value = await auditSvc.listByEntity(order.value.id, 50)
+  } catch (e) {
+    // Non-blocking — jejak audit gagal load tidak boleh menggagalkan detail order.
+    console.error('Gagal load audit log', e)
+    auditLog.value = []
+  } finally {
+    auditLoading.value = false
+  }
+}
+
 onMounted(async () => {
   await loadDetail()
   if (order.value) {
     // Kick off attachments fetch in parallel — tidak menahan render.
     loadProofs()
     loadDesignFiles()
+    loadAuditLog()
   }
   loadReceiptConfig()
 })
@@ -258,6 +302,12 @@ const canSetOngkir = computed(() => auth.hasPermission('shipping.set_cost'))
 const canUpdateStatus = computed(() => auth.hasPermission('order.update_status'))
 const canCancel = computed(() => auth.hasPermission('order.cancel'))
 
+// Aksi super admin (edit data, override status paksa, hapus) — §26 admin override.
+const canEditOrder = computed(() => auth.hasPermission('order.edit'))
+const canOverrideStatus = computed(() => auth.hasPermission('order.override_status'))
+const canDeleteOrder = computed(() => auth.hasPermission('order.delete'))
+const canViewAudit = computed(() => auth.hasPermission('audit.view'))
+
 // State flags (§4)
 const preCetakStates = new Set([
   'order_masuk',
@@ -340,6 +390,191 @@ async function submitCancel() {
   } finally {
     cancelBusy.value = false
   }
+}
+
+// -------------------- edit pesanan (super admin, order.edit) --------------------
+/**
+ * `shipping_recipient_name`/`phone`/`shipping_address`/`notes` selalu boleh
+ * dikirim apa pun statusnya — itu data pengiriman KHUSUS pesanan ini, bukan
+ * identitas global pelanggan (lihat catatan di `AdminOrderEditInput`).
+ *
+ * `subtotal`/`shipping_cost` juga selalu boleh diedit, TAPI begitu order
+ * sudah `dibayar` (atau status sesudahnya, lihat `orderIsPaid`), backend
+ * mewajibkan `reason` (min 10 karakter) kalau salah satu nominal itu berubah
+ * — karena invoice yang sudah terkirim ke pelanggan bisa jadi tidak cocok
+ * lagi. `total` TIDAK ADA di form — backend selalu menghitungnya sebagai
+ * `subtotal + shipping_cost`, ditampilkan read-only di bawah.
+ */
+const editOpen = ref(false)
+const editBusy = ref(false)
+const editForm = reactive({
+  shipping_recipient_name: '',
+  shipping_recipient_phone: '',
+  shipping_address: '',
+  notes: '',
+  subtotal: 0,
+  shipping_cost: 0,
+  reason: '',
+})
+
+// Total dihitung ulang realtime — TIDAK bisa diketik langsung (§ kontrak baru).
+const editComputedTotal = computed(() => (editForm.subtotal || 0) + (editForm.shipping_cost || 0))
+
+function openEdit() {
+  if (!order.value) return
+  editForm.shipping_recipient_name = order.value.shipping_recipient_name ?? ''
+  editForm.shipping_recipient_phone = order.value.shipping_recipient_phone ?? ''
+  editForm.shipping_address = order.value.shipping_address ?? ''
+  editForm.notes = order.value.notes ?? ''
+  editForm.subtotal = order.value.subtotal ?? 0
+  editForm.shipping_cost = order.value.shipping_cost ?? 0
+  editForm.reason = ''
+  errorMsg.value = null
+  editOpen.value = true
+}
+
+const editFinancialChanged = computed(() => {
+  if (!order.value) return false
+  return (
+    editForm.subtotal !== (order.value.subtotal ?? 0) ||
+    editForm.shipping_cost !== (order.value.shipping_cost ?? 0)
+  )
+})
+// Alasan wajib hanya kalau order sudah lunas DAN nominal (subtotal/ongkir) diubah.
+const editReasonRequired = computed(() => orderIsPaid.value && editFinancialChanged.value)
+const editCanSubmit = computed(() => !editReasonRequired.value || editForm.reason.trim().length >= 10)
+
+async function submitEdit() {
+  if (!order.value || !editCanSubmit.value) return
+  editBusy.value = true
+  errorMsg.value = null
+  try {
+    const body: AdminOrderEditInput = {
+      shipping_recipient_name: editForm.shipping_recipient_name.trim(),
+      shipping_recipient_phone: editForm.shipping_recipient_phone.trim(),
+      shipping_address: editForm.shipping_address.trim(),
+      notes: editForm.notes.trim(),
+      subtotal: editForm.subtotal,
+      shipping_cost: editForm.shipping_cost,
+    }
+    if (editReasonRequired.value) {
+      body.reason = editForm.reason.trim()
+    }
+    order.value = await orderSvc.adminEditOrder(resi.value, body)
+    editOpen.value = false
+    showSuccess('Perubahan pesanan tersimpan.')
+    await loadDetail()
+    await loadAuditLog()
+  } catch (e) {
+    errorMsg.value = toApiError(e, 'Gagal menyimpan perubahan pesanan')
+  } finally {
+    editBusy.value = false
+  }
+}
+
+// -------------------- override status (super admin, order.override_status) --------------------
+const ALL_ORDER_STATUSES: OrderStatus[] = [
+  'order_masuk',
+  'menunggu_ongkir',
+  'menunggu_pembayaran',
+  'menunggu_verifikasi',
+  'dibayar',
+  'ditolak',
+  'desain_dikerjakan',
+  'menunggu_approval_desain',
+  'desain_diverifikasi',
+  'proses_cetak',
+  'qc',
+  'siap_kirim',
+  'siap_ambil',
+  'dikirim',
+  'selesai',
+  'dibatalkan',
+]
+
+const overrideOpen = ref(false)
+const overrideBusy = ref(false)
+const overrideToStatus = ref<OrderStatus | ''>('')
+const overrideReason = ref('')
+const overrideCanSubmit = computed(
+  () => overrideToStatus.value !== '' && overrideReason.value.trim().length >= 10,
+)
+
+function openOverride() {
+  if (!order.value) return
+  overrideToStatus.value = order.value.status as OrderStatus
+  overrideReason.value = ''
+  errorMsg.value = null
+  overrideOpen.value = true
+}
+
+async function submitOverride() {
+  if (!order.value || !overrideCanSubmit.value) return
+  overrideBusy.value = true
+  errorMsg.value = null
+  try {
+    order.value = await orderSvc.adminOverrideStatus(resi.value, {
+      to_status: overrideToStatus.value,
+      reason: overrideReason.value.trim(),
+    })
+    overrideOpen.value = false
+    showSuccess(`Status diubah paksa ke "${statusLabel(overrideToStatus.value)}". Tidak ada notifikasi WA terkirim.`)
+    await loadDetail()
+    await loadAuditLog()
+  } catch (e) {
+    errorMsg.value = toApiError(e, 'Gagal mengubah status pesanan')
+  } finally {
+    overrideBusy.value = false
+  }
+}
+
+// -------------------- hapus pesanan (super admin, order.delete) --------------------
+/**
+ * Backend menolak (409 `DELETE_NOT_ALLOWED_PAID`) menghapus pesanan yang
+ * sudah `dibayar` atau setelahnya (kecuali `dibatalkan`) — supaya order
+ * berbayar tidak lenyap diam-diam dari rekap kas harian. `orderIsPaid` (di
+ * atas) sudah persis mendefinisikan set status itu, jadi dipakai ulang di
+ * sini untuk menonaktifkan tombol Hapus DI UI SEBELUM admin sempat membuka
+ * modal — bukan cuma menunggu ditolak server.
+ */
+const canDeleteNow = computed(() => canDeleteOrder.value && !orderIsPaid.value)
+const deleteDisabledReason =
+  'Pesanan sudah dibayar/diproses dan tidak bisa dihapus. Batalkan pesanan terlebih dahulu (tombol Cancel), baru bisa dihapus.'
+
+const deleteOpen = ref(false)
+const deleteBusy = ref(false)
+const deleteReason = ref('')
+const deleteCanSubmit = computed(() => deleteReason.value.trim().length >= 10)
+
+async function submitDelete() {
+  if (!order.value || !deleteCanSubmit.value) return
+  deleteBusy.value = true
+  errorMsg.value = null
+  try {
+    await orderSvc.adminDeleteOrder(resi.value, deleteReason.value.trim())
+    await navigateTo('/admin/order')
+  } catch (e) {
+    errorMsg.value = toApiError(e, 'Gagal menghapus pesanan')
+    deleteBusy.value = false
+  }
+}
+
+// -------------------- audit log rendering helpers --------------------
+const auditActionLabelMap: Record<string, string> = {
+  'order.edit': 'Edit data pesanan',
+  'order.override_status': 'Override status',
+  'order.delete': 'Hapus pesanan',
+}
+function auditActionLabel(action: string): string {
+  return auditActionLabelMap[action] ?? action.replace(/_/g, ' ')
+}
+function isChangeEntry(v: unknown): v is { old?: unknown; new?: unknown } {
+  return typeof v === 'object' && v !== null && ('old' in v || 'new' in v)
+}
+function formatChangeValue(v: unknown): string {
+  if (v === null || v === undefined || v === '') return '—'
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
 }
 
 // -------------------- copy resi --------------------
@@ -450,14 +685,52 @@ function waLink(phone: string): string {
         <button
           v-if="canCancelNow"
           type="button"
-          class="inline-flex items-center gap-2 rounded-md border border-brand-200 bg-canvas px-3 py-1.5 text-sm font-semibold text-brand-700 hover:bg-brand-50 hover:border-brand-300 transition-colors"
+          class="inline-flex items-center gap-2 rounded-md border border-brand-200 bg-canvas px-3 py-1.5 text-sm font-semibold text-brand-700 hover:bg-brand-50 hover:border-brand-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
           @click="cancelOpen = true"
         >
           <XCircle class="h-4 w-4" :stroke-width="1.75" />
           Cancel
         </button>
+        <!-- Aksi super admin: edit data, override status paksa, hapus (soft delete). -->
+        <button
+          v-if="order && canEditOrder"
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+          @click="openEdit"
+        >
+          <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
+          Edit pesanan
+        </button>
+        <button
+          v-if="order && canOverrideStatus"
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+          @click="openOverride"
+        >
+          <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
+          Ubah status paksa
+        </button>
+        <button
+          v-if="order && canDeleteOrder"
+          type="button"
+          :disabled="!canDeleteNow"
+          :title="canDeleteNow ? undefined : deleteDisabledReason"
+          class="inline-flex items-center gap-2 rounded-md border border-brand-200 bg-canvas px-3 py-1.5 text-sm font-semibold text-brand-700 hover:bg-brand-50 hover:border-brand-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-canvas disabled:hover:border-brand-200"
+          @click="deleteOpen = true"
+        >
+          <Trash2 class="h-4 w-4" :stroke-width="1.75" />
+          Hapus
+        </button>
       </template>
     </AdminPageHeader>
+
+    <p
+      v-if="order && canDeleteOrder && !canDeleteNow"
+      class="mb-4 flex items-start gap-2 rounded-md border border-hairline bg-canvas-alt/60 px-3 py-2 text-xs text-ink-500 leading-relaxed"
+    >
+      <AlertTriangle class="h-3.5 w-3.5 flex-none mt-0.5 text-ink-400" :stroke-width="1.75" />
+      {{ deleteDisabledReason }}
+    </p>
 
     <AlertMessage v-if="errorMsg" variant="error" :message="errorMsg" class="mb-4" />
     <AlertMessage v-if="successMsg" variant="success" :message="successMsg" class="mb-4" />
@@ -728,6 +1001,55 @@ function waLink(phone: string): string {
             <span v-if="order.channel === 'pos'" class="text-ink-400">(POS bayar langsung — tidak butuh bukti.)</span>
           </p>
         </div>
+
+        <!-- Jejak audit (super admin, audit.view) -->
+        <div v-if="canViewAudit" class="rounded-lg border border-hairline bg-canvas p-6">
+          <div class="flex items-center gap-2 mb-3">
+            <History class="h-4 w-4 text-ink-500" :stroke-width="1.75" />
+            <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Jejak audit</p>
+          </div>
+
+          <div v-if="auditLoading" class="text-xs text-ink-500 flex items-center gap-2">
+            <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+            Memuat jejak audit…
+          </div>
+          <ol v-else-if="auditLog.length" class="space-y-3">
+            <li
+              v-for="entry in auditLog"
+              :key="entry.id"
+              class="rounded-md border border-hairline bg-canvas-alt/60 px-3 py-2.5"
+            >
+              <div class="flex flex-wrap items-baseline justify-between gap-2">
+                <p class="text-sm font-medium text-ink-900">{{ auditActionLabel(entry.action) }}</p>
+                <time class="font-mono text-[10px] text-ink-500">{{ fmtDate(entry.created_at) }}</time>
+              </div>
+              <p class="mt-0.5 text-xs text-ink-500">
+                Oleh <span class="text-ink-700">{{ entry.actor_name || 'Staff' }}</span>
+                <span class="text-ink-400"> · </span>
+                <span class="font-mono text-[10px] text-ink-500">{{ entry.actor_user_id }}</span>
+              </p>
+              <p v-if="entry.reason" class="mt-2 text-xs text-ink-700 leading-relaxed border-l-2 border-gold-300 pl-3">
+                "{{ entry.reason }}"
+              </p>
+              <div v-if="entry.changes && Object.keys(entry.changes).length" class="mt-2 space-y-0.5">
+                <div
+                  v-for="(val, key) in entry.changes"
+                  :key="key"
+                  class="flex flex-wrap items-baseline gap-1.5 font-mono text-[10px] text-ink-500"
+                >
+                  <span class="text-ink-700">{{ key }}:</span>
+                  <template v-if="isChangeEntry(val)">
+                    <span>{{ formatChangeValue(val.old) }}</span>
+                    <span class="text-ink-400">&rarr;</span>
+                    <span class="text-ink-900">{{ formatChangeValue(val.new) }}</span>
+                  </template>
+                  <span v-else>{{ formatChangeValue(val) }}</span>
+                </div>
+              </div>
+            </li>
+          </ol>
+          <p v-else class="text-xs text-ink-500">Belum ada aksi super admin tercatat untuk pesanan ini.</p>
+        </div>
       </div>
 
       <!-- ================================ RIGHT COLUMN ================================ -->
@@ -917,6 +1239,252 @@ function waLink(phone: string): string {
               >
                 <Loader2 v-if="cancelBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
                 Ya, cancel order
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ============================ Edit pesanan modal (super admin) ============================ -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="editOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div class="absolute inset-0 bg-ink-950/60" aria-hidden="true" @click="!editBusy && (editOpen = false)" />
+          <div role="dialog" aria-modal="true" class="relative w-full max-w-lg rounded-lg bg-canvas shadow-xl ring-1 ring-black/5 p-6 max-h-[90vh] overflow-y-auto">
+            <h3 class="font-serif text-lg font-semibold text-ink-950">Edit pesanan {{ order?.resi }}</h3>
+            <p class="mt-1 text-xs text-ink-500 leading-relaxed">
+              Perubahan tercatat di jejak audit. Data penerima &amp; alamat selalu bisa diedit; subtotal &amp; ongkir
+              butuh alasan kalau pesanan sudah dibayar.
+            </p>
+
+            <div class="mt-4 space-y-3">
+              <div>
+                <label for="edit-recipient-name" class="block text-xs font-medium text-ink-700">Nama Penerima</label>
+                <input
+                  id="edit-recipient-name"
+                  v-model="editForm.shipping_recipient_name"
+                  type="text"
+                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                >
+                <p class="mt-1 text-[11px] text-ink-400 leading-relaxed">
+                  Berlaku untuk pesanan ini saja — tidak mengubah data akun pelanggan.
+                </p>
+              </div>
+              <div>
+                <label for="edit-recipient-phone" class="block text-xs font-medium text-ink-700">No. WA Penerima</label>
+                <input
+                  id="edit-recipient-phone"
+                  v-model="editForm.shipping_recipient_phone"
+                  type="text"
+                  placeholder="62xxxxxxxxxx"
+                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm font-mono placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                >
+                <p class="mt-1 text-[11px] text-ink-400 leading-relaxed">
+                  Berlaku untuk pesanan ini saja — tidak mengubah data akun pelanggan.
+                </p>
+              </div>
+              <div>
+                <label for="edit-shipping-address" class="block text-xs font-medium text-ink-700">Alamat pengiriman</label>
+                <textarea
+                  id="edit-shipping-address"
+                  v-model="editForm.shipping_address"
+                  rows="2"
+                  placeholder="Kosongkan kalau pickup"
+                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                />
+              </div>
+              <div>
+                <label for="edit-notes" class="block text-xs font-medium text-ink-700">Catatan</label>
+                <textarea
+                  id="edit-notes"
+                  v-model="editForm.notes"
+                  rows="2"
+                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                />
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label for="edit-subtotal" class="block text-xs font-medium text-ink-700">Subtotal (Rp)</label>
+                  <input
+                    id="edit-subtotal"
+                    v-model.number="editForm.subtotal"
+                    type="number"
+                    min="0"
+                    step="1000"
+                    class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                  >
+                </div>
+                <div>
+                  <label for="edit-shipping-cost" class="block text-xs font-medium text-ink-700">Ongkir (Rp)</label>
+                  <input
+                    id="edit-shipping-cost"
+                    v-model.number="editForm.shipping_cost"
+                    type="number"
+                    min="0"
+                    step="1000"
+                    class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                  >
+                </div>
+              </div>
+
+              <div class="rounded-md border border-hairline bg-canvas-alt/60 px-3 py-2.5">
+                <div class="flex items-center justify-between">
+                  <p class="text-xs font-medium text-ink-700">Total (dihitung otomatis)</p>
+                  <p class="font-serif text-base font-semibold text-ink-950">{{ fmtIDR(editComputedTotal) }}</p>
+                </div>
+                <p class="mt-0.5 text-[11px] text-ink-400 leading-relaxed">
+                  Subtotal + ongkir. Total tidak bisa diketik langsung — ubah salah satu angka di atas.
+                </p>
+              </div>
+
+              <div v-if="editReasonRequired" class="rounded-md border border-brand-200 bg-brand-50 p-3">
+                <p class="flex items-start gap-2 text-xs text-brand-800 leading-relaxed">
+                  <AlertTriangle class="h-3.5 w-3.5 flex-none mt-0.5" :stroke-width="1.75" />
+                  Pesanan ini sudah berstatus <strong>{{ statusLabel(order?.status ?? '') }}</strong> — invoice mungkin
+                  sudah terkirim ke pelanggan. Mengubah subtotal/ongkir di sini TIDAK mengirim invoice baru, jadi bisa
+                  jadi tidak cocok lagi dengan yang diterima pelanggan. Jelaskan alasannya di bawah.
+                </p>
+                <label for="edit-reason" class="mt-2 block text-xs font-medium text-brand-800">
+                  Alasan perubahan (wajib, min. 10 karakter)
+                </label>
+                <textarea
+                  id="edit-reason"
+                  v-model="editForm.reason"
+                  rows="2"
+                  maxlength="500"
+                  placeholder="Contoh: koreksi ongkir salah input, kurir ganti tarif, dll."
+                  class="mt-1 block w-full rounded-md border border-brand-200 bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                />
+              </div>
+            </div>
+
+            <div class="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                class="rounded-md border border-hairline bg-canvas px-3 py-1.5 text-sm font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors disabled:opacity-50"
+                :disabled="editBusy"
+                @click="editOpen = false"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                class="inline-flex items-center gap-2 rounded-md bg-brand-500 px-3 py-1.5 text-sm font-semibold text-canvas hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors disabled:opacity-60"
+                :disabled="editBusy || !editCanSubmit"
+                @click="submitEdit"
+              >
+                <Loader2 v-if="editBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                Simpan perubahan
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ============================ Override status modal (super admin) ============================ -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="overrideOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div class="absolute inset-0 bg-ink-950/60" aria-hidden="true" @click="!overrideBusy && (overrideOpen = false)" />
+          <div role="dialog" aria-modal="true" class="relative w-full max-w-md rounded-lg bg-canvas shadow-xl ring-1 ring-black/5 p-6">
+            <h3 class="font-serif text-lg font-semibold text-ink-950">Ubah status paksa</h3>
+            <p class="mt-1 text-xs text-ink-500 leading-relaxed">
+              Override bisa lompat ke status apa pun di alur pesanan, di luar urutan normal. Tenang — aksi ini
+              <strong class="text-ink-900">tidak mengirim notifikasi WA</strong> ke pelanggan, dan tercatat di jejak audit.
+            </p>
+
+            <div class="mt-4 space-y-3">
+              <div>
+                <label for="override-status" class="block text-xs font-medium text-ink-700">Status baru</label>
+                <select
+                  id="override-status"
+                  v-model="overrideToStatus"
+                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                >
+                  <option v-for="s in ALL_ORDER_STATUSES" :key="s" :value="s">
+                    {{ statusLabel(s) }}{{ order && s === order.status ? ' (status saat ini)' : '' }}
+                  </option>
+                </select>
+              </div>
+              <div>
+                <label for="override-reason" class="block text-xs font-medium text-ink-700">
+                  Alasan override (wajib, min. 10 karakter)
+                </label>
+                <textarea
+                  id="override-reason"
+                  v-model="overrideReason"
+                  rows="3"
+                  maxlength="500"
+                  placeholder="Contoh: sinkronisasi status manual setelah kendala teknis, koreksi input kasir, dll."
+                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                />
+                <p class="mt-1 text-xs text-ink-400 text-right">{{ overrideReason.length }} / 500</p>
+              </div>
+            </div>
+
+            <div class="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                class="rounded-md border border-hairline bg-canvas px-3 py-1.5 text-sm font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors disabled:opacity-50"
+                :disabled="overrideBusy"
+                @click="overrideOpen = false"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                class="inline-flex items-center gap-2 rounded-md bg-brand-500 px-3 py-1.5 text-sm font-semibold text-canvas hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors disabled:opacity-60"
+                :disabled="overrideBusy || !overrideCanSubmit"
+                @click="submitOverride"
+              >
+                <Loader2 v-if="overrideBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                Terapkan status
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ============================ Hapus pesanan modal (super admin) ============================ -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="deleteOpen" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div class="absolute inset-0 bg-ink-950/60" aria-hidden="true" @click="!deleteBusy && (deleteOpen = false)" />
+          <div role="dialog" aria-modal="true" class="relative w-full max-w-md rounded-lg bg-canvas shadow-xl ring-1 ring-black/5 p-6">
+            <h3 class="font-serif text-lg font-semibold text-ink-950">Hapus pesanan {{ order?.resi }}?</h3>
+            <p class="mt-1 text-xs text-ink-500 leading-relaxed">
+              Pesanan akan hilang dari daftar &amp; rekap admin (soft delete). Nomor resi
+              <span class="font-mono text-[11px] text-ink-700">{{ order?.resi }}</span> tetap bisa dilacak publik di
+              halaman lacak resi. Alasan wajib diisi untuk audit.
+            </p>
+            <textarea
+              v-model="deleteReason"
+              rows="3"
+              maxlength="500"
+              placeholder="Contoh: order duplikat, dibuat keliru oleh kasir, dll."
+              class="mt-3 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+            />
+            <p class="mt-1 text-xs text-ink-400 text-right">{{ deleteReason.length }} / 500</p>
+            <div class="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                class="rounded-md border border-hairline bg-canvas px-3 py-1.5 text-sm font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors disabled:opacity-50"
+                :disabled="deleteBusy"
+                @click="deleteOpen = false"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                class="inline-flex items-center gap-2 rounded-md bg-brand-500 px-3 py-1.5 text-sm font-semibold text-canvas hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors disabled:opacity-60"
+                :disabled="deleteBusy || !deleteCanSubmit"
+                @click="submitDelete"
+              >
+                <Loader2 v-if="deleteBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                Ya, hapus pesanan
               </button>
             </div>
           </div>

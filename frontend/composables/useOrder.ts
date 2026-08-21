@@ -30,6 +30,34 @@ export interface AdminOrderDetailResponse {
   history: AdminOrderHistoryRow[]
 }
 
+// -------- Admin: edit / override status / delete (super admin only, §26) --------
+/**
+ * `customer_name`/`customer_phone` SENGAJA TIDAK ADA di sini — itu identitas
+ * global pelanggan (dipakai lintas order), mengubahnya lewat endpoint ini
+ * dulu diam-diam menyetel ulang nomor WA pelanggan untuk SEMUA pesanannya dan
+ * melewati verifikasi OTP. Kontak pengiriman per-order pakai
+ * `shipping_recipient_name`/`shipping_recipient_phone` di bawah.
+ *
+ * `total` juga TIDAK ADA — backend selalu menghitungnya sebagai
+ * `subtotal + shipping_cost`, tidak lagi menerima nilai total dari client.
+ */
+export interface AdminOrderEditInput {
+  shipping_recipient_name?: string
+  shipping_recipient_phone?: string
+  shipping_address?: string
+  notes?: string
+  subtotal?: number
+  shipping_cost?: number
+  /** Wajib (min 10 karakter) kalau subtotal/shipping_cost diubah setelah order `dibayar`. */
+  reason?: string
+}
+
+export interface AdminOverrideStatusInput {
+  to_status: OrderStatus | string
+  /** Wajib, min 10 karakter. */
+  reason: string
+}
+
 export interface CreateOnlineOrderInput {
   guest_name?: string
   guest_phone?: string
@@ -109,6 +137,32 @@ export function useOrder() {
     return api.post<Order>(`/admin/orders/${resi}/cancel`, { reason })
   }
 
+  /**
+   * Edit data pesanan (super admin, `order.edit`). Field yang boleh dikirim
+   * tergantung status order — lihat `AdminOrderEditInput`. Backend validasi
+   * ulang (FIELD_NOT_EDITABLE / REASON_REQUIRED), frontend cuma pre-check UX.
+   */
+  function adminEditOrder(resi: string, body: AdminOrderEditInput): Promise<Order> {
+    return api.patch<Order>(`/admin/orders/${resi}`, body)
+  }
+
+  /**
+   * Override status ke status APAPUN di state machine §4 (super admin,
+   * `order.override_status`) — bukan cuma transisi berikutnya yang valid.
+   * Tidak mengirim notifikasi WA ke pelanggan.
+   */
+  function adminOverrideStatus(resi: string, body: AdminOverrideStatusInput): Promise<Order> {
+    return api.post<Order>(`/admin/orders/${resi}/override-status`, body)
+  }
+
+  /**
+   * Soft delete pesanan (super admin, `order.delete`). Resi tetap bisa
+   * dilacak publik setelah dihapus — hanya hilang dari daftar/rekap admin.
+   */
+  function adminDeleteOrder(resi: string, reason: string): Promise<{ ok: boolean }> {
+    return api.delete<{ ok: boolean }>(`/admin/orders/${resi}`, { body: { reason } })
+  }
+
   return {
     createOnline,
     publicTracking,
@@ -119,5 +173,8 @@ export function useOrder() {
     setShippingCost,
     confirmPickup,
     cancelOrder,
+    adminEditOrder,
+    adminOverrideStatus,
+    adminDeleteOrder,
   }
 }

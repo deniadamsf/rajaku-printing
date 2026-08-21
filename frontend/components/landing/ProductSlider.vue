@@ -3,9 +3,24 @@
  * ProductSlider — auto-slider crossfade untuk sorotan produk (brief "kesan mahal").
  *
  * Data produk NYATA dari catalog (SSR via `useAsyncData`, sumber sama dengan
- * `LandingServicesSection`) — bukan konten dummy. Katalog belum punya field
- * gambar per-produk (lihat `types/catalog.ts`), jadi tiap slide dipasangkan
- * foto proses cetak asli (`/proses/*.webp`) secara berulang sebagai backdrop.
+ * `LandingServicesSection`) — bukan konten dummy. Sumber gambar per slide:
+ * `product.image_url` (foto asli, kalau admin sudah unggah) — kalau kosong,
+ * artwork vektor per jenis produk (`artworkVariantFor()` → `<ArtProduct>`,
+ * lihat `utils/artwork.ts`), BUKAN lagi satu foto proses cetak yang sama
+ * diulang untuk semua slide (kesan template kosong).
+ *
+ * Kontras teks — dua treatment berbeda tergantung sumber gambar:
+ *  - Foto asli: full-bleed `object-cover` + gradient scrim gelap di bawah
+ *    (pola lama, sudah aman kontras — teks canvas selalu di zona scrim
+ *    paling pekat/90%).
+ *  - Artwork (fallback): TIDAK dipasang di bawah scrim gelap yang sama,
+ *    karena scrim akan menutupi sebagian besar detail ilustrasi — padahal
+ *    tujuan artwork justru menonjolkan bentuk khas tiap produk. Sebagai
+ *    gantinya artwork dibingkai sebagai panel terpisah (rounded, latar
+ *    terangnya sendiri) yang diletakkan di atas latar section yang SUDAH
+ *    gelap (`bg-ink-950` di container slider) — teks selalu duduk langsung
+ *    di atas ink-950 solid, kontras terjamin tanpa perlu overlay tambahan.
+ *
  * Daftar produk LENGKAP & sepenuhnya crawlable tetap ada di
  * `LandingServicesSection` (grid statis, semua produk, semua di HTML awal) —
  * slider ini murni sorotan visual di atasnya, jadi aman kalau slide non-aktif
@@ -26,6 +41,7 @@
 import { ArrowRight, ChevronLeft, ChevronRight } from '@lucide/vue'
 import { motion } from 'motion-v'
 import type { CatalogProduct } from '~/types/catalog'
+import type { ArtworkVariant } from '~/utils/artwork'
 
 const catalog = useCatalog()
 const prefersReduced = usePrefersReducedMotion()
@@ -37,33 +53,24 @@ const { data } = await useAsyncData('landing-product-slider', () => catalog.list
 
 const products = computed<CatalogProduct[]>(() => data.value?.products ?? [])
 
-// Foto proses dipakai berulang sebagai backdrop visual (bukan foto per-produk
-// asli — katalog belum menyimpan gambar produk).
-const backdrops = [
-  '/proses/proses-04.webp',
-  '/proses/proses-02.webp',
-  '/proses/proses-06.webp',
-  '/proses/proses-01.webp',
-  '/proses/proses-05.webp',
-  '/proses/proses-03.webp',
-]
-
 interface Slide {
   id: string
   name: string
   description: string
   pricingLabel: string
-  image: string
+  image: string | null
+  variant: ArtworkVariant
 }
 
 const slides = computed<Slide[]>(() =>
-  products.value.slice(0, 6).map((p, i) => ({
+  products.value.slice(0, 6).map((p) => ({
     id: p.id,
     name: p.name,
     description:
       p.description || 'Cetak presisi, warna konsisten — siap pakai untuk kebutuhan Anda.',
     pricingLabel: p.pricing_type === 'paket' ? 'Harga paket' : 'Harga per m²',
-    image: backdrops[i % backdrops.length],
+    image: p.image_url || null,
+    variant: artworkVariantFor(p),
   })),
 )
 
@@ -162,35 +169,76 @@ const revealTransition = computed(() =>
         :transition="slideTransition"
         :aria-hidden="i !== active"
       >
-        <img
-          :src="s.image"
-          alt=""
-          width="1600"
-          height="900"
-          :loading="i === 0 ? 'eager' : 'lazy'"
-          class="h-full w-full object-cover"
+        <!-- Foto asli produk: full-bleed + scrim gelap (kontras teks terjamin). -->
+        <template v-if="s.image">
+          <img
+            :src="s.image"
+            alt=""
+            width="1600"
+            height="900"
+            :loading="i === 0 ? 'eager' : 'lazy'"
+            class="h-full w-full object-cover"
+          >
+          <div class="absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/35 to-ink-950/10" />
+          <div class="absolute inset-x-0 bottom-0 p-6 md:p-10">
+            <span
+              class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-gold-400 ring-1 ring-inset ring-gold-500/40"
+            >
+              {{ s.pricingLabel }}
+            </span>
+            <h3 class="mt-3 text-xl md:text-3xl font-serif font-semibold tracking-tight text-canvas">
+              {{ s.name }}
+            </h3>
+            <p class="mt-2 max-w-lg text-sm leading-relaxed text-canvas/75 line-clamp-2">
+              {{ s.description }}
+            </p>
+            <NuxtLink
+              to="/order"
+              :tabindex="i === active ? 0 : -1"
+              class="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-canvas transition-colors hover:text-gold-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950 rounded-sm"
+            >
+              Order sekarang
+              <ArrowRight class="h-4 w-4" :stroke-width="1.5" />
+            </NuxtLink>
+          </div>
+        </template>
+
+        <!--
+          Artwork fallback: TIDAK ditumpuk scrim gelap (akan menutupi detail
+          ilustrasi). Sebagai gantinya, artwork dibingkai jadi panel terpisah
+          di atas latar ink-950 milik container — teks selalu di atas solid
+          dark, kontras terjamin tanpa mengorbankan visibilitas artwork.
+        -->
+        <div
+          v-else
+          class="flex h-full flex-col-reverse items-center justify-center gap-6 px-6 py-8 md:flex-row md:justify-between md:gap-10 md:px-12 lg:px-16"
         >
-        <div class="absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/35 to-ink-950/10" />
-        <div class="absolute inset-x-0 bottom-0 p-6 md:p-10">
-          <span
-            class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-gold-400 ring-1 ring-inset ring-gold-500/40"
+          <div class="w-full max-w-md text-center md:text-left">
+            <span
+              class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-gold-400 ring-1 ring-inset ring-gold-500/40"
+            >
+              {{ s.pricingLabel }}
+            </span>
+            <h3 class="mt-3 text-xl md:text-3xl font-serif font-semibold tracking-tight text-canvas">
+              {{ s.name }}
+            </h3>
+            <p class="mt-2 text-sm leading-relaxed text-canvas/75 line-clamp-2">
+              {{ s.description }}
+            </p>
+            <NuxtLink
+              to="/order"
+              :tabindex="i === active ? 0 : -1"
+              class="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-canvas transition-colors hover:text-gold-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950 rounded-sm"
+            >
+              Order sekarang
+              <ArrowRight class="h-4 w-4" :stroke-width="1.5" />
+            </NuxtLink>
+          </div>
+          <div
+            class="relative aspect-[4/3] w-full max-w-[240px] shrink-0 overflow-hidden rounded-lg ring-1 ring-canvas/10 sm:max-w-[280px] md:max-w-sm"
           >
-            {{ s.pricingLabel }}
-          </span>
-          <h3 class="mt-3 text-xl md:text-3xl font-serif font-semibold tracking-tight text-canvas">
-            {{ s.name }}
-          </h3>
-          <p class="mt-2 max-w-lg text-sm leading-relaxed text-canvas/75 line-clamp-2">
-            {{ s.description }}
-          </p>
-          <NuxtLink
-            to="/order"
-            :tabindex="i === active ? 0 : -1"
-            class="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-canvas transition-colors hover:text-gold-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950 rounded-sm"
-          >
-            Order sekarang
-            <ArrowRight class="h-4 w-4" :stroke-width="1.5" />
-          </NuxtLink>
+            <ArtProduct :variant="s.variant" :label="s.name" />
+          </div>
         </div>
       </motion.div>
 

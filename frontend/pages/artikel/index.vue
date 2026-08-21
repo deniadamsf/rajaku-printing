@@ -3,6 +3,7 @@
  * /artikel — list artikel published (SSR untuk SEO §15).
  * Compliant CLAUDE.md §26 — Fraunces display, brand tokens, generous spacing.
  */
+import { Newspaper, RefreshCw, SearchX } from '@lucide/vue'
 import type { Article, ArticleListResponse } from '~/types/cms'
 
 definePageMeta({ layout: 'default' })
@@ -45,10 +46,13 @@ const canonical = computed(() => {
 })
 
 useSeoMeta({
+  // Tanpa suffix brand — `app.vue` titleTemplate sudah menambahkan
+  // " — Rajaku Printing". Menuliskannya lagi di sini membuat judul tab & hasil
+  // pencarian berbunyi "… — Rajaku Printing — Rajaku Printing".
   title: () =>
     currentPage.value > 1
-      ? `Artikel — halaman ${currentPage.value} · Rajaku Printing`
-      : 'Artikel & Tips Cetak Banner — Rajaku Printing',
+      ? `Artikel — halaman ${currentPage.value}`
+      : 'Artikel & Tips Cetak Banner',
   description:
     'Panduan, tips, dan referensi seputar cetak banner outdoor & indoor dari Rajaku Printing — bahan, ukuran, harga, hingga trik desain.',
   ogTitle: () => 'Artikel Rajaku Printing',
@@ -87,6 +91,16 @@ function coverURL(a: Article): string | null {
   return a.cover_image_id ? cms.imageUrl(a.cover_image_id) : null
 }
 
+/**
+ * Huruf awal judul, dipakai sebagai penanda visual kartu artikel yang belum
+ * punya cover. Tujuannya membedakan kartu satu sama lain — kalau semua kartu
+ * tanpa cover memakai ikon yang sama, grid-nya kembali terlihat seperti
+ * placeholder kosong. Murni dekoratif (`aria-hidden` di template).
+ */
+function coverInitial(title: string): string {
+  return title.trim().charAt(0).toUpperCase() || 'R'
+}
+
 function fmtDate(s?: string | null): string {
   if (!s) return ''
   try {
@@ -100,9 +114,17 @@ function fmtDate(s?: string | null): string {
 </script>
 
 <template>
-  <div class="mx-auto max-w-6xl px-4 py-16 md:py-24">
+  <div class="relative mx-auto max-w-6xl px-4 py-16 md:py-24">
+    <!--
+      Ornamen kisi tipis hanya di area header — memberi tekstur pada ruang
+      kosong di sekitar judul tanpa mengganggu keterbacaan kartu di bawahnya.
+    -->
+    <div class="pointer-events-none absolute inset-x-0 top-0 h-72 overflow-hidden" aria-hidden="true">
+      <ArtOrnament variant="grid" :opacity="0.6" />
+    </div>
+
     <!-- Header -->
-    <header class="max-w-2xl">
+    <header class="relative max-w-2xl">
       <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
         Panduan & Tips
       </p>
@@ -116,7 +138,7 @@ function fmtDate(s?: string | null): string {
     </header>
 
     <!-- Search -->
-    <div class="mt-8 max-w-md">
+    <div class="relative mt-8 max-w-md">
       <label for="artikel-search" class="sr-only">Cari artikel</label>
       <input
         id="artikel-search"
@@ -128,21 +150,75 @@ function fmtDate(s?: string | null): string {
       >
     </div>
 
-    <!-- Error / loading / empty / grid -->
-    <div v-if="error" class="mt-12 rounded-md border border-brand-200 bg-brand-50 p-4 text-sm text-brand-800">
-      Gagal memuat daftar artikel. <button type="button" class="underline font-medium ml-1" @click="refresh()">Coba lagi</button>
-    </div>
-
-    <div v-else-if="pending" class="mt-12 text-sm text-ink-500">Memuat…</div>
-
-    <div v-else-if="items.length === 0" class="mt-16 text-center">
-      <p class="font-serif text-2xl text-ink-900">Belum ada artikel</p>
-      <p class="mt-2 text-sm text-ink-500">
-        {{ searchQuery ? `Tidak ada hasil untuk "${searchQuery}".` : 'Konten sedang disiapkan tim kami.' }}
+    <!--
+      Error / loading / empty semuanya memakai bahasa visual yang sama dengan
+      kartu artikel (kotak `border-hairline`, ikon monoline, satu CTA) supaya
+      halaman tidak pernah jatuh jadi baris teks telanjang saat backend mati.
+    -->
+    <div
+      v-if="error"
+      class="relative mt-12 rounded-lg border border-hairline bg-canvas px-6 py-14 text-center md:py-16"
+    >
+      <RefreshCw class="mx-auto h-6 w-6 text-ink-400" :stroke-width="1.5" />
+      <p class="mt-4 font-serif text-xl font-semibold text-ink-950">Artikel belum bisa dimuat</p>
+      <p class="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-ink-500">
+        Koneksi ke server sedang bermasalah. Anda tetap bisa langsung memesan atau
+        melihat daftar produk kami.
       </p>
+      <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
+        <button
+          type="button"
+          class="rounded-md border border-hairline bg-canvas px-4 py-2 text-sm font-medium text-ink-900 transition-colors hover:bg-canvas-alt focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+          @click="refresh()"
+        >
+          Coba lagi
+        </button>
+        <NuxtLink
+          to="/katalog"
+          class="rounded-md bg-brand-500 px-4 py-2 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+        >
+          Lihat Katalog
+        </NuxtLink>
+      </div>
     </div>
 
-    <section v-else class="mt-12">
+    <div v-else-if="pending" class="relative mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+      <div
+        v-for="i in 3"
+        :key="i"
+        class="h-72 animate-pulse rounded-lg border border-hairline bg-canvas-alt"
+      />
+    </div>
+
+    <div
+      v-else-if="items.length === 0"
+      class="relative mt-12 rounded-lg border border-hairline bg-canvas px-6 py-14 text-center md:py-16"
+    >
+      <component
+        :is="searchQuery ? SearchX : Newspaper"
+        class="mx-auto h-6 w-6 text-ink-400"
+        :stroke-width="1.5"
+      />
+      <p class="mt-4 font-serif text-xl font-semibold text-ink-950">
+        {{ searchQuery ? 'Tidak ada artikel yang cocok' : 'Artikel sedang disiapkan' }}
+      </p>
+      <p class="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-ink-500">
+        {{
+          searchQuery
+            ? `Tidak ada hasil untuk "${searchQuery}". Coba kata kunci lain.`
+            : 'Panduan dan tips seputar cetak banner akan terbit di halaman ini. Sementara itu, silakan lihat produk yang kami layani.'
+        }}
+      </p>
+      <NuxtLink
+        v-if="!searchQuery"
+        to="/katalog"
+        class="mt-6 inline-flex items-center justify-center rounded-md bg-brand-500 px-5 py-2.5 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+      >
+        Lihat Katalog
+      </NuxtLink>
+    </div>
+
+    <section v-else class="relative mt-12">
       <ul class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         <li v-for="a in items" :key="a.id" class="group">
           <NuxtLink :to="`/artikel/${a.slug}`" class="block rounded-lg border border-hairline bg-canvas overflow-hidden transition-colors hover:border-ink-300">
@@ -151,13 +227,30 @@ function fmtDate(s?: string | null): string {
                 v-if="coverURL(a)"
                 :src="coverURL(a) as string"
                 :alt="a.title"
+                width="640"
+                height="400"
                 loading="lazy"
                 class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.02]"
               >
-              <div v-else class="w-full h-full flex items-center justify-center text-ink-300">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-8 h-8">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
-                </svg>
+              <!--
+                Cadangan saat artikel belum punya cover: raster halftone + huruf
+                awal judul. Bukan ikon gambar generik yang sama di semua kartu —
+                itu justru menegaskan kesan "belum jadi".
+              -->
+              <div v-else class="relative h-full w-full bg-canvas-alt" aria-hidden="true">
+                <div class="absolute inset-0">
+                  <ArtOrnament variant="halftone" :opacity="0.8" />
+                </div>
+                <span
+                  class="absolute inset-0 flex select-none items-center justify-center font-serif text-6xl font-semibold text-ink-200"
+                >
+                  {{ coverInitial(a.title) }}
+                </span>
+                <span
+                  class="absolute bottom-3 left-4 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-400"
+                >
+                  Artikel
+                </span>
               </div>
             </div>
             <div class="p-5">

@@ -19,7 +19,7 @@ definePageMeta({
 })
 
 useSeoMeta({
-  title: 'Akun Saya — Rajaku Printing',
+  title: 'Akun Saya',
   robots: 'noindex,nofollow',
 })
 

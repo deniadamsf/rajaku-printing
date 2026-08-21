@@ -22,7 +22,7 @@ definePageMeta({
 })
 
 useSeoMeta({
-  title: 'Aktifkan akun — Rajaku Printing',
+  title: 'Aktifkan akun',
   robots: 'noindex,nofollow',
 })
 

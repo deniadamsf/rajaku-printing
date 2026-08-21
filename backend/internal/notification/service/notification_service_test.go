@@ -39,6 +39,11 @@ type fakeJobStore struct {
 	redactStaleArg   time.Time
 	redactStaleN     int64
 	redactStaleErr   error
+
+	cancelOrderJobsCalls int
+	cancelOrderJobsArg   uuid.UUID
+	cancelOrderJobsN     int64
+	cancelOrderJobsErr   error
 }
 
 func (f *fakeJobStore) Create(_ context.Context, j *model.NotificationJob) error {
@@ -74,6 +79,11 @@ func (f *fakeJobStore) RedactStaleSensitive(_ context.Context, olderThan time.Ti
 	f.redactStaleCalls++
 	f.redactStaleArg = olderThan
 	return f.redactStaleN, f.redactStaleErr
+}
+func (f *fakeJobStore) CancelOrderJobs(_ context.Context, orderID uuid.UUID) (int64, error) {
+	f.cancelOrderJobsCalls++
+	f.cancelOrderJobsArg = orderID
+	return f.cancelOrderJobsN, f.cancelOrderJobsErr
 }
 
 type fakeOrderCmd struct {
@@ -491,5 +501,36 @@ func TestEnqueueInternalAlert_RequiresDedupKey(t *testing.T) {
 	}
 	if store.createCalls != 0 {
 		t.Error("tidak boleh insert job tanpa dedup key")
+	}
+}
+
+// ---------- CancelOrderJobs ----------
+
+func TestCancelOrderJobs_HappyPath(t *testing.T) {
+	orderID := uuid.New()
+	store := &fakeJobStore{cancelOrderJobsN: 2}
+	svc := newSvc(store, &fakeOrderCmd{}, &fakeCustomers{})
+
+	n, err := svc.CancelOrderJobs(context.Background(), orderID)
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("want 2 cancelled, got %d", n)
+	}
+	if store.cancelOrderJobsCalls != 1 || store.cancelOrderJobsArg != orderID {
+		t.Errorf("store not called correctly: calls=%d arg=%s", store.cancelOrderJobsCalls, store.cancelOrderJobsArg)
+	}
+}
+
+func TestCancelOrderJobs_StoreError_Wrapped(t *testing.T) {
+	orderID := uuid.New()
+	wantErr := errors.New("db down")
+	store := &fakeJobStore{cancelOrderJobsErr: wantErr}
+	svc := newSvc(store, &fakeOrderCmd{}, &fakeCustomers{})
+
+	_, err := svc.CancelOrderJobs(context.Background(), orderID)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("want wrapped db error, got %v", err)
 	}
 }

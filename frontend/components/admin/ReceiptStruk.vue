@@ -17,6 +17,12 @@
  *     unmount (`onBeforeUnmount` bawaan @unhead/vue, terikat ke instance
  *     komponen yang memanggilnya — bukan sesuatu yang perlu di-cleanup
  *     manual), jadi toggle v-if antar halaman aman.
+ *   - Mencetak WAJIB lewat method yang diekspos `printNow()` (lihat
+ *     `defineExpose` di bawah), bukan `window.print()` langsung dari halaman
+ *     pemanggil. `printNow()` men-teleport root komponen ke `<body>` sesaat
+ *     sebelum mencetak (lihat blok komentar di atas root template) — kalau
+ *     dilewati, `window.print()` polos akan mencetak seluruh halaman admin,
+ *     bukan struk.
  *
  * TIPOGRAFI — kenapa seluruh struk pakai `font-mono` (§26.3 vs realita cetak):
  *   §26.3 melarang JetBrains Mono untuk body UI aplikasi (hanya untuk data
@@ -28,7 +34,7 @@
  *   bukan pilihan gaya. §26 mengatur bahasa visual UI aplikasi, bukan
  *   dokumen cetak — pengecualian ini sadar & disengaja, bukan drift.
  */
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { renderSVG } from 'uqr'
 
 import { business, fullAddress } from '~/utils/business'
@@ -75,6 +81,28 @@ const props = withDefaults(defineProps<ReceiptStrukProps>(), {
 
 const receiptWidthMm = computed<58 | 80>(() => (props.widthMm === 80 ? 80 : 58))
 
+// Area cetak SESUNGGUHNYA lebih sempit dari lebar kertas nominal — printer
+// thermal tidak bisa mencetak sampai tepi kertas (ada margin mekanis di
+// kedua sisi head cetak). Kertas 58mm → area cetak 48mm (384 titik @203dpi);
+// kertas 80mm → area cetak 72mm (576 titik). Kalau isi struk dibuat selebar
+// KERTAS (bukan area cetak), driver mengecilkan/memotong hasilnya dan
+// operator terpaksa mengutak-atik skala manual di dialog cetak tiap kali.
+const printableWidthMm = computed<48 | 72>(() => (receiptWidthMm.value === 80 ? 72 : 48))
+
+// `printing` menggerbangi Teleport root ke `<body>` — lihat blok komentar di
+// root template & `printNow()` di bawah.
+//
+// PRINT_ISOLATION_CLASS ditempel ke <html> hanya selama `printNow()` berjalan.
+// Isolasi cetak (menyembunyikan seluruh isi halaman selain struk) TIDAK boleh
+// aktif permanen: struk POS ter-mount terus di panel sukses, jadi kalau
+// aturannya berlaku setiap kali media print aktif, operator yang menekan
+// Ctrl+P — bukan tombol "Cetak struk" — akan mendapat kertas kosong, karena
+// isi halaman disembunyikan sementara struk masih berada di dalamnya (belum
+// ter-teleport). Dengan gerbang kelas ini, Ctrl+P biasa tetap mencetak
+// halaman apa adanya seperti sebelum perubahan.
+const printing = ref(false)
+const PRINT_ISOLATION_CLASS = 'cetak-struk'
+
 // Identitas toko dibaca dari SATU sumber (utils/business.ts) yang juga
 // menyuplai schema markup LocalBusiness & footer — sekali pemilik memperbarui
 // alamat/telepon di sana, struk ikut berubah tanpa sentuh file ini.
@@ -111,32 +139,39 @@ const showShipping = computed(
 )
 
 /**
- * `@page { size: ... }` HARUS pakai angka literal — browser tidak bisa
- * membaca custom property (`var(--w)`) di properti `size`. Satu-satunya cara
- * membuat lebar kertas dinamis di satu-satunya `@page` yang aktif per
- * halaman adalah menyuntik stylesheet baru tiap kali `receiptWidthMm`
- * berubah, lewat `useHead` (unhead men-support ref/computed reaktif di
- * dalam array `style`, jadi tag <style> ini otomatis diperbarui).
+ * `@page { size: ... }` HARUS pakai angka literal — browser tidak bisa membaca
+ * custom property (`var(--w)`) di properti `size`, dan Vue SFC scoped-CSS juga
+ * tidak bisa menyentuh blok `@page` (tidak ada selector untuk di-scope). Jadi
+ * aturan ini disuntik sebagai stylesheet tersendiri.
  *
- * Dipisah dari `<style scoped>` di bawah karena Vue SFC scoped-CSS compiler
- * tidak menambahkan atribut scope ke isi blok `@page` (tidak ada selector
- * untuk di-scope) — taruh di sini sebagai stylesheet biasa (selector
- * `#struk` tetap match elemen aslinya walau lewat tag <style> terpisah,
- * karena ID selector tidak butuh atribut scope untuk match).
+ * Disuntik LANGSUNG ke DOM (bukan lewat `useHead`) dan tepat sebelum
+ * `window.print()`, karena inilah bagian yang paling gampang gagal diam-diam:
+ * unhead menulis perubahan head secara asinkron (ditumpuk lalu di-flush
+ * belakangan), sementara alur cetak kita mount struk → `nextTick()` → cetak
+ * dalam hitungan milidetik. Diukur di dev 22 Agustus 2026: saat
+ * `window.print()` dipanggil, tag <style> dari useHead BELUM ada di dokumen —
+ * artinya `@page` tidak berlaku dan browser memakai ukuran kertas default
+ * (A4) berikut marginnya. Itu yang membuat struk tercetak tidak pas di kertas
+ * meski lebar 58/80mm sudah diatur benar di admin.
+ *
+ * Penyuntikan manual di sini sinkron: begitu fungsi ini selesai, aturannya
+ * dijamin sudah ada di dokumen sebelum browser memotret halaman.
  */
-useHead({
-  style: [
-    {
-      key: 'pos-receipt-page-size',
-      innerHTML: computed(
-        () => `@media print {
+const PAGE_STYLE_ID = 'struk-page-style'
+
+function injectPageStyle() {
+  const el = document.getElementById(PAGE_STYLE_ID) ?? document.createElement('style')
+  el.id = PAGE_STYLE_ID
+  el.textContent = `@media print {
   @page { size: ${receiptWidthMm.value}mm auto; margin: 0; }
-  #struk { width: ${receiptWidthMm.value}mm; }
-}`,
-      ),
-    },
-  ],
-})
+  #struk { width: ${printableWidthMm.value}mm; margin: 0 auto; padding: 0; }
+}`
+  if (!el.parentNode) document.head.appendChild(el)
+}
+
+function removePageStyle() {
+  document.getElementById(PAGE_STYLE_ID)?.remove()
+}
 
 function fmtIDR(v: number | null | undefined): string {
   if (v == null) return '—'
@@ -160,15 +195,78 @@ function fmtDateTime(iso: string): string {
     return iso
   }
 }
+
+/**
+ * Satu-satunya cara resmi mencetak struk ini (lihat kontrak di kepala
+ * berkas). Urutan wajib: teleport ke `<body>` dulu (`printing = true`),
+ * tunggu DOM benar-benar berpindah (`await nextTick()`), BARU panggil
+ * `window.print()` — kalau urutannya dibalik, browser memotret halaman
+ * sebelum struk pindah dan yang tercetak adalah halaman admin biasa.
+ *
+ * `finally` + event `afterprint` dipasang dua-duanya sebagai jaring
+ * pengaman: `window.print()` memblokir sampai dialog cetak ditutup di
+ * sebagian besar browser, tapi tidak dijamin di semua browser — kalau
+ * `finally` gagal (mis. browser lanjut eksekusi sebelum dialog ditutup),
+ * `afterprint` tetap mengembalikan `printing` ke false.
+ */
+async function printNow() {
+  printing.value = true
+  await nextTick()
+  // Keduanya dipasang SETELAH teleport selesai supaya isolasi cetak cuma hidup
+  // di detik-detik struk benar-benar ada di `<body>` — lihat komentar
+  // PRINT_ISOLATION_CLASS di atas.
+  document.documentElement.classList.add(PRINT_ISOLATION_CLASS)
+  injectPageStyle()
+  try {
+    window.print()
+  } finally {
+    endPrint()
+  }
+}
+
+function endPrint() {
+  printing.value = false
+  if (import.meta.client) {
+    document.documentElement.classList.remove(PRINT_ISOLATION_CLASS)
+    removePageStyle()
+  }
+}
+
+if (import.meta.client) {
+  useEventListener(window, 'afterprint', endPrint)
+}
+
+// Komponen bisa ter-unmount saat dialog cetak masih terbuka (mis. operator
+// pindah halaman). Tanpa ini, kelas penanda tertinggal menempel di <html> dan
+// setiap Ctrl+P berikutnya mencetak kertas kosong.
+onBeforeUnmount(endPrint)
+
+defineExpose({ printNow })
 </script>
 
 <template>
-  <div class="flex justify-center bg-canvas-alt p-6 print:block print:bg-transparent print:p-0">
+  <!--
+    Teleport SENGAJA dinonaktifkan (`:disabled="!printing"`) di luar momen
+    cetak — begitu `printing` false, wrapper ini kembali dirender di tempat
+    aslinya (mis. panel sukses POS, atau tersembunyi di Detail Order), jadi
+    preview di layar tidak berubah sama sekali. Saat `printNow()` dipanggil,
+    `printing` jadi true dan wrapper (berikut #struk di dalamnya) benar-benar
+    pindah jadi anak langsung `<body>` — di titik itulah CSS print di bawah
+    (`body > *:not(#struk-print-root) { display: none }`) menyembunyikan
+    SISA halaman admin dengan `display: none` (menghapusnya dari layout),
+    bukan `visibility: hidden` (yang tetap memakan tinggi halaman dan
+    membuat dialog cetak menghitung halaman kedua yang kosong).
+  -->
+  <Teleport to="body" :disabled="!printing">
     <div
-      id="struk"
-      class="shrink-0 space-y-2.5 bg-white p-3 font-mono text-[11px] leading-relaxed text-ink-950 shadow-sm ring-1 ring-black/5 print:w-auto print:shadow-none print:ring-0"
-      :class="receiptWidthMm === 80 ? 'w-[80mm]' : 'w-[58mm]'"
+      id="struk-print-root"
+      class="flex justify-center bg-canvas-alt p-6 print:block print:bg-transparent print:p-0"
     >
+      <div
+        id="struk"
+        class="shrink-0 space-y-2.5 bg-white p-3 font-mono text-[11px] leading-relaxed text-ink-950 shadow-sm ring-1 ring-black/5 print:w-auto print:shadow-none print:ring-0"
+        :class="receiptWidthMm === 80 ? 'w-[80mm]' : 'w-[58mm]'"
+      >
       <!--
         Kop: logo maskot Rajaku versi 1-bit khusus cetak.
 
@@ -319,25 +417,31 @@ function fmtDateTime(iso: string): string {
       <div class="border-t border-dashed border-ink-400" />
 
       <p class="text-center text-ink-700">Terima kasih atas kepercayaan Anda</p>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped>
 /*
- * Isolasi cetak — teknik klasik: sembunyikan seluruh body, tampilkan cuma
- * #struk. Dipindah apa adanya dari pages/admin/pos/index.vue supaya kedua
- * halaman pemakai (POS & Detail Order) mendapat teknik yang sama persis.
- * Halaman pemanggil tetap disarankan menambah `print:hidden` di elemen
- * levelnya sendiri (header, sidebar dst) sebagai jaring pengaman kedua —
- * lihat pemakaian di `pages/admin/pos/index.vue` & `pages/admin/order/[resi]/index.vue`.
+ * Isolasi cetak — root ini (`#struk-print-root`, lihat `<Teleport>` di
+ * template) pindah jadi anak langsung `<body>` selama `printNow()` berjalan.
+ * Begitu dia pindah, satu-satunya yang perlu dilakukan CSS adalah
+ * MENGHAPUS saudara-saudaranya dari layout dengan `display: none`.
+ *
+ * Teknik lama di sini dulu `visibility: hidden` pada `body *` + `visibility:
+ * visible` pada `#struk` — SENGAJA DIGANTI karena `visibility: hidden` tidak
+ * menghapus elemen dari layout, cuma menyembunyikannya secara visual. Seluruh
+ * isi halaman admin (sidebar, form, dst) tetap memakan tinggi dokumen saat
+ * dicetak, jadi browser menghitung halaman kedua yang kosong (dialog cetak
+ * melaporkan "2 sheets of paper" walau yang terlihat cuma satu struk).
+ * `display: none` benar-benar menghapus elemen dari alur layout, jadi tinggi
+ * dokumen cetak jadi setinggi struk saja.
  *
  * `:global(...)` wajib dipakai untuk selector yang menyentuh elemen di luar
- * root komponen ini (`body`, `html`) — `<style scoped>` polos tidak bisa
+ * root komponen ini (`body`) — `<style scoped>` polos tidak bisa
  * menjangkaunya. Semua di sini dibungkus `@media print`, jadi tidak
- * berpengaruh sama sekali ke tampilan layar — termasuk saat komponen ini
- * di-mount tersembunyi di layar (mis. `hidden print:block` di Detail Order,
- * struk cuma boleh muncul saat benar-benar mencetak).
+ * berpengaruh sama sekali ke tampilan layar.
  */
 @media print {
   :global(html) {
@@ -354,20 +458,18 @@ function fmtDateTime(iso: string): string {
     background: white;
   }
 
-  :global(body *) {
-    visibility: hidden;
-  }
+  /* Sembunyikan SELURUH anak langsung body kecuali root struk yang
+     ter-teleport. `:not(#struk-print-root)` — bukan cuma `body *` — supaya
+     hanya level teratas yang dihapus dari layout (menghapus satu leluhur
+     sudah cukup menghapus semua keturunannya, tidak perlu selector
+     universal yang lebih berat).
 
-  #struk,
-  #struk * {
-    visibility: visible !important;
-  }
-
-  #struk {
-    position: absolute;
-    top: 0;
-    left: 0;
-    padding: 3mm;
+     Digerbangi `html.cetak-struk` yang cuma menempel selama `printNow()`
+     berjalan: tanpa gerbang itu, Ctrl+P biasa di halaman POS (yang strukya
+     ter-mount permanen tapi belum ter-teleport) akan mengeluarkan kertas
+     kosong. */
+  :global(html.cetak-struk body > *:not(#struk-print-root)) {
+    display: none !important;
   }
 
   #struk img,

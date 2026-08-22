@@ -79,15 +79,24 @@ const rejectReason = ref('')
 const rejectOpen = ref(false)
 const busy = ref(false)
 
+/**
+ * Error milik modal preview/reject yang sedang terbuka. Dipisah dari `errorMsg`
+ * (banner halaman) karena banner ada di belakang overlay modal — kegagalan
+ * approve/reject jadi tidak terlihat sampai modal ditutup manual.
+ */
+const modalError = ref<string | null>(null)
+
 async function openPreview(p: PaymentProof) {
   previewProof.value = p
   previewURL.value = null
   rejectReason.value = ''
+  modalError.value = null
   previewLoading.value = true
   try {
     previewURL.value = await pay.proofFilePreviewURL(p.id)
   } catch (e: unknown) {
-    errorMsg.value = e instanceof Error ? e.message : 'Gagal load preview'
+    // Modal preview sudah terbuka saat blob di-fetch — errornya ikut ke modal.
+    modalError.value = e instanceof Error ? e.message : 'Gagal load preview'
   } finally {
     previewLoading.value = false
   }
@@ -98,13 +107,14 @@ function closePreview() {
   previewURL.value = null
   previewProof.value = null
   rejectReason.value = ''
+  modalError.value = null
 }
 
 async function onApprove() {
   const p = previewProof.value
   if (!p) return
   busy.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     await pay.approveProof(p.id)
     successMsg.value = `Bukti order ${p.order_id.slice(0, 8)}… disetujui.`
@@ -112,13 +122,14 @@ async function onApprove() {
     closePreview()
     await fetchList()
   } catch (e: unknown) {
-    errorMsg.value = e instanceof ApiError ? e.message : 'Gagal approve'
+    modalError.value = e instanceof ApiError ? e.message : 'Gagal approve'
   } finally {
     busy.value = false
   }
 }
 
 function askReject() {
+  modalError.value = null
   rejectOpen.value = true
 }
 
@@ -126,11 +137,11 @@ async function confirmReject() {
   const p = previewProof.value
   if (!p) return
   if (rejectReason.value.trim().length < 3) {
-    errorMsg.value = 'Alasan reject minimal 3 karakter.'
+    modalError.value = 'Alasan reject minimal 3 karakter.'
     return
   }
   busy.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     await pay.rejectProof(p.id, rejectReason.value.trim())
     successMsg.value = `Bukti order ${p.order_id.slice(0, 8)}… ditolak.`
@@ -139,7 +150,7 @@ async function confirmReject() {
     closePreview()
     await fetchList()
   } catch (e: unknown) {
-    errorMsg.value = e instanceof ApiError ? e.message : 'Gagal reject'
+    modalError.value = e instanceof ApiError ? e.message : 'Gagal reject'
   } finally {
     busy.value = false
   }
@@ -266,6 +277,7 @@ const previewIsPDF = computed(() => previewProof.value?.file_mime_type === 'appl
             </div>
 
             <div class="flex-1 overflow-auto p-4 bg-canvas-alt">
+              <AlertMessage v-if="modalError && !rejectOpen" variant="error" :message="modalError" class="mb-4" />
               <div v-if="previewLoading" class="text-center text-sm text-ink-500 py-12">
                 Memuat preview…
               </div>
@@ -350,6 +362,7 @@ const previewIsPDF = computed(() => previewProof.value?.file_mime_type === 'appl
             <p class="mt-1 text-xs text-ink-500 leading-relaxed">
               Alasan ini dikirim ke customer via WA supaya mereka tahu apa yang perlu diperbaiki.
             </p>
+            <AlertMessage v-if="modalError" variant="error" :message="modalError" class="mt-3" />
             <textarea
               v-model="rejectReason"
               rows="3"

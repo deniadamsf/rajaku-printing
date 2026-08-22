@@ -151,22 +151,30 @@ const shippedTracking = ref('')
 const shippedNote = ref('')
 const shippedBusy = ref(false)
 
+/**
+ * Error milik modal "Serahkan ke kurir". Dipisah dari `errorMsg` (banner
+ * halaman) karena banner ada di belakang overlay modal — kegagalan submit
+ * jadi tidak terlihat sampai modal ditutup manual.
+ */
+const modalError = ref<string | null>(null)
+
 function openShippedModal(order: Order) {
   shippedOrder.value = order
   shippedCourier.value = ''
   shippedTracking.value = ''
   shippedNote.value = ''
+  modalError.value = null
 }
 
 async function submitShipped() {
   const o = shippedOrder.value
   if (!o) return
   if (!shippedCourier.value.trim() || !shippedTracking.value.trim()) {
-    errorMsg.value = 'Courier & tracking wajib diisi.'
+    modalError.value = 'Courier & tracking wajib diisi.'
     return
   }
   shippedBusy.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     await productionSvc.markShipped(o.resi, {
       courier: shippedCourier.value.trim(),
@@ -178,7 +186,7 @@ async function submitShipped() {
     shippedOrder.value = null
     await fetchList()
   } catch (e: unknown) {
-    errorMsg.value = e instanceof ApiError ? e.message : 'Gagal mark shipped'
+    modalError.value = e instanceof ApiError ? e.message : 'Gagal mark shipped'
   } finally {
     shippedBusy.value = false
   }
@@ -304,6 +312,7 @@ function fmtDate(s: string): string {
             <p class="mt-1 text-xs text-ink-500 leading-relaxed">
               Input nama ekspedisi & nomor resi kurir. Customer dinotifikasi via WA.
             </p>
+            <AlertMessage v-if="modalError" variant="error" :message="modalError" class="mt-3" />
             <div class="mt-4 space-y-3">
               <div>
                 <label for="courier" class="block text-xs font-medium text-ink-700">Ekspedisi</label>

@@ -31,7 +31,7 @@
 import { computed } from 'vue'
 import { renderSVG } from 'uqr'
 
-import { business } from '~/utils/business'
+import { business, fullAddress } from '~/utils/business'
 
 export interface ReceiptStrukProps {
   resi: string
@@ -78,10 +78,9 @@ const receiptWidthMm = computed<58 | 80>(() => (props.widthMm === 80 ? 80 : 58))
 // Identitas toko dibaca dari SATU sumber (utils/business.ts) yang juga
 // menyuplai schema markup LocalBusiness & footer — sekali pemilik memperbarui
 // alamat/telepon di sana, struk ikut berubah tanpa sentuh file ini.
-// Sengaja HANYA nama, alamat jalan, kota, dan telepon: postalCode/email/geo
-// di file itu masih ditandai TODO (placeholder) dan tidak boleh tercetak ke
-// tangan pelanggan.
-const storeAddress = computed(() => `${business.streetAddress}, ${business.addressLocality}`)
+// `fullAddress` sudah termasuk kode pos (dikonfirmasi pemilik 22 Agustus 2026);
+// email & koordinat sengaja tidak dicetak — kertas 58mm sempit, dan yang
+// dibutuhkan pelanggan di tangan cuma "di mana" dan "telepon ke mana".
 
 // QR menuju halaman lacak resi. renderSVG (uqr, tanpa dependensi) memberi SVG
 // vektor hitam-putih murni — bukan raster — jadi printer thermal 1-bit
@@ -210,7 +209,13 @@ function fmtDateTime(iso: string): string {
         keluhan atau mau cetak ulang.
       -->
       <div class="text-center leading-snug text-ink-900">
-        <p class="break-words">{{ storeAddress }}</p>
+        <p class="break-words">{{ fullAddress }}</p>
+        <!--
+          Patokan ikut tercetak: struk walk-in sering dibawa pulang lalu dipakai
+          orang lain (suami/karyawan) untuk mengambil pesanan — mereka butuh
+          penanda jalan, bukan cuma nomor rumah.
+        -->
+        <p class="break-words">{{ business.landmark }}</p>
         <p>Telp/WA {{ business.telephone }}</p>
       </div>
 

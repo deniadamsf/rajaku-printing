@@ -7,6 +7,12 @@
  *
  * Palet & ikon patuh CLAUDE.md §26 (brand crimson + ink warm neutral + Lucide
  * monoline). Sidebar pakai ink-950 (near-black warm) bukan slate-900 (biru-tint).
+ *
+ * Tinggi sidebar: aside = kolom flex setinggi layar (sticky di desktop, drawer
+ * fixed di mobile), header brand `shrink-0`, nav `flex-1 min-h-0 overflow-y-auto`.
+ * JANGAN kembali ke tinggi hitung manual (`h-[calc(100vh-3.5rem)]`) — angkanya
+ * meleset begitu tinggi header berubah, dan 100vh di browser mobile menghitung
+ * bar URL yang tersembunyi sehingga menu paling bawah terpotong.
  */
 import { LayoutDashboard, Menu, X } from '@lucide/vue'
 
@@ -54,11 +60,11 @@ async function onLogout() {
       <!-- Sidebar -->
       <aside
         :class="[
-          'fixed inset-y-0 left-0 z-40 w-64 shrink-0 bg-ink-950 text-ink-100 transform transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 print:hidden',
+          'fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col bg-ink-950 text-ink-100 transform transition-transform lg:sticky lg:top-0 lg:h-dvh lg:translate-x-0 print:hidden',
           sidebarOpen ? 'translate-x-0' : '-translate-x-full',
         ]"
       >
-        <div class="flex h-14 items-center justify-between px-5 border-b border-white/5">
+        <div class="flex h-14 shrink-0 items-center justify-between px-5 border-b border-white/5">
           <NuxtLink
             to="/admin"
             class="font-serif text-base tracking-tight text-canvas"
@@ -77,12 +83,12 @@ async function onLogout() {
           </button>
         </div>
 
-        <nav class="nav-scroll px-3 py-5 space-y-6 overflow-y-auto h-[calc(100vh-3.5rem)]">
+        <nav class="nav-scroll min-h-0 flex-1 overflow-y-auto px-3 py-4 space-y-5">
           <div>
             <NuxtLink
               to="/admin"
               :class="[
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
+                'flex items-center gap-3 rounded-md px-3 py-1.5 text-sm transition-colors',
                 isActive('/admin')
                   ? 'bg-white/5 text-canvas'
                   : 'text-ink-300 hover:bg-white/5 hover:text-canvas',
@@ -107,7 +113,7 @@ async function onLogout() {
                 <NuxtLink
                   :to="item.to"
                   :class="[
-                    'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
+                    'flex items-center gap-3 rounded-md px-3 py-1.5 text-sm transition-colors',
                     isActive(item.to)
                       ? 'bg-white/5 text-canvas'
                       : 'text-ink-300 hover:bg-white/5 hover:text-canvas',
@@ -159,19 +165,24 @@ async function onLogout() {
 
 <style scoped>
 /*
- * Scrollbar nav sidebar disembunyikan sampai di-hover — scrollbar tebal bawaan
- * Windows (dengan tombol panah) merusak kesan minimalis sidebar (CLAUDE.md §26).
- * Area tetap bisa di-scroll wheel/keyboard, jadi tidak ada konten yang hilang.
+ * Scrollbar nav sidebar dibuat tipis & lembut — scrollbar tebal bawaan Windows
+ * (dengan tombol panah) merusak kesan minimalis sidebar (CLAUDE.md §26).
+ *
+ * Thumb-nya sengaja TIDAK disembunyikan total seperti sebelumnya: kalau daftar
+ * menu kebetulan lebih tinggi dari layar (jendela pendek / zoom browser besar),
+ * item paling bawah terpotong tanpa tanda apa pun — terbaca sebagai tampilan
+ * rusak, bukan sebagai area yang bisa di-scroll. Samar saat diam, jelas saat
+ * kursor di atas sidebar.
  */
 .nav-scroll {
   scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
   transition: scrollbar-color 200ms ease-out;
 }
 
 .nav-scroll:hover,
 .nav-scroll:focus-within {
-  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
 }
 
 .nav-scroll::-webkit-scrollbar {
@@ -183,13 +194,13 @@ async function onLogout() {
 }
 
 .nav-scroll::-webkit-scrollbar-thumb {
-  background-color: transparent;
+  background-color: rgba(255, 255, 255, 0.1);
   border-radius: 9999px;
   transition: background-color 200ms ease-out;
 }
 
 .nav-scroll:hover::-webkit-scrollbar-thumb,
 .nav-scroll:focus-within::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.18);
+  background-color: rgba(255, 255, 255, 0.24);
 }
 </style>

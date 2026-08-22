@@ -48,6 +48,15 @@ const loading = ref(true)
 const errorMsg = ref<string | null>(null)
 const successMsg = ref<string | null>(null)
 
+/**
+ * Error khusus dialog "Lewati Upload". Dipisah dari `errorMsg` (banner
+ * halaman) karena banner ada di belakang overlay dialog — kegagalan submit
+ * jadi tidak terlihat sampai dialog ditutup manual. Aksi lain di halaman ini
+ * (verify, walk-in approve, upload draft, preview/download) tetap pakai
+ * `errorMsg`.
+ */
+const modalError = ref<string | null>(null)
+
 useSeoMeta({ title: () => `Desain ${resi.value} — Admin` })
 
 // Permissions
@@ -153,10 +162,16 @@ async function doWalkin() {
 const skipUploadBusy = ref(false)
 const skipUploadNote = ref('')
 const skipUploadDialogOpen = ref(false)
+
+function openSkipUploadDialog() {
+  modalError.value = null
+  skipUploadDialogOpen.value = true
+}
+
 async function doSkipUpload() {
   if (!skipUploadNote.value.trim()) return
   skipUploadBusy.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     await designSvc.skipUpload(resi.value, skipUploadNote.value.trim())
     successMsg.value = 'Order lanjut ke desain_diverifikasi tanpa file. Catatan tersimpan di riwayat.'
@@ -165,7 +180,7 @@ async function doSkipUpload() {
     skipUploadDialogOpen.value = false
     await load()
   } catch (e: unknown) {
-    errorMsg.value = e instanceof ApiError ? e.message : 'Gagal melewati upload'
+    modalError.value = e instanceof ApiError ? e.message : 'Gagal melewati upload'
   } finally {
     skipUploadBusy.value = false
   }
@@ -566,7 +581,7 @@ v-if="order.design_source === 'request' && (order.design_brief || customerAssets
             type="button"
             class="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-md border border-hairline bg-canvas px-3 py-2 text-sm font-semibold text-ink-900 hover:bg-canvas-alt disabled:opacity-60 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
             :disabled="!skipUploadNote.trim()"
-            @click="skipUploadDialogOpen = true"
+            @click="openSkipUploadDialog"
           >
             <Printer class="h-4 w-4" :stroke-width="1.75" />
             Lewati Upload — Langsung Cetak
@@ -611,6 +626,7 @@ v-if="order.design_source === 'request' && (order.design_brief || customerAssets
       confirm-label="Ya, lanjut cetak"
       variant="danger"
       :loading="skipUploadBusy"
+      :error="modalError"
       @confirm="doSkipUpload"
     >
       <div class="mt-4 rounded-md bg-canvas-alt p-3">

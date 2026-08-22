@@ -55,6 +55,13 @@ const loading = ref(false)
 const errorMsg = ref<string | null>(null)
 const successMsg = ref<string | null>(null)
 
+/**
+ * Error milik modal invite/edit yang sedang terbuka. Dipisah dari `errorMsg`
+ * (banner halaman) karena banner ada di belakang overlay modal — kegagalan
+ * submit jadi tidak terlihat sampai modal ditutup manual.
+ */
+const modalError = ref<string | null>(null)
+
 const roles = ref<AdminRole[]>([])
 const rolesLoading = ref(false)
 
@@ -129,7 +136,7 @@ const inviteResult = ref<CreateStaffResult | null>(null)
 const copiedField = ref<'url' | 'token' | null>(null)
 
 function openInviteModal() {
-  errorMsg.value = null
+  modalError.value = null
   inviteResult.value = null
   inviteForm.name = ''
   inviteForm.email = ''
@@ -145,7 +152,7 @@ function closeInviteModal() {
 
 async function submitInvite() {
   inviteSaving.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     const res = await staffApi.createStaff({
       name: inviteForm.name.trim(),
@@ -156,7 +163,7 @@ async function submitInvite() {
     inviteResult.value = res
     await fetchStaff()
   } catch (e) {
-    errorMsg.value = toApiError(e, 'Gagal membuat staff')
+    modalError.value = toApiError(e, 'Gagal membuat staff')
   } finally {
     inviteSaving.value = false
   }
@@ -186,7 +193,7 @@ const editForm = reactive<UpdateStaffInput & { role_ids: string[] }>({
 const editSaving = ref(false)
 
 function openEditModal(s: AdminStaffUser) {
-  errorMsg.value = null
+  modalError.value = null
   editingStaff.value = s
   editForm.name = s.name
   editForm.email = s.email ?? ''
@@ -199,7 +206,7 @@ async function submitEdit() {
   const s = editingStaff.value
   if (!s) return
   editSaving.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     // Basic profile update.
     await staffApi.updateStaff(s.id, {
@@ -219,7 +226,7 @@ async function submitEdit() {
     editingStaff.value = null
     await fetchStaff()
   } catch (e) {
-    errorMsg.value = toApiError(e, 'Gagal update staff')
+    modalError.value = toApiError(e, 'Gagal update staff')
   } finally {
     editSaving.value = false
   }
@@ -511,6 +518,8 @@ function fmtDateTime(iso?: string): string {
                 Sistem generate link invite. Anda forward manual ke calon staff via WA / email.
               </p>
 
+              <AlertMessage v-if="modalError" variant="error" :message="modalError" class="mt-4" />
+
               <div class="mt-4 space-y-4">
                 <div>
                   <label for="inv-name" class="block text-sm font-medium text-ink-900">Nama <span class="text-brand-500">*</span></label>
@@ -634,6 +643,8 @@ function fmtDateTime(iso?: string): string {
                   <X class="h-4 w-4" :stroke-width="1.75" />
                 </button>
               </div>
+
+              <AlertMessage v-if="modalError" variant="error" :message="modalError" class="mt-4" />
 
               <div class="mt-4 space-y-4">
                 <div>

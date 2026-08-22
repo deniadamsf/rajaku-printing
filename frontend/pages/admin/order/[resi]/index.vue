@@ -80,6 +80,16 @@ const auditLoading = ref(false)
 const errorMsg = ref<string | null>(null)
 const successMsg = ref<string | null>(null)
 
+/**
+ * Error milik modal yang sedang terbuka (cancel/edit/override/hapus). Dipisah
+ * dari `errorMsg` (banner halaman) karena banner ada di belakang overlay
+ * modal — kegagalan submit jadi tidak terlihat sampai modal ditutup manual.
+ * Halaman ini punya 4 modal tapi cuma satu yang bisa terbuka pada satu waktu,
+ * jadi cukup satu ref. Aksi NON-modal (set ongkir, confirm pickup, fetch
+ * detail) tetap pakai `errorMsg` seperti biasa.
+ */
+const modalError = ref<string | null>(null)
+
 useSeoMeta({ title: () => `Order ${resi.value} — Admin` })
 
 function showSuccess(msg: string) {
@@ -372,13 +382,19 @@ const cancelOpen = ref(false)
 const cancelReason = ref('')
 const cancelBusy = ref(false)
 
+function openCancel() {
+  cancelReason.value = ''
+  modalError.value = null
+  cancelOpen.value = true
+}
+
 async function submitCancel() {
   if (cancelReason.value.trim().length < 3) {
-    errorMsg.value = 'Alasan pembatalan minimal 3 karakter.'
+    modalError.value = 'Alasan pembatalan minimal 3 karakter.'
     return
   }
   cancelBusy.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     order.value = await orderSvc.cancelOrder(resi.value, cancelReason.value.trim())
     cancelOpen.value = false
@@ -386,7 +402,7 @@ async function submitCancel() {
     showSuccess('Order dibatalkan.')
     await loadDetail()
   } catch (e) {
-    errorMsg.value = toApiError(e, 'Gagal cancel order')
+    modalError.value = toApiError(e, 'Gagal cancel order')
   } finally {
     cancelBusy.value = false
   }
@@ -429,7 +445,7 @@ function openEdit() {
   editForm.subtotal = order.value.subtotal ?? 0
   editForm.shipping_cost = order.value.shipping_cost ?? 0
   editForm.reason = ''
-  errorMsg.value = null
+  modalError.value = null
   editOpen.value = true
 }
 
@@ -447,7 +463,7 @@ const editCanSubmit = computed(() => !editReasonRequired.value || editForm.reaso
 async function submitEdit() {
   if (!order.value || !editCanSubmit.value) return
   editBusy.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     const body: AdminOrderEditInput = {
       shipping_recipient_name: editForm.shipping_recipient_name.trim(),
@@ -466,7 +482,7 @@ async function submitEdit() {
     await loadDetail()
     await loadAuditLog()
   } catch (e) {
-    errorMsg.value = toApiError(e, 'Gagal menyimpan perubahan pesanan')
+    modalError.value = toApiError(e, 'Gagal menyimpan perubahan pesanan')
   } finally {
     editBusy.value = false
   }
@@ -504,14 +520,14 @@ function openOverride() {
   if (!order.value) return
   overrideToStatus.value = order.value.status as OrderStatus
   overrideReason.value = ''
-  errorMsg.value = null
+  modalError.value = null
   overrideOpen.value = true
 }
 
 async function submitOverride() {
   if (!order.value || !overrideCanSubmit.value) return
   overrideBusy.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     order.value = await orderSvc.adminOverrideStatus(resi.value, {
       to_status: overrideToStatus.value,
@@ -522,7 +538,7 @@ async function submitOverride() {
     await loadDetail()
     await loadAuditLog()
   } catch (e) {
-    errorMsg.value = toApiError(e, 'Gagal mengubah status pesanan')
+    modalError.value = toApiError(e, 'Gagal mengubah status pesanan')
   } finally {
     overrideBusy.value = false
   }
@@ -546,15 +562,21 @@ const deleteBusy = ref(false)
 const deleteReason = ref('')
 const deleteCanSubmit = computed(() => deleteReason.value.trim().length >= 10)
 
+function openDelete() {
+  deleteReason.value = ''
+  modalError.value = null
+  deleteOpen.value = true
+}
+
 async function submitDelete() {
   if (!order.value || !deleteCanSubmit.value) return
   deleteBusy.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     await orderSvc.adminDeleteOrder(resi.value, deleteReason.value.trim())
     await navigateTo('/admin/order')
   } catch (e) {
-    errorMsg.value = toApiError(e, 'Gagal menghapus pesanan')
+    modalError.value = toApiError(e, 'Gagal menghapus pesanan')
     deleteBusy.value = false
   }
 }
@@ -686,7 +708,7 @@ function waLink(phone: string): string {
           v-if="canCancelNow"
           type="button"
           class="inline-flex items-center gap-2 rounded-md border border-brand-200 bg-canvas px-3 py-1.5 text-sm font-semibold text-brand-700 hover:bg-brand-50 hover:border-brand-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
-          @click="cancelOpen = true"
+          @click="openCancel"
         >
           <XCircle class="h-4 w-4" :stroke-width="1.75" />
           Cancel
@@ -716,7 +738,7 @@ function waLink(phone: string): string {
           :disabled="!canDeleteNow"
           :title="canDeleteNow ? undefined : deleteDisabledReason"
           class="inline-flex items-center gap-2 rounded-md border border-brand-200 bg-canvas px-3 py-1.5 text-sm font-semibold text-brand-700 hover:bg-brand-50 hover:border-brand-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-canvas disabled:hover:border-brand-200"
-          @click="deleteOpen = true"
+          @click="openDelete"
         >
           <Trash2 class="h-4 w-4" :stroke-width="1.75" />
           Hapus
@@ -1214,6 +1236,7 @@ function waLink(phone: string): string {
               Order akan masuk status <strong class="text-ink-900">dibatalkan</strong> dan tidak bisa dikembalikan
               ke flow reguler. Alasan wajib diisi untuk audit.
             </p>
+            <AlertMessage v-if="modalError" variant="error" :message="modalError" class="mt-3" />
             <textarea
               v-model="cancelReason"
               rows="3"
@@ -1257,6 +1280,8 @@ function waLink(phone: string): string {
               Perubahan tercatat di jejak audit. Data penerima &amp; alamat selalu bisa diedit; subtotal &amp; ongkir
               butuh alasan kalau pesanan sudah dibayar.
             </p>
+
+            <AlertMessage v-if="modalError" variant="error" :message="modalError" class="mt-4" />
 
             <div class="mt-4 space-y-3">
               <div>
@@ -1395,6 +1420,8 @@ function waLink(phone: string): string {
               <strong class="text-ink-900">tidak mengirim notifikasi WA</strong> ke pelanggan, dan tercatat di jejak audit.
             </p>
 
+            <AlertMessage v-if="modalError" variant="error" :message="modalError" class="mt-4" />
+
             <div class="mt-4 space-y-3">
               <div>
                 <label for="override-status" class="block text-xs font-medium text-ink-700">Status baru</label>
@@ -1460,6 +1487,7 @@ function waLink(phone: string): string {
               <span class="font-mono text-[11px] text-ink-700">{{ order?.resi }}</span> tetap bisa dilacak publik di
               halaman lacak resi. Alasan wajib diisi untuk audit.
             </p>
+            <AlertMessage v-if="modalError" variant="error" :message="modalError" class="mt-3" />
             <textarea
               v-model="deleteReason"
               rows="3"

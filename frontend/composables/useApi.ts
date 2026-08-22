@@ -69,6 +69,28 @@ function humanNetworkMessage(status?: number): string {
   return 'Permintaan gagal diproses. Coba lagi.'
 }
 
+/**
+ * stripInternalPrefix — buang konteks internal yang ikut menempel di pesan error
+ * backend. Konvensi Go di CLAUDE.md §22 membungkus error dengan nama modul,
+ * mis. "authapi: role name already exists" atau
+ * "catalog admin: validation failed: code wajib …". Prefiks itu berguna di log
+ * server, tapi kalau ditampilkan apa adanya ke layar admin terbaca sebagai
+ * jargon. Dibersihkan di sini (satu tempat) supaya semua halaman ikut rapi
+ * tanpa masing-masing bikin helper sendiri.
+ *
+ * Sengaja hanya mencocokkan prefiks modul yang memang dipakai backend — bukan
+ * pola "kata apa pun sebelum titik dua" — supaya pesan yang wajar seperti
+ * "Ukuran maksimal: 4 MB" tidak ikut terpotong.
+ */
+const INTERNAL_PREFIX_RE = /^(?:[a-z]+api|catalog admin|workerclient|filestore|repository|service):\s*/i
+const GENERIC_PREFIX_RE = /^validation failed:\s*/i
+
+export function humanizeApiMessage(raw: string): string {
+  const cleaned = raw.replace(INTERNAL_PREFIX_RE, '').replace(GENERIC_PREFIX_RE, '')
+  if (!cleaned) return raw
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+}
+
 export function useApi(options: UseApiOptions = {}) {
   const config = useRuntimeConfig()
   const baseURL = config.public.apiBase
@@ -92,7 +114,7 @@ export function useApi(options: UseApiOptions = {}) {
       })
       if (!res.success || res.data === undefined) {
         throw new ApiError(
-          res.error?.message ?? 'API request failed',
+          res.error?.message ? humanizeApiMessage(res.error.message) : 'Permintaan gagal diproses. Coba lagi.',
           res.error?.code ?? 'UNKNOWN',
           undefined,
           res.error?.details,
@@ -105,7 +127,7 @@ export function useApi(options: UseApiOptions = {}) {
       const env = err?.data
       if (env && env.error) {
         throw new ApiError(
-          env.error.message,
+          humanizeApiMessage(env.error.message),
           env.error.code,
           err.status ?? err.statusCode,
           env.error.details,

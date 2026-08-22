@@ -54,6 +54,15 @@ const detailLoading = ref(false)
 const errorMsg = ref<string | null>(null)
 const successMsg = ref<string | null>(null)
 
+/**
+ * Error milik modal "Role baru". Dipisah dari `errorMsg` (banner halaman)
+ * karena banner ada di belakang overlay modal — kegagalan submit jadi tidak
+ * terlihat sampai modal ditutup manual. Aksi lain di halaman ini (savePerms,
+ * saveBasic, deleteRole) ada di panel biasa, bukan modal — tetap pakai
+ * `errorMsg`.
+ */
+const modalError = ref<string | null>(null)
+
 // Basic edit fields (dirty tracked separately from permission set)
 const basicForm = reactive({
   display_name: '',
@@ -268,12 +277,13 @@ function openCreate() {
   createForm.name = ''
   createForm.display_name = ''
   createForm.description = ''
+  modalError.value = null
   createOpen.value = true
 }
 
 async function submitCreate() {
   createSaving.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     const r = await roleApi.createRole({
       name: createForm.name.trim(),
@@ -285,7 +295,7 @@ async function submitCreate() {
     await fetchAll()
     await selectRole(r.id)
   } catch (e) {
-    errorMsg.value = toApiError(e, 'Gagal buat role')
+    modalError.value = toApiError(e, 'Gagal buat role')
   } finally {
     createSaving.value = false
   }
@@ -545,6 +555,8 @@ const categoryLabel: Record<string, string> = {
               <p class="mt-1 text-xs text-ink-500 leading-relaxed">
                 Buat role kosong dulu. Toggle permission-nya di panel editor setelah dibuat.
               </p>
+
+              <AlertMessage v-if="modalError" variant="error" :message="modalError" class="mt-4" />
 
               <div class="mt-4 space-y-4">
                 <div>

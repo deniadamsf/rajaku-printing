@@ -57,6 +57,44 @@ function toApiError(e: unknown, fallback: string): string {
   return e instanceof ApiError ? e.message : fallback
 }
 
+/**
+ * Error milik modal yang sedang terbuka. Dipisah dari `errorMsg` (banner
+ * halaman) karena banner berada di belakang overlay modal — pesan gagal simpan
+ * jadi tidak terlihat sampai modal ditutup. Semua kegagalan submit di dalam
+ * modal harus masuk ke sini, bukan ke `errorMsg`.
+ */
+const modalError = ref<string | null>(null)
+
+/**
+ * Pesan dari backend sudah dibersihkan dari prefiks modul internal di
+ * `useApi` (`humanizeApiMessage`), jadi di sini cukup diteruskan.
+ */
+function toModalError(e: unknown, fallback: string) {
+  modalError.value = toApiError(e, fallback)
+}
+
+/**
+ * Code bahan hanya boleh huruf/angka/-/_ tanpa spasi (backend menolak sisanya).
+ * Dinormalisasi sambil user mengetik ke huruf kecil, mengikuti konvensi data
+ * yang sudah ada (`flexi_280`, `vinyl_solvent`).
+ */
+function normalizeMaterialCode(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 50)
+}
+
+/** Slug produk wajib a-z/0-9/- di backend — normalisasi sambil user mengetik. */
+function normalizeProductSlug(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .slice(0, 150)
+}
+
 // -------------------- materials --------------------
 const materials = ref<AdminMaterial[]>([])
 const materialsLoading = ref(false)
@@ -86,6 +124,7 @@ const materialSaving = ref(false)
 
 function openMaterialModal(existing?: AdminMaterial) {
   errorMsg.value = null
+  modalError.value = null
   if (existing) {
     materialEditingId.value = existing.id
     materialForm.code = existing.code
@@ -102,7 +141,7 @@ function openMaterialModal(existing?: AdminMaterial) {
 
 async function saveMaterial() {
   materialSaving.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     const body: AdminMaterialInput = {
       code: materialForm.code.trim(),
@@ -119,7 +158,7 @@ async function saveMaterial() {
     materialModalOpen.value = false
     await fetchMaterials()
   } catch (e) {
-    errorMsg.value = toApiError(e, 'Gagal menyimpan bahan')
+    toModalError(e, 'Gagal menyimpan bahan')
   } finally {
     materialSaving.value = false
   }
@@ -174,6 +213,7 @@ const productSaving = ref(false)
 
 function openProductModal(existing?: AdminProduct) {
   errorMsg.value = null
+  modalError.value = null
   if (existing) {
     productEditingId.value = existing.id
     productForm.slug = existing.slug
@@ -208,7 +248,7 @@ function openProductModal(existing?: AdminProduct) {
 
 async function saveProduct() {
   productSaving.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     const body: AdminProductInput = {
       slug: productForm.slug.trim(),
@@ -236,7 +276,7 @@ async function saveProduct() {
     productModalOpen.value = false
     await fetchProducts()
   } catch (e) {
-    errorMsg.value = toApiError(e, 'Gagal menyimpan produk')
+    toModalError(e, 'Gagal menyimpan produk')
   } finally {
     productSaving.value = false
   }
@@ -381,6 +421,7 @@ const activeMaterials = computed(() => materials.value.filter((m) => m.is_active
 
 function openPricingModal(existing?: AdminPricingRow) {
   errorMsg.value = null
+  modalError.value = null
   if (existing) {
     pricingEditingId.value = existing.id
     pricingForm.material_id = existing.material_id
@@ -406,7 +447,7 @@ function openPricingModal(existing?: AdminPricingRow) {
 async function savePricing() {
   if (!detailProduct.value) return
   pricingSaving.value = true
-  errorMsg.value = null
+  modalError.value = null
   try {
     const body: AdminPricingInput = { material_id: pricingForm.material_id }
     if (detailProduct.value.pricing_type === 'per_m2') {
@@ -428,7 +469,7 @@ async function savePricing() {
     pricingModalOpen.value = false
     await openProductDetail(detailProduct.value.id)
   } catch (e) {
-    errorMsg.value = toApiError(e, 'Gagal menyimpan pricing')
+    toModalError(e, 'Gagal menyimpan pricing')
   } finally {
     pricingSaving.value = false
   }
@@ -894,6 +935,8 @@ onMounted(async () => {
               <h3 class="font-serif text-lg font-semibold text-ink-950">
                 {{ materialEditingId ? 'Edit bahan' : 'Bahan baru' }}
               </h3>
+
+              <AlertMessage v-if="modalError" variant="error" :message="modalError" class="mt-4" />
               <div class="mt-4 space-y-4">
                 <div>
                   <label for="mat-code" class="block text-sm font-medium text-ink-900">Code <span class="text-brand-500">*</span></label>
@@ -902,10 +945,11 @@ onMounted(async () => {
                     v-model="materialForm.code"
                     type="text"
                     required
-                    placeholder="FLEXI_280"
+                    placeholder="flexi_280"
                     class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm font-mono placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                    @input="materialForm.code = normalizeMaterialCode(materialForm.code)"
                   >
-                  <p class="mt-1 text-xs text-ink-500">Huruf besar, angka, tanda <span class="font-mono">-</span> / <span class="font-mono">_</span>. Dipakai internal.</p>
+                  <p class="mt-1 text-xs text-ink-500">Huruf kecil, angka, <span class="font-mono">-</span> dan <span class="font-mono">_</span> — dirapikan otomatis. Dipakai internal.</p>
                 </div>
                 <div>
                   <label for="mat-name" class="block text-sm font-medium text-ink-900">Nama <span class="text-brand-500">*</span></label>
@@ -963,6 +1007,8 @@ onMounted(async () => {
               <h3 class="font-serif text-lg font-semibold text-ink-950">
                 {{ productEditingId ? 'Edit produk' : 'Produk baru' }}
               </h3>
+
+              <AlertMessage v-if="modalError" variant="error" :message="modalError" class="mt-4" />
               <div class="mt-4 grid gap-4 sm:grid-cols-2">
                 <div>
                   <label for="prd-slug" class="block text-sm font-medium text-ink-900">Slug <span class="text-brand-500">*</span></label>
@@ -973,6 +1019,7 @@ onMounted(async () => {
                     required
                     placeholder="banner-flexi"
                     class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm font-mono placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                    @input="productForm.slug = normalizeProductSlug(productForm.slug)"
                   >
                 </div>
                 <div>
@@ -1123,6 +1170,8 @@ onMounted(async () => {
                 Produk <strong class="text-ink-900">{{ detailProduct.name }}</strong>
                 · type <span class="font-mono">{{ detailProduct.pricing_type }}</span>
               </p>
+
+              <AlertMessage v-if="modalError" variant="error" :message="modalError" class="mt-4" />
 
               <div class="mt-4 space-y-4">
                 <div>

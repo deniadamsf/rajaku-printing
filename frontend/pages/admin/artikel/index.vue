@@ -26,6 +26,13 @@ const total = ref(0)
 const loading = ref(false)
 const errorMsg = ref<string | null>(null)
 
+/**
+ * Error khusus dialog konfirmasi hapus artikel. Dipisah dari `errorMsg`
+ * (banner halaman) karena banner ada di belakang overlay dialog — kegagalan
+ * hapus jadi tidak terlihat sampai dialog ditutup manual.
+ */
+const modalError = ref<string | null>(null)
+
 async function fetchList() {
   loading.value = true
   errorMsg.value = null
@@ -105,19 +112,21 @@ async function onArchive(a: Article) {
 }
 function askDelete(a: Article) {
   pendingDelete.value = a
+  modalError.value = null
   confirmOpen.value = true
 }
 async function confirmDelete() {
   const a = pendingDelete.value
   if (!a) return
   busyID.value = a.id
+  modalError.value = null
   try {
     await cms.remove(a.id)
     confirmOpen.value = false
     pendingDelete.value = null
     await fetchList()
   } catch (e: unknown) {
-    errorMsg.value = e instanceof ApiError ? e.message : 'Gagal hapus'
+    modalError.value = e instanceof ApiError ? e.message : 'Gagal hapus'
   } finally {
     busyID.value = null
   }
@@ -243,6 +252,7 @@ async function confirmDelete() {
       confirm-label="Ya, hapus"
       variant="danger"
       :loading="busyID !== null"
+      :error="modalError"
       @confirm="confirmDelete"
       @cancel="pendingDelete = null"
     />

@@ -22,6 +22,13 @@ const props = withDefaults(
     variant?: 'default' | 'danger'
     /** Disable confirm sementara aksi async berjalan. */
     loading?: boolean
+    /**
+     * Error dari aksi konfirmasi yang gagal (mis. request submit di dalam
+     * dialog ini gagal). Dirender DI DALAM dialog — bukan cuma dilempar ke
+     * banner error level-halaman, yang posisinya di belakang overlay modal
+     * dan jadi tidak terlihat sampai dialog ditutup manual.
+     */
+    error?: string | null
   }>(),
   {
     confirmLabel: 'Konfirmasi',
@@ -29,6 +36,7 @@ const props = withDefaults(
     message: '',
     variant: 'default',
     loading: false,
+    error: null,
   },
 )
 
@@ -67,6 +75,7 @@ const confirmClass = computed(() =>
           <!-- Slot opsional: konten tambahan sebelum tombol aksi, mis. bandingkan
                nilai lama vs baru berdampingan untuk perubahan sensitif (§26). -->
           <slot />
+          <AlertMessage v-if="error" variant="error" :message="error" class="mt-4" />
           <div class="mt-5 flex justify-end gap-2">
             <button
               type="button"

@@ -31,7 +31,6 @@ import {
   ClipboardList,
   Clock,
   Mail,
-  MapPin,
   PackageCheck,
   Phone,
   Printer,
@@ -375,13 +374,6 @@ function waLink(): string {
 
           <dl class="mt-6 space-y-4">
             <div class="flex items-start gap-3">
-              <MapPin class="mt-0.5 h-4 w-4 shrink-0 text-brand-500" :stroke-width="1.5" />
-              <dd class="text-sm leading-relaxed text-ink-700">
-                {{ business.streetAddress }}, {{ business.addressLocality }},
-                {{ business.addressRegion }} {{ business.postalCode }}
-              </dd>
-            </div>
-            <div class="flex items-start gap-3">
               <Phone class="mt-0.5 h-4 w-4 shrink-0 text-brand-500" :stroke-width="1.5" />
               <dd>
                 <a
@@ -433,22 +425,44 @@ function waLink(): string {
           </a>
         </div>
 
-        <div class="rounded-lg border border-hairline bg-ink-950 p-8 md:p-10 flex flex-col justify-center">
-          <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-gold-400">Siap dibantu</p>
-          <h2 class="mt-3 font-serif text-xl md:text-2xl font-semibold text-canvas">
-            Punya kebutuhan cetak? Mulai order kapan saja.
-          </h2>
-          <p class="mt-3 text-sm leading-relaxed text-canvas/75">
-            Order online lewat website, atau datang langsung ke lokasi kami untuk konsultasi
-            bahan dan ukuran.
-          </p>
-          <NuxtLink
-            to="/order"
-            class="mt-6 inline-flex w-fit items-center justify-center gap-2 rounded-md border border-canvas/25 px-6 py-3 text-sm font-semibold text-canvas transition-colors hover:bg-canvas/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950"
-          >
-            Order Banner
-          </NuxtLink>
-        </div>
+        <!--
+          Alamat & peta tinggal DI SINI saja (LocationCard), tidak diulang di
+          daftar kontak sebelahnya — alamat yang tercetak dua kali dalam satu
+          layar terbaca sebagai kelalaian, bukan sebagai penegasan.
+        -->
+        <LocationCard />
+      </motion.div>
+    </section>
+
+    <!--
+      Ajakan order dipindah keluar dari kolom kanan section kontak (dulu kartu
+      gelap kecil di sebelah alamat) jadi pita gelap selebar layar tepat
+      sebelum footer. Ini pola penutup yang sama dengan landing (§26.12):
+      section gelap menempel ke footer gelap, jadi kaki halaman terbaca sebagai
+      satu penutup utuh, bukan tambalan.
+    -->
+    <section class="bg-ink-950">
+      <motion.div
+        class="mx-auto max-w-2xl px-4 py-16 text-center md:py-20"
+        :initial="{ opacity: 0, y: 16 }"
+        :while-in-view="{ opacity: 1, y: 0 }"
+        :in-view-options="{ once: true, margin: '-40px' }"
+        :transition="fadeTransition"
+      >
+        <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-gold-400">Siap dibantu</p>
+        <h2 class="mt-3 font-serif text-xl md:text-2xl font-semibold text-canvas">
+          Punya kebutuhan cetak? Mulai order kapan saja.
+        </h2>
+        <p class="mx-auto mt-3 max-w-md text-sm leading-relaxed text-canvas/70">
+          Order online lewat website, atau datang langsung ke toko kami —
+          {{ business.landmark }} — untuk konsultasi bahan dan ukuran.
+        </p>
+        <NuxtLink
+          to="/order"
+          class="mt-8 inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-6 py-3 text-sm font-semibold text-canvas transition-colors duration-200 ease-out hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950"
+        >
+          Order Banner
+        </NuxtLink>
       </motion.div>
     </section>
   </main>

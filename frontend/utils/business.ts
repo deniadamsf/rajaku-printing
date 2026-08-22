@@ -2,12 +2,11 @@
  * business.ts — satu-satunya sumber data NAP (Name/Address/Phone) & jam operasional
  * Rajaku Printing (CLAUDE.md §15, §26.11 spirit "single source"). Dipakai oleh:
  *  - JSON-LD LocalBusiness di `layouts/default.vue`
- *  - Section kontak di landing page (`components/landing/ClosingCta.vue`)
+ *  - Footer di semua halaman publik (`layouts/default.vue`)
+ *  - Halaman `/tentang-kami` (kartu kontak + kartu lokasi/peta)
+ *  - Struk kasir (`components/admin/ReceiptStruk.vue`)
  *
  * JANGAN duplikasi/hardcode data ini ke file lain — kalau butuh, import dari sini.
- *
- * TODO(rajaku): data NAP asli belum diberikan pemilik — seluruh field di bawah ini
- * masih placeholder dan WAJIB diganti dengan data asli sebelum go-live produksi.
  */
 
 export interface BusinessOpeningHours {
@@ -22,17 +21,20 @@ export interface BusinessOpeningHours {
 export interface BusinessInfo {
   name: string
   legalName: string
+  /**
+   * Nama lama tempat ini sebelum berganti jadi Rajaku Printing. Dipakai sebagai
+   * `alternateName` di JSON-LD dan sebagai patokan tertulis di halaman lokasi:
+   * warga sekitar (dan listing Google Maps) masih mengenal tempat ini dengan
+   * nama lamanya, jadi menyebutkannya justru menolong orang menemukan toko —
+   * bukan sekadar nostalgia.
+   */
+  formerName?: string
   description: string
   streetAddress: string
+  /** Patokan arah untuk pelanggan yang datang langsung (bukan bagian alamat pos). */
+  landmark: string
   addressLocality: string
   addressRegion: string
-  /**
-   * Kode pos. OPSIONAL dengan sengaja: lebih baik tidak dikirim ke Google
-   * daripada dikirim salah. NAP (Name-Address-Phone) yang tidak konsisten
-   * dengan sumber lain justru menurunkan kepercayaan hasil pencarian lokal.
-   * Kalau `undefined`, field ini dihilangkan dari JSON-LD (lihat
-   * layouts/default.vue), bukan dikirim kosong.
-   */
   postalCode?: string
   addressCountry: string
   /** Format E.164 untuk `tel:` & JSON-LD. */
@@ -48,6 +50,8 @@ export interface BusinessInfo {
    * yang salah. Kalau `undefined`, blok `geo` dihilangkan dari JSON-LD.
    */
   geo?: { latitude: number; longitude: number }
+  /** Tautan Google Maps resmi toko (dibagikan pemilik). */
+  mapsUrl: string
   /** Skala schema.org priceRange, mis. "$", "$$". */
   priceRange: string
   /** Metode bayar yang diterima (§7 & §11) — untuk JSON-LD `paymentAccepted`. */
@@ -58,26 +62,26 @@ export interface BusinessInfo {
 // (layouts/default.vue), footer, halaman tentang-kami, dan struk kasir yang
 // dicetak untuk pelanggan — jadi salah di sini menyebar ke mana-mana.
 //
-// DIKONFIRMASI ASLI oleh pemilik (21 Agustus 2026): nama, alamat jalan, kota,
-// telepon/WA, dan email. Jangan diubah tanpa konfirmasi ulang.
+// DIKONFIRMASI ASLI oleh pemilik (22 Agustus 2026): alamat lengkap, kode pos,
+// patokan lokasi, dan koordinat — dikirim langsung bersama tautan Google Maps
+// tokonya. Alamat sebelumnya ("Dobangsan, Ngantru", tanpa kode pos & koordinat)
+// SALAH dan sudah diganti; jangan dikembalikan.
 //
-// `postalCode` dan `geo` SENGAJA dibiarkan kosong, bukan terlupakan. Nilai
-// sebelumnya (66312 dan -8.0503/111.7096) adalah tebakan pengisi yang tidak
-// pernah diverifikasi. Mengirim NAP yang salah ke Google lebih merugikan
-// daripada tidak mengirimnya sama sekali: kode pos yang bentrok dengan sumber
-// lain menurunkan kepercayaan data, dan koordinat meleset menaruh pin peta di
-// alamat orang lain. Keduanya dihilangkan dari JSON-LD selama masih kosong.
+// `geo` diambil dari titik tengah tautan Maps milik pemilik, bukan tebakan —
+// inilah syarat yang dulu menahan `geo` & `postalCode` tetap kosong. Kalau
+// suatu saat pin dirasa meleset, perbaiki DI SINI (satu tempat), jangan
+// menambal koordinat baru di komponen.
 export const business: BusinessInfo = {
   name: 'Rajaku Printing',
   legalName: 'Rajaku Printing',
+  formerName: 'Toko Purnama Sari',
   description:
     'Percetakan banner dan digital printing large-format untuk usaha, event, dan kebutuhan pribadi di Trenggalek, Jawa Timur.',
-  streetAddress: 'Jl. Panglima Sudirman No. 88, Dobangsan, Ngantru',
+  streetAddress: 'Jl. Panglima Sudirman No. 88',
+  landmark: 'Depan Pasar Pon Trenggalek',
   addressLocality: 'Trenggalek',
   addressRegion: 'Jawa Timur',
-  // TODO(rajaku): isi kode pos asli kelurahan Ngantru, Trenggalek. Lihat
-  // catatan di atas — biarkan kosong sampai terverifikasi, jangan ditebak.
-  postalCode: undefined,
+  postalCode: '66311',
   addressCountry: 'ID',
   telephone: '+6282146343549',
   whatsapp: '6282146343549',
@@ -91,11 +95,49 @@ export const business: BusinessInfo = {
     },
   ],
   serviceArea: ['Trenggalek', 'Tulungagung', 'Ponorogo', 'Pacitan'],
-  // TODO(rajaku): isi koordinat asli toko. Cara tercepat: buka Google Maps,
-  // klik kanan tepat di lokasi toko, angka paling atas di menu itu adalah
-  // latitude, longitude — salin apa adanya ke sini.
-  geo: undefined,
+  geo: { latitude: -8.0550688, longitude: 111.7082517 },
+  // Tautan yang dibagikan pemilik. Parameter `g_ep` (cap build Maps) sengaja
+  // dibuang: nilainya kedaluwarsa dan tidak dibutuhkan supaya tautan bekerja.
+  mapsUrl:
+    'https://www.google.com/maps/search/Toko+Purnama+Sari/@-8.0550688,111.7082517,862m/data=!3m1!1e3?hl=id',
   priceRange: '$$',
   // §7 & §11 — transfer bank + QRIS untuk order online, tunai + QRIS di kasir.
   paymentAccepted: ['Cash', 'QRIS', 'Bank Transfer'],
 }
+
+/**
+ * Alamat satu baris (jalan, kota, provinsi, kode pos) — dipakai di tempat yang
+ * cuma punya satu baris muat, mis. struk kasir. Dirakit di sini supaya format
+ * pemisahnya tidak ditulis ulang beda-beda di tiap komponen.
+ */
+export const fullAddress = [
+  business.streetAddress,
+  business.addressLocality,
+  `${business.addressRegion} ${business.postalCode ?? ''}`.trim(),
+]
+  .filter(Boolean)
+  .join(', ')
+
+const geoQuery = business.geo ? `${business.geo.latitude},${business.geo.longitude}` : null
+
+/**
+ * Peta siap-embed TANPA API key (endpoint `output=embed` klasik). Sengaja tidak
+ * memakai Maps Embed API: itu butuh kunci berbayar yang harus dirotasi, dan
+ * halaman ini cuma perlu menampilkan satu pin statis.
+ *
+ * `null` kalau koordinat belum ada — komponen pemanggil WAJIB memperlakukan
+ * peta sebagai pelengkap: alamat, patokan, dan tombol arah harus tetap tampil
+ * sebagai teks asli walau petanya tidak muncul.
+ */
+export const mapsEmbedUrl = geoQuery
+  ? `https://maps.google.com/maps?q=${geoQuery}&z=17&hl=id&output=embed`
+  : null
+
+/**
+ * Petunjuk arah. Sengaja memakai koordinat, bukan nama tempat: nama listing di
+ * Google Maps masih nama lama, dan pencarian nama bisa mendarat di tempat lain
+ * yang mirip. Koordinat selalu menunjuk titik yang sama.
+ */
+export const mapsDirectionsUrl = geoQuery
+  ? `https://www.google.com/maps/dir/?api=1&destination=${geoQuery}`
+  : business.mapsUrl

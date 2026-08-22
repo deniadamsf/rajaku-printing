@@ -9,7 +9,7 @@
  * JSON-LD LocalBusiness (§15) dipasang sekali di sini (bukan per-halaman) —
  * data NAP diambil dari satu sumber `~/utils/business.ts`.
  */
-import { ArrowRight, Clock, Mail, MapPin, MessageCircle, PackageSearch } from '@lucide/vue'
+import { ArrowRight, Clock, ExternalLink, Mail, MapPin, MessageCircle, PackageSearch } from '@lucide/vue'
 import { business } from '~/utils/business'
 
 const config = useRuntimeConfig()
@@ -57,6 +57,10 @@ const jsonLd = computed(() =>
     '@id': `${baseUrl}/#business`,
     name: business.name,
     legalName: business.legalName,
+    // Nama lama tempat ini. Listing Google Maps & ingatan warga sekitar masih
+    // memakainya, jadi mesin pencari perlu tahu keduanya menunjuk usaha yang
+    // sama — tanpa ini, pencarian nama lama tidak pernah bertemu halaman ini.
+    alternateName: business.formerName,
     description: business.description,
     url: baseUrl,
     image: schemaImage.value,
@@ -82,6 +86,9 @@ const jsonLd = computed(() =>
           longitude: business.geo.longitude,
         }
       : undefined,
+    // Tautan peta resmi toko — dipakai Google untuk memastikan halaman ini
+    // dan listing Maps-nya adalah tempat yang sama.
+    hasMap: business.mapsUrl,
     areaServed: business.serviceArea,
     paymentAccepted: business.paymentAccepted.join(', '),
     currenciesAccepted: 'IDR',
@@ -149,10 +156,31 @@ useHead({
             <ul class="mt-6 space-y-3 text-sm">
               <li class="flex gap-3">
                 <MapPin class="mt-0.5 h-4 w-4 shrink-0 text-gold-500" :stroke-width="1.5" />
-                <span class="text-canvas/70">
-                  {{ business.streetAddress }},
-                  {{ business.addressLocality }}, {{ business.addressRegion }}
-                </span>
+                <div>
+                  <p class="text-canvas/70">
+                    {{ business.streetAddress }},
+                    {{ business.addressLocality }}, {{ business.addressRegion }}
+                    {{ business.postalCode }}
+                  </p>
+                  <!--
+                    Patokan sengaja tampil di footer SETIAP halaman, bukan cuma
+                    di /tentang-kami: alamat jalan saja jarang cukup untuk
+                    menemukan toko di kota kecil — orang mencari penandanya.
+                  -->
+                  <p class="mt-1 text-canvas/45">{{ business.landmark }}</p>
+                  <a
+                    :href="business.mapsUrl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    :class="[
+                      'mt-2 inline-flex items-center gap-1.5 font-medium text-gold-400 transition-colors duration-200 ease-out hover:text-gold-300',
+                      focusRing,
+                    ]"
+                  >
+                    Lihat di Google Maps
+                    <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.5" />
+                  </a>
+                </div>
               </li>
               <li class="flex gap-3">
                 <Clock class="mt-0.5 h-4 w-4 shrink-0 text-gold-500" :stroke-width="1.5" />

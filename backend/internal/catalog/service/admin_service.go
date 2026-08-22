@@ -33,7 +33,11 @@ var (
 )
 
 var slugRe = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
-var codeRe = regexp.MustCompile(`^[A-Z0-9_-]+$`)
+
+// codeRe sengaja menerima huruf besar & kecil: data seed (migration 000002)
+// memakai code huruf kecil seperti "flexi_280", jadi regex uppercase-only bikin
+// setiap update bahan lama ditolak walau code-nya tidak diubah.
+var codeRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // -------------------------------------------------------------------------
 //  Material inputs
@@ -49,7 +53,7 @@ func (in MaterialInput) validate() error {
 	code := strings.TrimSpace(in.Code)
 	name := strings.TrimSpace(in.Name)
 	if code == "" || len(code) > 50 || !codeRe.MatchString(code) {
-		return fmt.Errorf("%w: code wajib (A-Z, 0-9, -, _), max 50 karakter", ErrValidation)
+		return fmt.Errorf("%w: code wajib (huruf, angka, -, _ tanpa spasi), max 50 karakter", ErrValidation)
 	}
 	if name == "" || len(name) > 150 {
 		return fmt.Errorf("%w: name wajib, max 150 karakter", ErrValidation)

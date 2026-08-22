@@ -1,22 +1,37 @@
 <script setup lang="ts">
 /**
- * Layout default — sticky navbar (§17): CTA "Order Banner" & "Login" wajib selalu
- * visible di semua halaman publik. Compliant dengan CLAUDE.md §26 (brand tokens
- * + Fraunces wordmark, tanpa rose/slate).
+ * Layout default — kerangka halaman publik: navbar (`SiteHeader`, §17 — CTA
+ * "Order Banner" & akses login selalu terlihat), slot konten, dan footer.
+ *
+ * Navbar sengaja tinggal di komponennya sendiri: dia punya state (drawer
+ * mobile, status scroll) yang tidak ada urusannya dengan layout.
  *
  * JSON-LD LocalBusiness (§15) dipasang sekali di sini (bukan per-halaman) —
  * data NAP diambil dari satu sumber `~/utils/business.ts`.
  */
+import { ArrowRight, Clock, Mail, MapPin, MessageCircle, PackageSearch } from '@lucide/vue'
 import { business } from '~/utils/business'
 
-const auth = useAuthStore()
-const route = useRoute()
 const config = useRuntimeConfig()
 
 // Focus ring §26.6 — wajib di semua elemen interaktif. Dijadikan konstanta karena
 // dipakai di 8 link/button navbar & footer; menulis ulang inline bikin drift.
+/** Tautan kolom footer — satu definisi, dipakai belasan kali di bawah. */
+const footerLink =
+  'text-canvas/70 transition-colors duration-200 ease-out hover:text-canvas'
+
+const footerExplore = [
+  { label: 'Katalog', to: '/katalog' },
+  { label: 'Showcase', to: '/showcase' },
+  { label: 'Artikel', to: '/artikel' },
+  { label: 'Tentang Kami', to: '/tentang-kami' },
+] as const
+
+// Offset ring memakai ink-950 karena seluruh pemakaiannya kini ada di footer
+// yang berlatar gelap — offset canvas akan menggambar cincin putih di atas
+// hitam, terlihat seperti cacat render.
 const focusRing =
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas rounded-sm'
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/50 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950 rounded-sm'
 
 const baseUrl = config.public.appBaseUrl.replace(/\/$/, '')
 
@@ -87,119 +102,121 @@ useHead({
     },
   ],
 })
-
-async function onLogout() {
-  await auth.logout()
-  await navigateTo('/')
-}
-
-function isActive(prefix: string) {
-  return route.path === prefix || route.path.startsWith(prefix + '/')
-}
 </script>
 
 <template>
   <div class="min-h-screen flex flex-col bg-canvas text-ink-900 font-sans">
-    <header class="sticky top-0 z-40 bg-canvas/85 backdrop-blur border-b border-hairline">
-      <div class="mx-auto max-w-6xl px-4 h-14 flex items-center justify-between">
-        <NuxtLink to="/" :class="['font-serif text-lg tracking-tight text-ink-950', focusRing]">
-          Rajaku
-          <span class="text-gold-500 font-normal">Printing</span>
-        </NuxtLink>
+    <!--
+      Garis progres baca (gaya di assets/css/tailwind.css). Murni penanda
+      visual, karenanya `aria-hidden` — pembaca layar sudah punya cara
+      sendiri mengetahui posisi di dalam dokumen.
+    -->
+    <div class="scroll-progress" aria-hidden="true" />
 
-        <nav class="flex items-center gap-4 sm:gap-6">
-          <NuxtLink
-            to="/katalog"
-            :class="[
-              'hidden sm:inline text-sm font-medium transition-colors',
-              isActive('/katalog') ? 'text-brand-500' : 'text-ink-700 hover:text-ink-950',
-              focusRing,
-            ]"
-          >
-            Katalog
-          </NuxtLink>
-
-          <NuxtLink
-            to="/showcase"
-            :class="[
-              'hidden sm:inline text-sm font-medium transition-colors',
-              isActive('/showcase') ? 'text-brand-500' : 'text-ink-700 hover:text-ink-950',
-              focusRing,
-            ]"
-          >
-            Showcase
-          </NuxtLink>
-
-          <NuxtLink
-            to="/artikel"
-            :class="[
-              'hidden sm:inline text-sm font-medium transition-colors',
-              isActive('/artikel') ? 'text-brand-500' : 'text-ink-700 hover:text-ink-950',
-              focusRing,
-            ]"
-          >
-            Artikel
-          </NuxtLink>
-
-          <NuxtLink
-            to="/order"
-            class="inline-flex items-center rounded-md bg-brand-500 text-canvas px-4 py-2 text-sm font-semibold hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
-          >
-            Order Banner
-          </NuxtLink>
-
-          <template v-if="auth.isAuthenticated">
-            <NuxtLink
-              :to="auth.homePath"
-              :class="['text-sm font-medium text-ink-700 hover:text-ink-950 transition-colors', focusRing]"
-            >
-              {{ auth.user?.name?.split(' ')[0] || 'Akun' }}
-            </NuxtLink>
-            <button
-              type="button"
-              :class="['text-sm font-medium text-ink-500 hover:text-brand-500 transition-colors', focusRing]"
-              @click="onLogout"
-            >
-              Keluar
-            </button>
-          </template>
-          <template v-else>
-            <NuxtLink
-              to="/login"
-              :class="['text-sm font-medium text-ink-700 hover:text-ink-950 transition-colors', focusRing]"
-            >
-              Login
-            </NuxtLink>
-          </template>
-        </nav>
-      </div>
-    </header>
+    <SiteHeader />
 
     <main class="flex-1">
       <slot />
     </main>
 
-    <footer class="border-t border-hairline py-8 mt-16">
-      <div class="mx-auto max-w-6xl px-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-ink-500">
-        <div class="flex items-center gap-2">
-          <img
-            :src="footerLogo"
-            alt="Rajaku Printing"
-            width="480"
-            height="461"
-            loading="lazy"
-            class="h-8 w-auto"
-          >
+    <!--
+      Footer sengaja GELAP dan menempel langsung ke section penutup yang juga
+      gelap — sebelumnya ada jarak putih `mt-16` di antara keduanya, yang
+      terbaca sebagai sobekan terang di kaki halaman, bukan sebagai penutup.
+
+      Isinya NAP (nama-alamat-telepon) dari `~/utils/business.ts`, sumber yang
+      sama dengan JSON-LD LocalBusiness di atas. Menampilkannya sebagai teks
+      biasa penting untuk SEO lokal (§15): data yang cuma hidup di JSON-LD
+      tidak pernah terbaca pengunjung, dan mesin pencari lebih percaya NAP
+      yang konsisten antara markup dan tampilan.
+    -->
+    <footer class="bg-ink-950 text-canvas/70 print:hidden">
+      <div class="mx-auto max-w-6xl px-4 py-10 md:py-16">
+        <div class="grid gap-8 md:grid-cols-[1.5fr_1fr_1fr] md:gap-12">
+          <div>
+            <img
+              :src="footerLogo"
+              alt="Rajaku Printing"
+              width="480"
+              height="461"
+              loading="lazy"
+              class="h-16 w-auto"
+            >
+            <p class="mt-4 max-w-xs text-sm leading-relaxed text-canvas/60">
+              {{ business.description }}
+            </p>
+
+            <ul class="mt-6 space-y-3 text-sm">
+              <li class="flex gap-3">
+                <MapPin class="mt-0.5 h-4 w-4 shrink-0 text-gold-500" :stroke-width="1.5" />
+                <span class="text-canvas/70">
+                  {{ business.streetAddress }},
+                  {{ business.addressLocality }}, {{ business.addressRegion }}
+                </span>
+              </li>
+              <li class="flex gap-3">
+                <Clock class="mt-0.5 h-4 w-4 shrink-0 text-gold-500" :stroke-width="1.5" />
+                <span class="text-canvas/70">{{ business.openingHours[0].label }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <nav aria-label="Jelajahi">
+            <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-canvas/45">Jelajahi</p>
+            <ul class="mt-4 space-y-2.5 text-sm">
+              <li v-for="l in footerExplore" :key="l.to">
+                <NuxtLink :to="l.to" :class="[footerLink, focusRing]">{{ l.label }}</NuxtLink>
+              </li>
+            </ul>
+          </nav>
+
+          <div>
+            <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-canvas/45">Hubungi</p>
+            <ul class="mt-4 space-y-2.5 text-sm">
+              <li>
+                <a
+                  :href="`https://wa.me/${business.whatsapp}`"
+                  target="_blank"
+                  rel="noopener"
+                  :class="['inline-flex items-center gap-2', footerLink, focusRing]"
+                >
+                  <MessageCircle class="h-4 w-4 shrink-0" :stroke-width="1.5" />
+                  WhatsApp
+                </a>
+              </li>
+              <li>
+                <a :href="`mailto:${business.email}`" :class="['inline-flex items-center gap-2', footerLink, focusRing]">
+                  <Mail class="h-4 w-4 shrink-0" :stroke-width="1.5" />
+                  {{ business.email }}
+                </a>
+              </li>
+              <li>
+                <NuxtLink to="/lacak" :class="['inline-flex items-center gap-2', footerLink, focusRing]">
+                  <PackageSearch class="h-4 w-4 shrink-0" :stroke-width="1.5" />
+                  Lacak Resi
+                </NuxtLink>
+              </li>
+            </ul>
+
+            <NuxtLink
+              to="/order"
+              :class="[
+                'mt-6 inline-flex items-center gap-2 rounded-md bg-brand-500 px-4 py-2.5 text-sm font-semibold text-canvas transition-colors duration-200 ease-out hover:bg-brand-600',
+                focusRing,
+              ]"
+            >
+              Order Banner
+              <ArrowRight class="h-4 w-4" :stroke-width="1.5" />
+            </NuxtLink>
+          </div>
         </div>
-        <nav class="flex flex-wrap items-center justify-center gap-5">
-          <NuxtLink to="/katalog" :class="['hover:text-ink-900 transition-colors', focusRing]">Katalog</NuxtLink>
-          <NuxtLink to="/showcase" :class="['hover:text-ink-900 transition-colors', focusRing]">Showcase</NuxtLink>
-          <NuxtLink to="/tentang-kami" :class="['hover:text-ink-900 transition-colors', focusRing]">Tentang Kami</NuxtLink>
-          <NuxtLink to="/artikel" :class="['hover:text-ink-900 transition-colors', focusRing]">Artikel</NuxtLink>
-          <NuxtLink to="/order" :class="['hover:text-ink-900 transition-colors', focusRing]">Order Banner</NuxtLink>
-          <NuxtLink to="/lacak" :class="['hover:text-ink-900 transition-colors', focusRing]">Lacak Resi</NuxtLink>
-        </nav>
-        <p>&copy; {{ new Date().getFullYear() }} Rajaku Printing</p>
+
+        <div
+          class="mt-8 flex flex-col gap-2 border-t border-white/10 pt-6 text-xs text-canvas/45 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <p>&copy; {{ new Date().getFullYear() }} {{ business.name }}</p>
+          <p>Melayani {{ business.serviceArea.join(' · ') }}</p>
+        </div>
       </div>
     </footer>
   </div>

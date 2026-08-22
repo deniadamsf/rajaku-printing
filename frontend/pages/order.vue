@@ -89,12 +89,51 @@ onMounted(async () => {
   try {
     const res = await catalog.listProducts()
     products.value = res.products
+    applyPrefillFromQuery()
   } catch (e) {
     submitError.value = e instanceof ApiError ? e.message : 'Gagal memuat katalog'
   } finally {
     loadingProducts.value = false
   }
 })
+
+/**
+ * Isi awal formulir dari query string, dikirim widget estimasi di landing
+ * (`LandingPriceTeaser` → `/order?produk=…&bahan=…&lebar=…&tinggi=…`).
+ *
+ * Tanpa ini, orang yang baru saja menyusun estimasi harus memilih produk,
+ * bahan, dan mengetik ukuran yang sama sekali lagi dari nol — persis di
+ * langkah yang paling menentukan.
+ *
+ * Nilainya TIDAK dipercaya begitu saja: id produk & bahan dicocokkan dulu ke
+ * katalog yang benar-benar dimuat, ukuran wajib angka positif. Query string
+ * bisa diketik siapa saja, dan formulir yang terisi data ngawur lebih buruk
+ * daripada formulir kosong. Harga tetap dihitung ulang server seperti biasa.
+ *
+ * Bahan & ukuran baru bisa diisi SETELAH detail produk termuat: watcher
+ * `form.productId` mengosongkan ketiga field itu setiap kali produk berganti,
+ * jadi mengisinya lebih awal akan langsung terhapus.
+ */
+function applyPrefillFromQuery() {
+  const q = useRoute().query
+  const pid = typeof q.produk === 'string' ? q.produk : ''
+  if (!pid || !products.value.some((p) => p.id === pid)) return
+
+  form.productId = pid
+
+  const stop = watch(productDetail, (d) => {
+    if (!d) return
+    const mid = typeof q.bahan === 'string' ? q.bahan : ''
+    if (mid && d.pricings.some((r) => r.material_id === mid)) {
+      form.materialId = mid
+    }
+    const w = Number(q.lebar)
+    const h = Number(q.tinggi)
+    if (Number.isFinite(w) && w > 0) form.widthCm = w
+    if (Number.isFinite(h) && h > 0) form.heightCm = h
+    stop()
+  })
+}
 
 watch(
   () => form.productId,

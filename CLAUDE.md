@@ -192,6 +192,9 @@ Pola "2 screen (scaffold di mobile)" diimplementasikan sebagai 2 halaman terpisa
 Ini bukan cuma responsive (resize CSS), tapi **adaptive** — mobile render pohon komponen yang beda dari desktop, supaya aset berat desktop (scroll-scrub sequence, TresJS) tidak ikut ke-load di HP:
 
 - **Layar 1 — Hero/Landing (mobile)**: hero statis (1 gambar/video pendek loop, bukan scroll-scrub), CTA utama **"Order Banner"** (konsisten dengan section 17), animasi ringan saja (fade/slide via motion-v). Tidak ada scroll-scrub sequence maupun TresJS di sini.
+  - **Tinggi hero mobile = satu layar penuh**: `min-h-[calc(100svh-3.5rem)]` (tinggi layar dikurangi navbar), gambar `object-cover` full-bleed. Pakai `svh`, **jangan** `100vh` — di browser HP `100vh` dihitung tanpa bar URL, sehingga kaki hero (tempat tombolnya) tersembunyi saat halaman pertama dibuka.
+  - Aset poster mobile idealnya **potret** (9:16, minimal 1080×1920). Foto lanskap yang dipaksa jadi potret akan ter-crop besar dan pecah — bisa diganti kapan saja lewat `/admin/site-media` slot `hero_poster_mobile` tanpa deploy ulang.
+  - **Scroll-reveal jangan menyembunyikan konten paruh atas**: `in-view-options` di landing pakai `margin: '-40px'`. Dengan `-100px`, elemen yang sudah setengah terlihat saat halaman dibuka tetap `opacity: 0` sampai user menggulir — yang terlihat sebagai ruang kosong besar, bukan sebagai animasi.
 - **Layar 2 — Showcase/Galeri (halaman terpisah)**: diakses dari CTA di Layar 1. Berisi galeri produk pakai swipeable carousel, dan **di halaman inilah** TresJS mockup viewer dimuat (kalau device mendukung) — karena sudah jadi halaman khusus, bukan bagian dari homepage yang harus cepat diakses.
 - **Deteksi & rendering**: pakai composable (`useDevice()`/breakpoint check) untuk conditional component rendering di level Nuxt (bukan cuma `display:none` di CSS), supaya JS bundle desktop-only benar-benar tidak terkirim ke mobile.
 - Desktop tetap dapat pengalaman penuh: hero scroll-scrub cinematic (section 16) dalam satu halaman kontinu.
@@ -403,7 +406,13 @@ Selalu kecil: `text-xs` atau `text-[10px]`, warna `text-ink-500` atau `text-ink-
 
 Premium = generous whitespace. Default spacing Tailwind sering terlalu padat.
 
-- Section vertical padding: `py-16 md:py-24` (bukan `py-8`). Hero: `py-24 md:py-32`.
+> **Revisi 22 Agustus 2026 (keputusan pemilik proyek):** angka lama (`py-16 md:py-24`)
+> membuat landing page terasa "panjang tapi kosong" di HP — jarak antar section
+> lebih menonjol daripada isinya. Skala di bawah sudah dipadatkan satu tingkat.
+> Jangan dikembalikan ke angka lama tanpa keputusan baru.
+
+- Section vertical padding: `py-12 md:py-20`. Hero: satu layar penuh, lihat §18.
+- Jarak judul section → isinya: `mt-8` (bukan `mt-10`).
 - Card padding: `p-6 md:p-8` (bukan `p-4`).
 - Max content width text-heavy: `max-w-2xl` (untuk artikel), `max-w-6xl` (untuk layout multi-column). Jangan biarkan text panjang sampai tepi viewport.
 - Grid gap: `gap-6` default, `gap-8-12` untuk section utama.
@@ -467,6 +476,29 @@ Ini **drift** dan harus di-refactor bertahap. Prioritas migrasi:
 4. Halaman CMS artikel + pembayaran — replace class demi class.
 
 Refactor drift bukan blocking untuk fitur baru — fitur baru **wajib** langsung compliant. Drift lama bisa dikerjakan sebagai task cleanup terpisah.
+
+### 26.12. Ritme terang–gelap & token on-dark (22 Agustus 2026)
+
+Landing page **tidak boleh** jadi satu blok putih panjang. Section gelap (`bg-ink-950`) disebar sebagai jeda: hero → (terang) → galeri proses **gelap** → (terang) → kenapa-rajaku **gelap** → (terang) → penutup **gelap** → footer **gelap**. Footer menempel langsung ke section penutup, tanpa jarak terang di antaranya.
+
+Menggelapkan section berarti **membalik seluruh tokennya**, bukan hanya latarnya:
+
+| Peran | Latar terang | Latar gelap |
+|---|---|---|
+| Latar | `bg-canvas` | `bg-ink-950` |
+| Judul | `text-ink-950` | `text-canvas` |
+| Body | `text-ink-500` | `text-canvas/70` |
+| Eyebrow | `text-ink-500` | `text-canvas/60` |
+| Garis | `border-hairline` | `border-white/10` |
+| Permukaan kartu | `bg-canvas-alt` | `bg-white/5` |
+| Aksen & ikon | `text-brand-500` | `text-gold-400` |
+| Offset focus ring | `ring-offset-canvas` | `ring-offset-ink-950` |
+
+Aksen **wajib** pindah ke emas di latar gelap — crimson `brand-500` di atas `ink-950` kontrasnya di bawah ambang keterbacaan. Tombol solid `bg-brand-500` tetap boleh crimson (kontras datang dari isian, bukan dari teks di atas hitam).
+
+**Gerak berbasis scroll** (garis progres baca, hanyutan hero, hanyutan foto galeri) memakai CSS `animation-timeline`, bukan listener scroll di JS. Satu jebakan yang wajib diingat: `view()` mengukur terhadap wadah scroll **terdekat**, dan `overflow-hidden`/`overflow-x-auto` sudah dihitung sebagai wadah scroll — dipasang di dalamnya animasinya diam total tanpa error. Solusinya `view-timeline-name` di elemen luar yang diukur terhadap dokumen, lalu dirujuk dari dalam. Semua dibungkus `@supports` + `prefers-reduced-motion`, dan keadaan diamnya wajib aman (garis progres mulai `scaleX(0)`).
+
+Detail lengkap + contoh hidup: `/admin/design-system` section **Section gelap**, **Sorotan kursor**, dan **Gerak scroll**.
 
 ### 26.11. Referensi Interaktif — Living Design System
 

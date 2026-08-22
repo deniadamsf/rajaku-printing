@@ -34,6 +34,7 @@
  * Interaksi wajib (brief slider):
  * - Jeda otomatis saat hover ATAU fokus keyboard di dalam slider.
  * - Kontrol manual (panah + dot), keyboard-reachable, focus ring §26.6.
+ * - Geser jari (HP) / seret kursor (desktop), plus panah kiri-kanan keyboard.
  * - `prefers-reduced-motion`: auto-advance mati total, transisi jadi instan
  *   (durasi 0) — kontrol manual tetap berfungsi, cuma tanpa animasi.
  * - Tanpa `aria-live` cerewet — cukup `aria-label` wajar di tiap kontrol.
@@ -109,6 +110,45 @@ function next() {
   goTo((active.value + 1) % slides.value.length)
 }
 
+// --- Geser jari / seret kursor -------------------------------------------
+// Panah & titik saja tidak cukup: di HP, refleks pertama orang terhadap
+// gambar besar adalah menggesernya, dan slider yang tidak merespons gesekan
+// terasa mati. Ambang 40px supaya sentuhan/klik biasa pada tautan di dalam
+// slide tidak ikut terbaca sebagai geseran.
+const SWIPE_THRESHOLD_PX = 40
+let pointerStartX: number | null = null
+
+function onPointerDown(e: PointerEvent) {
+  // Abaikan klik kanan/tengah — hanya gerakan utama yang menggeser slide.
+  if (e.button !== 0) return
+  pointerStartX = e.clientX
+}
+
+function onPointerUp(e: PointerEvent) {
+  if (pointerStartX === null) return
+  const dx = e.clientX - pointerStartX
+  pointerStartX = null
+  if (Math.abs(dx) < SWIPE_THRESHOLD_PX) return
+  if (dx < 0) next()
+  else prev()
+}
+
+function onPointerCancel() {
+  pointerStartX = null
+}
+
+// Panah kiri/kanan saat slider difokuskan keyboard — pasangan wajar dari
+// gesekan di HP, dan membuat slider bisa dijalankan tanpa tetikus.
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'ArrowLeft') {
+    e.preventDefault()
+    prev()
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault()
+    next()
+  }
+}
+
 function onEnter() {
   paused.value = true
   clearTimer()
@@ -137,7 +177,7 @@ const revealTransition = computed(() =>
 </script>
 
 <template>
-  <section v-if="slides.length > 0" id="produk-unggulan" class="mx-auto max-w-6xl px-4 py-16 md:py-24">
+  <section v-if="slides.length > 0" id="produk-unggulan" class="mx-auto max-w-6xl px-4 py-12 md:py-20">
     <div class="max-w-2xl">
       <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Sorotan Produk</p>
       <h2 class="mt-3 text-2xl md:text-3xl font-serif font-semibold tracking-tight text-ink-950">
@@ -152,12 +192,16 @@ const revealTransition = computed(() =>
       aria-label="Sorotan produk"
       :initial="{ opacity: 0, y: prefersReduced ? 0 : 16 }"
       :while-in-view="{ opacity: 1, y: 0 }"
-      :in-view-options="{ once: true, margin: '-100px' }"
+      :in-view-options="{ once: true, margin: '-40px' }"
       :transition="revealTransition"
       @mouseenter="onEnter"
       @mouseleave="onLeave"
       @focusin="onEnter"
       @focusout="onLeave"
+      @pointerdown="onPointerDown"
+      @pointerup="onPointerUp"
+      @pointercancel="onPointerCancel"
+      @keydown="onKeydown"
     >
       <motion.div
         v-for="(s, i) in slides"

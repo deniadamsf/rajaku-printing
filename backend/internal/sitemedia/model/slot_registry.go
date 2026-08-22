@@ -62,11 +62,15 @@ var Registry = []SlotDef{
 		SuggestedHeightPx: 1080,
 	},
 	{
-		Key:               SlotHeroPosterMobile,
-		Label:             "Hero Poster (Mobile)",
-		Description:       "Gambar statis hero untuk Layar 1 mobile (section 18) — bukan scroll-scrub, cukup satu gambar/loop pendek.",
+		Key:   SlotHeroPosterMobile,
+		Label: "Hero Poster (Mobile — Potret)",
+		// Hero mobile tampil SATU LAYAR PENUH (§18), jadi gambarnya harus
+		// potret. Foto lanskap yang diunggah ke sini akan ter-crop besar dan
+		// pecah. Saran komposisi ikut desain hero: subjek di paruh atas,
+		// karena paruh bawah tertutup gradasi gelap tempat judul & tombol.
+		Description:       "Gambar hero layar HP — tampil satu layar penuh, WAJIB potret (9:16). Taruh subjek di paruh ATAS gambar: paruh bawah tertutup gradasi gelap tempat judul & tombol. Desktop tidak memakai slot ini (desktop pakai video/frame sequence).",
 		SuggestedWidthPx:  1080,
-		SuggestedHeightPx: 1350,
+		SuggestedHeightPx: 1920,
 	},
 	{
 		Key:               SlotBrandLogoFull,

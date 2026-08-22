@@ -32,6 +32,9 @@ import type { CatalogProduct } from '~/types/catalog'
 
 const catalog = useCatalog()
 const { container, item } = useRevealVariants()
+// Sorotan mengikuti kursor — pola sama dengan kartu langkah di
+// LandingHowItWorksSection: satu listener di wadah grid, bukan per kartu.
+const { onPointerMove } = useSpotlight()
 
 const { data, pending, error, refresh } = await useAsyncData('landing-catalog-products', () =>
   catalog.listProducts(),
@@ -49,7 +52,7 @@ function pricingLabel(p: CatalogProduct): string {
 </script>
 
 <template>
-  <section id="layanan" class="mx-auto max-w-6xl px-4 py-16 md:py-24">
+  <section id="layanan" class="mx-auto max-w-6xl px-4 py-12 md:py-20">
     <div class="max-w-2xl">
       <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Layanan</p>
       <h2 class="mt-3 text-2xl md:text-3xl font-serif font-semibold tracking-tight text-ink-950">
@@ -69,7 +72,7 @@ function pricingLabel(p: CatalogProduct): string {
     </div>
 
     <!-- Loading skeleton -->
-    <div v-if="pending" class="mt-10 flex snap-x snap-mandatory gap-6 overflow-x-auto pb-2 md:grid md:gap-6 md:overflow-visible md:pb-0 md:grid-cols-2 lg:grid-cols-3">
+    <div v-if="pending" class="mt-8 flex snap-x snap-mandatory gap-6 overflow-x-auto pb-2 md:grid md:gap-6 md:overflow-visible md:pb-0 md:grid-cols-2 lg:grid-cols-3">
       <div
         v-for="i in 3"
         :key="i"
@@ -80,16 +83,17 @@ function pricingLabel(p: CatalogProduct): string {
     <!-- Data katalog nyata -->
     <template v-else-if="products.length > 0">
     <motion.ul
-      class="mt-10 flex snap-x snap-mandatory gap-6 overflow-x-auto pb-2 md:grid md:gap-6 md:overflow-visible md:pb-0 md:grid-cols-2 lg:grid-cols-3"
+      class="mt-8 flex snap-x snap-mandatory gap-6 overflow-x-auto pb-2 md:grid md:gap-6 md:overflow-visible md:pb-0 md:grid-cols-2 lg:grid-cols-3"
       :variants="container"
       initial="hidden"
       while-in-view="show"
-      :in-view-options="{ once: true, margin: '-100px' }"
+      :in-view-options="{ once: true, margin: '-40px' }"
+      @pointermove="onPointerMove"
     >
       <motion.li v-for="p in products" :key="p.id" :variants="item" class="w-[80%] shrink-0 snap-center md:w-auto md:shrink">
         <NuxtLink
           :to="`/katalog#${p.slug}`"
-          class="group flex h-full flex-col overflow-hidden rounded-lg border border-hairline bg-canvas transition-[border-color,box-shadow,transform] duration-200 ease-out hover:-translate-y-0.5 hover:border-ink-300 hover:shadow-sm"
+          class="spotlight group flex h-full flex-col overflow-hidden rounded-lg border border-hairline bg-canvas transition-[border-color,box-shadow,transform] duration-200 ease-out hover:-translate-y-0.5 hover:border-ink-300 hover:shadow-sm"
         >
           <div class="aspect-[4/3] w-full overflow-hidden bg-canvas-alt">
             <img
@@ -128,16 +132,17 @@ function pricingLabel(p: CatalogProduct): string {
     <!-- Anti-kosong: katalog gagal dimuat / belum di-seed — grid statis tetap penuh -->
     <template v-else>
       <motion.ul
-        class="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3"
+        class="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-3"
         :variants="container"
         initial="hidden"
         while-in-view="show"
-        :in-view-options="{ once: true, margin: '-100px' }"
+        :in-view-options="{ once: true, margin: '-40px' }"
+        @pointermove="onPointerMove"
       >
         <motion.li v-for="s in FALLBACK_SERVICES" :key="s.name" :variants="item" class="w-[80%] shrink-0 snap-center md:w-auto md:shrink">
           <NuxtLink
             to="/katalog"
-            class="group flex h-full flex-col overflow-hidden rounded-lg border border-hairline bg-canvas transition-[border-color,box-shadow,transform] duration-200 ease-out hover:-translate-y-0.5 hover:border-ink-300 hover:shadow-sm"
+            class="spotlight group flex h-full flex-col overflow-hidden rounded-lg border border-hairline bg-canvas transition-[border-color,box-shadow,transform] duration-200 ease-out hover:-translate-y-0.5 hover:border-ink-300 hover:shadow-sm"
           >
             <div class="aspect-[4/3] w-full overflow-hidden bg-canvas-alt">
               <ArtProduct

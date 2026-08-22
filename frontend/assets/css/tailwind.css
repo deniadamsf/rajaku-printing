@@ -96,3 +96,92 @@ html::-webkit-scrollbar-thumb {
 html::-webkit-scrollbar-thumb:hover {
   background-color: theme('colors.ink.400');
 }
+
+/*
+ * Sorotan yang mengikuti kursor di atas kartu (kelas `spotlight`).
+ *
+ * Kenapa CSS global, bukan per komponen: dipakai beberapa grid kartu di
+ * landing, dan menyalin blok yang sama ke tiap komponen adalah cara paling
+ * cepat membuatnya melenceng satu sama lain.
+ *
+ * Posisi kursor dikirim lewat custom property oleh `useSpotlight()` — satu
+ * listener di wadah grid, bukan satu per kartu.
+ *
+ * Dikunci ke perangkat berkursor asli: di layar sentuh, `:hover` menempel
+ * setelah disentuh dan sorotannya tertinggal menyala di kartu terakhir.
+ */
+@media (hover: hover) and (pointer: fine) {
+  .spotlight {
+    position: relative;
+  }
+
+  .spotlight::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    background: radial-gradient(
+      16rem circle at var(--spot-x, 50%) var(--spot-y, 50%),
+      theme('colors.brand.500'),
+      transparent 70%
+    );
+    opacity: 0;
+    transition: opacity 200ms ease-out;
+    pointer-events: none;
+  }
+
+  .spotlight:hover::after {
+    opacity: 0.07;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spotlight::after {
+    display: none;
+  }
+}
+
+/*
+ * Garis progres baca di puncak layar.
+ *
+ * Lebarnya digerakkan `animation-timeline: scroll()` — posisi scroll dokumen
+ * langsung menjadi progres animasi, tanpa satu pun listener scroll di
+ * JavaScript. Ditaruh di CSS global karena dipasang sekali di layout, bukan
+ * per halaman.
+ *
+ * Keadaan awalnya `scaleX(0)` alias tak terlihat. Itu sekaligus jadi
+ * perilaku aman untuk browser yang belum mendukung `animation-timeline`
+ * (Safari saat ini) dan untuk pengguna yang meminta gerak dikurangi: garisnya
+ * cuma tidak pernah muncul, tidak ada yang rusak atau menutupi konten.
+ */
+.scroll-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  height: 2px;
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg, theme('colors.brand.500'), theme('colors.gold.500'));
+  pointer-events: none;
+}
+
+@supports (animation-timeline: scroll()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .scroll-progress {
+      animation: scroll-progress linear both;
+      animation-timeline: scroll(root block);
+    }
+  }
+}
+
+@keyframes scroll-progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}

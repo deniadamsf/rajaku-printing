@@ -91,7 +91,7 @@ useHead({
 
 <template>
   <section id="faq" class="bg-canvas-alt">
-    <div class="mx-auto max-w-6xl px-4 py-16 md:py-24">
+    <div class="mx-auto max-w-6xl px-4 py-12 md:py-20">
       <div class="max-w-2xl">
         <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">FAQ</p>
         <h2 class="mt-3 text-2xl md:text-3xl font-serif font-semibold tracking-tight text-ink-950">
@@ -100,10 +100,10 @@ useHead({
       </div>
 
       <motion.div
-        class="mt-10 max-w-3xl divide-y divide-hairline border-t border-hairline"
+        class="mt-8 max-w-3xl divide-y divide-hairline border-t border-hairline"
         :initial="{ opacity: 0, y: prefersReduced ? 0 : 16 }"
         :while-in-view="{ opacity: 1, y: 0 }"
-        :in-view-options="{ once: true, margin: '-100px' }"
+        :in-view-options="{ once: true, margin: '-40px' }"
         :transition="{ duration: prefersReduced ? 0 : 0.5, ease: [0.22, 1, 0.36, 1] }"
       >
         <div v-for="(f, i) in faqs" :key="f.question">

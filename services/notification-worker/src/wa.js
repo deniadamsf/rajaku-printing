@@ -21,7 +21,29 @@ const log = pino({ level: config.logLevel, base: undefined });
 let sock = null;
 let ready = false;
 let lastQR = null;
+let lastQRAt = 0;
+// Nomor urut QR dalam sesi socket berjalan; di-reset tiap socket buka/tutup.
+let qrCountThisSession = 0;
 let readyPromiseResolvers = [];
+
+// Umur QR pairing, DIUKUR dari jarak antar-event Baileys (22 Agustus 2026):
+// QR pertama tiap sesi socket hidup 60 detik, QR penggantinya 20 detik, dan
+// setelah beberapa kali ganti WhatsApp menutup koneksi (reason 408) lalu
+// worker menyambung ulang.
+//
+// Kenapa umurnya perlu diketahui: QR yang sudah lewat umur TIDAK boleh
+// disodorkan ke admin panel. Itu jebakan — operator memindai QR yang tampak
+// baik-baik saja, lalu ditolak HP tanpa penjelasan apa pun. Lewat ambang ini
+// halaman pairing menampilkan "menunggu QR" sampai yang baru terbit.
+//
+// Angka 60/20 ini jangan dipukul rata jadi satu ambang pendek: QR pertama
+// akan ikut terbuang di detik ke-20-an padahal masih sah 40 detik lagi, dan
+// halaman jadi kosong tanpa alasan.
+const QR_FIRST_LIFETIME_MS = 60_000;
+const QR_REFRESH_LIFETIME_MS = 20_000;
+// Kelonggaran kecil supaya pergantian QR yang normal (event-nya datang sedikit
+// telat) tidak sempat berkedip jadi "menunggu QR" di layar operator.
+const QR_GRACE_MS = 5_000;
 
 function markReady(isReady) {
   ready = isReady;
@@ -33,7 +55,15 @@ function markReady(isReady) {
 }
 
 export function isReady() { return ready; }
-export function getLastQR() { return lastQR; }
+
+// getLastQR mengembalikan null kalau QR terakhir sudah lewat umur — lihat
+// QR_STALE_MS. Pemanggil (GET /pairing & /qr) tidak perlu tahu soal umur QR.
+export function getLastQR() {
+  if (!lastQR) return null;
+  const lifetime = (qrCountThisSession <= 1 ? QR_FIRST_LIFETIME_MS : QR_REFRESH_LIFETIME_MS) + QR_GRACE_MS;
+  if (Date.now() - lastQRAt > lifetime) return null;
+  return lastQR;
+}
 
 // unlinkSession memutus pairing WhatsApp saat ini atas permintaan admin
 // (halaman pairing di admin panel). Baileys akan memancarkan connection
@@ -96,18 +126,27 @@ export async function startWA() {
     const { connection, lastDisconnect, qr } = u;
     if (qr) {
       lastQR = qr;
+      lastQRAt = Date.now();
+      qrCountThisSession += 1;
       log.warn('scan QR di WhatsApp → Perangkat Tertaut untuk pairing:');
       qrcodeTerminal.generate(qr, { small: true });
     }
     if (connection === 'open') {
       log.info('WA connected — worker siap kirim');
       lastQR = null;
+      lastQRAt = 0;
+      qrCountThisSession = 0;
       // Anchor warmup ke nomor yang ter-pairing: kalau nomornya berganti,
       // quota.js otomatis mulai ramp dari hari ke-1 lagi.
       bindSession(getSelfNumber());
       markReady(true);
     } else if (connection === 'close') {
       markReady(false);
+      // Koneksi tutup = QR yang sedang tampil pasti mati. Buang sekarang,
+      // jangan tunggu ambang umur di atas.
+      lastQR = null;
+      lastQRAt = 0;
+      qrCountThisSession = 0;
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const loggedOut = reason === DisconnectReason.loggedOut;
       log.warn({ reason, loggedOut }, 'WA disconnected');

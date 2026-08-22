@@ -53,6 +53,10 @@ logs/
 .docker-data/
 
 # Berkas kredensial yang tidak boleh ikut ter-commit
+# .env.docker memuat nilai asli (kredensial Google OAuth, password DB) untuk
+# lingkungan yang menjalankannya — templatnya ada di .env.docker.example.
+# Sempat ikut dilacak git sampai 22 Agustus 2026; jangan dikembalikan.
+.env.docker
 Oauth*
 oauth*.txt
 *credentials*.json

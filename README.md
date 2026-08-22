@@ -59,6 +59,20 @@ npm start               # scan QR di terminal atau di http://localhost:9090/qr
 
 Detail pairing + troubleshooting: [`services/notification-worker/README.md`](services/notification-worker/README.md).
 
+### Menjalankan semuanya lewat Docker
+
+`docker-compose.yml` membaca satu berkas `.env.docker` yang **tidak ikut
+di-commit** karena memuat nilai asli (kredensial Google OAuth, password DB).
+Salin dari templatnya lalu isi sendiri:
+
+```bash
+cp .env.docker.example .env.docker
+```
+
+Kalau menambah kunci env baru, tambahkan juga ke `.env.docker.example` — itu
+satu-satunya daftar kunci yang terlihat oleh orang lain dan oleh server
+produksi saat deploy.
+
 ## Aturan Kunci (ringkas — detail di `CLAUDE.md`)
 
 - Backend Go: layer `handler → service → repository` wajib dipisah tegas.

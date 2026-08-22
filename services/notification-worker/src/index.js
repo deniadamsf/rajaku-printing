@@ -28,10 +28,6 @@ async function main() {
     port: config.workerPort,
   }, 'starting notification-worker');
 
-  await startWA();
-  // Jalankan dispatcher loop tanpa await — biar HTTP server ikut naik.
-  startDispatcher().catch((e) => log.error({ err: e.message }, 'dispatcher crashed'));
-
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/healthz') {
       // Sertakan status kuota/circuit — operator perlu tahu kalau worker
@@ -114,7 +110,21 @@ async function main() {
     }
     res.writeHead(404); res.end();
   });
+  // HTTP DULUAN, baru Baileys. Urutannya sengaja begini: bootstrap Baileys
+  // (fetchLatestBaileysVersion + handshake) bisa lambat atau gagal, dan
+  // selama itu dulu server HTTP belum menyala sama sekali — halaman pairing
+  // di admin panel jadi melaporkan "worker tidak bisa dihubungi" padahal
+  // worker hidup dan sedang menyiapkan diri. Dengan urutan ini /healthz &
+  // /pairing selalu menjawab; wa_ready:false yang menceritakan kondisi WA.
   server.listen(config.workerPort, () => log.info(`HTTP siap di :${config.workerPort} (GET /healthz, GET /qr)`));
+
+  // Tanpa await — kegagalan bootstrap WA dicatat, TIDAK mematikan proses.
+  // Worker yang mati total menghapus satu-satunya cara operator melihat apa
+  // yang salah dari browser (§13: pairing tanpa SSH).
+  startWA().catch((e) => log.error({ err: e.message, stack: e.stack }, 'bootstrap Baileys gagal — worker tetap hidup, WA belum siap'));
+
+  // Dispatcher aman jalan sebelum WA siap: loop-nya menunggu isReady().
+  startDispatcher().catch((e) => log.error({ err: e.message }, 'dispatcher crashed'));
 
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, () => {

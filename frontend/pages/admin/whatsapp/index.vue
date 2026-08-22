@@ -5,7 +5,7 @@
  * Tiga keadaan (lihat docblock useAdminWhatsApp.ts untuk kontrak lengkap):
  *   1. worker_reachable:false → layanan notifikasi mati total, tidak ada QR/unlink.
  *   2. connected:true         → tertaut, tampilkan self_number (font-mono).
- *   3. connected:false        → menunggu scan, tampilkan QR + polling 10 detik.
+ *   3. connected:false        → menunggu scan, tampilkan QR + polling 5 detik.
  *
  * Polling HANYA jalan selagi halaman terbuka DAN belum tertaut — dihentikan
  * begitu tertaut atau saat unmount (lihat stopPolling/onBeforeUnmount).
@@ -48,18 +48,46 @@ const refreshing = ref(false)
 const errorMsg = ref('')
 const successMsg = ref('')
 
+/**
+ * Jeda polling dibedakan per keadaan — bukan satu angka untuk semua:
+ *
+ * - Menunggu scan: WhatsApp mengganti QR tiap ~20 detik. Dengan jeda 10 detik
+ *   seperti sebelumnya, hampir separuh waktu layar menampilkan QR yang sudah
+ *   kedaluwarsa — dipindai, lalu ditolak HP tanpa penjelasan. 5 detik membuat
+ *   yang tampil praktis selalu QR yang masih hidup.
+ * - Worker tak terjangkau: ini menunggu layanan dihidupkan teknisi, bukan
+ *   hitungan detik. Cukup periksa sesekali supaya halaman pulih sendiri tanpa
+ *   membombardir backend yang sedang bermasalah.
+ */
+const POLL_WAITING_MS = 5_000
+const POLL_UNREACHABLE_MS = 15_000
+
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let pollEveryMs = 0
 
 function stopPolling() {
   if (pollTimer) {
     clearInterval(pollTimer)
     pollTimer = null
   }
+  pollEveryMs = 0
 }
 
-function startPolling() {
-  if (pollTimer) return
-  pollTimer = setInterval(() => fetchStatus({ silent: true }), 10_000)
+function startPolling(everyMs: number) {
+  // Timer yang sudah jalan dengan jeda sama dibiarkan — supaya hitungannya
+  // tidak ter-reset tiap kali status dimuat.
+  if (pollTimer && pollEveryMs === everyMs) return
+  stopPolling()
+  pollEveryMs = everyMs
+  pollTimer = setInterval(() => fetchStatus({ silent: true }), everyMs)
+}
+
+// Tab tersembunyi tidak perlu di-poll: tidak ada yang melihat QR-nya, dan
+// halaman pairing gampang ditinggal terbuka berjam-jam. Begitu tab dilihat
+// lagi, status langsung diambil ulang (yang otomatis menyalakan polling).
+function onVisibilityChange() {
+  if (document.hidden) stopPolling()
+  else fetchStatus({ silent: true })
 }
 
 async function fetchStatus(opts: { silent?: boolean } = {}) {
@@ -75,7 +103,7 @@ async function fetchStatus(opts: { silent?: boolean } = {}) {
     if (status.value.connected) {
       stopPolling()
     } else {
-      startPolling()
+      startPolling(status.value.worker_reachable ? POLL_WAITING_MS : POLL_UNREACHABLE_MS)
     }
   } catch (e) {
     errorMsg.value = e instanceof ApiError ? e.message : 'Gagal memuat status pairing WhatsApp'
@@ -143,9 +171,14 @@ async function confirmUnlink() {
 }
 
 onMounted(() => {
-  if (canManage.value) fetchStatus()
+  if (!canManage.value) return
+  fetchStatus()
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
-onBeforeUnmount(stopPolling)
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  stopPolling()
+})
 </script>
 
 <template>
@@ -240,7 +273,7 @@ onBeforeUnmount(stopPolling)
             <h3 class="text-sm font-semibold text-ink-950">Menunggu pemindaian QR</h3>
           </div>
           <p class="mt-1 text-xs text-ink-500">
-            QR dari WhatsApp kedaluwarsa cepat — halaman ini otomatis memuat ulang tiap 10 detik sampai tertaut.
+            QR dari WhatsApp berganti tiap ~20 detik — halaman ini menyegarkan sendiri tiap 5 detik sampai tertaut, jadi yang tampil selalu QR yang masih berlaku.
           </p>
 
           <div class="mt-6 flex flex-col items-center gap-6 sm:flex-row sm:items-start">

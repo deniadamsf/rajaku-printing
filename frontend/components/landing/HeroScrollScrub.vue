@@ -225,7 +225,7 @@ onUnmounted(() => {
           lacak progres cetaknya sampai siap diambil.
         </p>
 
-        <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-3">
+        <div class="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
           <NuxtLink
             to="/order"
             class="inline-flex w-full sm:w-auto items-center justify-center gap-2 rounded-md bg-brand-500 px-6 py-3 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950"

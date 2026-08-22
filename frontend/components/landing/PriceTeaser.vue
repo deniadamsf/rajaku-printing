@@ -118,6 +118,71 @@ async function runQuote() {
 
 watch([materialId, width, height], scheduleQuote)
 
+const prefersReduced = usePrefersReducedMotion()
+
+/**
+ * Angka estimasi dijalankan naik/turun ke nilai baru, tidak melompat.
+ *
+ * Bukan hiasan: quote dihitung ulang di server tiap kali ukuran diubah, dan
+ * angka yang berganti diam-diam sering tidak disadari — orang mengira
+ * kalkulatornya tidak bereaksi. Gerakan singkat inilah tanda "ini sudah
+ * dihitung ulang". Mati total saat prefers-reduced-motion.
+ */
+const displayedPrice = ref(0)
+let countRaf: number | null = null
+
+function stopCount() {
+  if (countRaf !== null) {
+    cancelAnimationFrame(countRaf)
+    countRaf = null
+  }
+}
+
+watch(
+  () => quote.value?.total_price ?? null,
+  (to) => {
+    stopCount()
+    if (to == null) {
+      displayedPrice.value = 0
+      return
+    }
+    if (prefersReduced.value) {
+      displayedPrice.value = to
+      return
+    }
+    const from = displayedPrice.value
+    const t0 = performance.now()
+    const DUR = 450
+    const step = (now: number) => {
+      const p = Math.min(1, (now - t0) / DUR)
+      const eased = 1 - Math.pow(1 - p, 3)
+      displayedPrice.value = Math.round(from + (to - from) * eased)
+      countRaf = p < 1 ? requestAnimationFrame(step) : null
+    }
+    countRaf = requestAnimationFrame(step)
+  },
+)
+
+onBeforeUnmount(() => {
+  stopCount()
+  if (quoteTimer) clearTimeout(quoteTimer)
+})
+
+/**
+ * Tautan "Lanjut Order" membawa pilihan yang sudah dibuat di sini.
+ * Tanpa ini, pengunjung yang baru saja memilih produk, bahan, dan ukuran
+ * harus memilih ulang semuanya dari nol di halaman order — kerja yang sama
+ * dua kali, tepat di langkah paling menentukan.
+ */
+const orderHref = computed(() => {
+  const d = detail.value
+  if (!d || !materialId.value) return '/order'
+  const q = new URLSearchParams({ produk: d.id, bahan: materialId.value })
+  if (width.value > 0) q.set('lebar', String(width.value))
+  if (height.value > 0) q.set('tinggi', String(height.value))
+  return `/order?${q.toString()}`
+})
+
 function fmtIDR(v?: number | null): string {
   if (v == null) return '—'
   return new Intl.NumberFormat('id-ID', {
@@ -144,7 +209,7 @@ function fmtIDR(v?: number | null): string {
     id="estimasi-harga"
     class="bg-canvas-alt"
   >
-    <div class="mx-auto max-w-6xl px-4 py-16 md:py-24">
+    <div class="mx-auto max-w-6xl px-4 py-12 md:py-20">
       <div class="max-w-2xl">
         <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Estimasi Harga</p>
         <h2 class="mt-3 text-2xl md:text-3xl font-serif font-semibold tracking-tight text-ink-950">
@@ -228,33 +293,74 @@ function fmtIDR(v?: number | null): string {
             <p v-if="detailError" class="text-xs text-brand-700">{{ detailError }}</p>
           </div>
 
-          <div class="rounded-md border border-hairline bg-canvas-alt p-5">
-            <p class="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
-              <Calculator class="h-3 w-3" :stroke-width="1.75" />
+          <!--
+            Panel hasil sengaja gelap di dalam section terang: ini satu-satunya
+            angka di seluruh halaman depan, dan sebagai kartu abu-abu di antara
+            kotak input ia terbaca seperti keterangan tambahan, bukan jawaban.
+            Token on-dark mengikuti §26.12.
+          -->
+          <div class="flex flex-col rounded-md border border-white/10 bg-ink-950 p-5">
+            <p class="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-canvas/60">
+              <Calculator class="h-3 w-3 text-gold-400" :stroke-width="1.75" />
               Estimasi
             </p>
-            <div v-if="quoteLoading" class="mt-3 flex items-center gap-2 text-sm text-ink-500">
+
+            <div v-if="quoteLoading" class="mt-3 flex items-center gap-2 text-sm text-canvas/70">
               <Loader2 class="h-4 w-4 animate-spin" :stroke-width="1.75" />
               Menghitung…
             </div>
-            <div v-else-if="quoteError" class="mt-3 text-xs text-brand-700">{{ quoteError }}</div>
+            <div v-else-if="quoteError" class="mt-3 text-xs text-gold-400">{{ quoteError }}</div>
+
             <div v-else-if="quote" class="mt-3">
-              <p class="font-serif text-2xl font-semibold text-ink-950">{{ fmtIDR(quote.total_price) }}</p>
-              <p v-if="quote.area_m2 != null" class="mt-1 font-mono text-xs text-ink-500">
-                {{ quote.area_m2.toFixed(2) }} m²
+              <p class="font-serif text-3xl font-semibold leading-none tracking-tight text-canvas">
+                {{ fmtIDR(displayedPrice) }}
+              </p>
+
+              <!--
+                Rincian singkat: angka tanpa penjelasan gampang dicurigai.
+                Semua nilai datang dari balasan server, tidak ada yang dihitung
+                ulang di sini.
+              -->
+              <dl class="mt-4 space-y-1.5 border-t border-white/10 pt-3 text-xs">
+                <div class="flex items-baseline justify-between gap-3">
+                  <dt class="text-canvas/50">Ukuran</dt>
+                  <dd class="font-mono text-canvas/80">{{ quote.width_cm }} × {{ quote.height_cm }} cm</dd>
+                </div>
+                <div v-if="quote.chargeable_m2 != null || quote.area_m2 != null" class="flex items-baseline justify-between gap-3">
+                  <dt class="text-canvas/50">Luas dihitung</dt>
+                  <dd class="font-mono text-canvas/80">
+                    {{ (quote.chargeable_m2 ?? quote.area_m2)?.toFixed(2) }} m²
+                  </dd>
+                </div>
+                <div v-if="quote.price_per_m2 != null" class="flex items-baseline justify-between gap-3">
+                  <dt class="text-canvas/50">Harga bahan</dt>
+                  <dd class="font-mono text-canvas/80">{{ fmtIDR(quote.price_per_m2) }}/m²</dd>
+                </div>
+                <div v-else-if="quote.package_label" class="flex items-baseline justify-between gap-3">
+                  <dt class="text-canvas/50">Paket</dt>
+                  <dd class="text-canvas/80">{{ quote.package_label }}</dd>
+                </div>
+              </dl>
+
+              <p class="mt-3 text-[11px] leading-relaxed text-canvas/45">
+                Belum termasuk ongkir dan biaya jasa desain (kalau ada).
               </p>
             </div>
-            <p v-else class="mt-3 text-sm text-ink-500">
+
+            <p v-else class="mt-3 text-sm text-canvas/60">
               Pilih produk, bahan{{ isPaket ? '' : ', dan ukuran' }} untuk melihat estimasi.
             </p>
 
             <NuxtLink
-              to="/order"
-              class="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand-500 px-4 py-2.5 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+              :to="orderHref"
+              class="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand-500 px-4 py-2.5 text-sm font-semibold text-canvas transition-colors duration-200 ease-out hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950"
             >
               Lanjut Order
               <ArrowRight class="h-4 w-4" :stroke-width="1.5" />
             </NuxtLink>
+            <p v-if="quote" class="mt-2 text-center text-[11px] text-canvas/45">
+              Pilihan Anda ikut terbawa ke formulir order.
+            </p>
           </div>
         </div>
       </div>

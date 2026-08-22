@@ -39,7 +39,7 @@ function formatDate(iso: string | null | undefined): string {
 </script>
 
 <template>
-  <section v-if="articles.length > 0" id="artikel" class="mx-auto max-w-6xl px-4 py-16 md:py-24">
+  <section v-if="articles.length > 0" id="artikel" class="mx-auto max-w-6xl px-4 py-12 md:py-20">
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div class="max-w-2xl">
         <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Artikel</p>
@@ -57,11 +57,11 @@ function formatDate(iso: string | null | undefined): string {
     </div>
 
     <motion.ul
-      class="mt-10 flex snap-x snap-mandatory gap-6 overflow-x-auto pb-2 md:grid md:gap-6 md:overflow-visible md:pb-0 md:grid-cols-2 lg:grid-cols-3"
+      class="mt-8 flex snap-x snap-mandatory gap-6 overflow-x-auto pb-2 md:grid md:gap-6 md:overflow-visible md:pb-0 md:grid-cols-2 lg:grid-cols-3"
       :variants="container"
       initial="hidden"
       while-in-view="show"
-      :in-view-options="{ once: true, margin: '-100px' }"
+      :in-view-options="{ once: true, margin: '-40px' }"
     >
       <motion.li v-for="a in articles" :key="a.id" :variants="item" class="w-[80%] shrink-0 snap-center md:w-auto md:shrink">
         <NuxtLink

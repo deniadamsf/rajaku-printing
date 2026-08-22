@@ -11,6 +11,8 @@ import { CloudUpload, CreditCard, MapPin, Ruler } from '@lucide/vue'
 import { motion } from 'motion-v'
 
 const { container, item } = useRevealVariants()
+// Sorotan lembut mengikuti kursor — satu listener di wadah grid.
+const { onPointerMove } = useSpotlight()
 
 const steps = [
   {
@@ -38,7 +40,7 @@ const steps = [
 
 <template>
   <section id="cara-order" class="bg-canvas-alt">
-    <div class="mx-auto max-w-6xl px-4 py-16 md:py-24">
+    <div class="mx-auto max-w-6xl px-4 py-12 md:py-20">
       <div class="max-w-2xl">
         <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Alur order</p>
         <h2 class="mt-3 text-2xl md:text-3xl font-serif font-semibold tracking-tight text-ink-950">
@@ -47,17 +49,18 @@ const steps = [
       </div>
 
       <motion.ol
-        class="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-4"
+        class="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-4"
         :variants="container"
         initial="hidden"
         while-in-view="show"
-        :in-view-options="{ once: true, margin: '-100px' }"
+        :in-view-options="{ once: true, margin: '-40px' }"
+        @pointermove="onPointerMove"
       >
         <motion.li v-for="(s, i) in steps" :key="s.title" :variants="item">
           <div
-            class="h-full rounded-lg border border-hairline bg-canvas p-6 transition-[border-color,box-shadow,transform] duration-200 ease-out hover:-translate-y-0.5 hover:border-ink-300 hover:shadow-sm md:p-8"
+            class="spotlight h-full rounded-lg border border-hairline bg-canvas p-6 transition-[border-color,box-shadow,transform] duration-200 ease-out hover:-translate-y-0.5 hover:border-ink-300 hover:shadow-sm md:p-8"
           >
-            <div class="flex items-center justify-between">
+            <div class="relative z-10 flex items-center justify-between">
               <span
                 class="inline-flex h-10 w-10 items-center justify-center rounded-md bg-brand-50 text-brand-500"
               >
@@ -65,8 +68,8 @@ const steps = [
               </span>
               <span class="font-mono text-xs text-ink-400">{{ String(i + 1).padStart(2, '0') }}</span>
             </div>
-            <h3 class="mt-5 text-sm font-sans font-semibold text-ink-950">{{ s.title }}</h3>
-            <p class="mt-2 text-sm leading-relaxed text-ink-500">{{ s.desc }}</p>
+            <h3 class="relative z-10 mt-5 text-sm font-sans font-semibold text-ink-950">{{ s.title }}</h3>
+            <p class="relative z-10 mt-2 text-sm leading-relaxed text-ink-500">{{ s.desc }}</p>
           </div>
         </motion.li>
       </motion.ol>

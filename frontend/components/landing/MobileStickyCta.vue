@@ -13,14 +13,38 @@
  */
 import { ArrowRight } from '@lucide/vue'
 import { AnimatePresence, motion } from 'motion-v'
-import { useWindowScroll } from '@vueuse/core'
+import { useIntersectionObserver, useWindowScroll, useWindowSize } from '@vueuse/core'
 
 const prefersReduced = usePrefersReducedMotion()
 const { y } = useWindowScroll()
+const { height } = useWindowSize()
 
-// ~1 layar hero mobile (poster + headline + CTA) sebelum bar ini muncul.
-const THRESHOLD = 560
-const visible = computed(() => y.value > THRESHOLD)
+/**
+ * Bar ini baru boleh muncul SETELAH hero benar-benar lewat — kalau tidak, dia
+ * menutupi CTA yang sudah ada di dalam hero (dua tombol "Order Banner"
+ * bertumpuk di layar yang sama).
+ *
+ * Patokannya elemen hero itu sendiri, bukan angka piksel: tinggi hero
+ * mengikuti tinggi layar (lihat HeroStatic), jadi ambang tetap seperti "560px"
+ * akan salah di setiap HP yang layarnya lebih panjang atau lebih pendek.
+ * Ambang piksel hanya dipakai sebagai cadangan kalau penanda hero tidak
+ * ditemukan (mis. komponen ini dipasang di halaman tanpa hero).
+ */
+const heroEl = ref<HTMLElement | null>(null)
+const heroVisible = ref(true)
+
+onMounted(() => {
+  heroEl.value = document.querySelector<HTMLElement>('[data-landing-hero]')
+  if (!heroEl.value) heroVisible.value = false
+})
+
+useIntersectionObserver(heroEl, ([entry]) => {
+  heroVisible.value = entry.isIntersecting
+})
+
+const visible = computed(() =>
+  heroEl.value ? !heroVisible.value : y.value > height.value * 0.9,
+)
 </script>
 
 <template>

@@ -10,13 +10,18 @@ import {
   ChevronLeft,
   ChevronRight,
   CreditCard,
+  ImageOff as ImageOffIcon,
   Package,
   Palette as PaletteIcon,
-  Upload,
   RotateCcw,
-  ImageOff as ImageOffIcon,
+  Sparkles,
+  Upload,
 } from '@lucide/vue'
 import { motion } from 'motion-v'
+
+// Demo sorotan kursor (lihat section #spotlight).
+const { onPointerMove } = useSpotlight()
+
 
 definePageMeta({
   middleware: ['staff-only'],
@@ -181,6 +186,9 @@ function onDemoOtpInput(e: Event) {
       <a href="#icons" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Icons</a>
       <a href="#motion" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Motion</a>
       <a href="#slider" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Auto-slider</a>
+      <a href="#dark-section" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Section gelap</a>
+      <a href="#spotlight" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Sorotan kursor</a>
+      <a href="#scroll-motion" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Gerak scroll</a>
     </nav>
 
     <!-- ================================= Palet ================================= -->
@@ -706,6 +714,124 @@ function onDemoOtpInput(e: Event) {
           Arahkan kursor atau Tab masuk ke area slider untuk melihat auto-advance berhenti.
         </p>
       </div>
+    </section>
+
+
+    <!-- ================================= Section gelap ================================= -->
+    <section id="dark-section" class="mb-16 scroll-mt-20">
+      <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Section gelap (on-dark)</h2>
+      <p class="mt-2 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        Landing page berselang terang-gelap supaya halaman tidak terbaca sebagai satu blok putih
+        panjang. Dipakai di <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">ProcessGallery</code>, <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">WhyUsSection</code>,
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">ClosingCta</code>, hero, dan footer. Mengubah latar saja TIDAK cukup —
+        seluruh token di dalamnya wajib ikut dibalik.
+      </p>
+
+      <div class="mt-4 overflow-x-auto">
+        <table class="w-full min-w-[34rem] text-left text-xs">
+          <thead class="text-[10px] uppercase tracking-[0.14em] text-ink-500">
+            <tr>
+              <th class="border-b border-hairline py-2 pr-4 font-medium">Peran</th>
+              <th class="border-b border-hairline py-2 pr-4 font-medium">Di latar terang</th>
+              <th class="border-b border-hairline py-2 font-medium">Di latar gelap</th>
+            </tr>
+          </thead>
+          <tbody class="font-mono text-ink-700">
+            <tr><td class="border-b border-hairline py-2 pr-4 font-sans text-ink-500">Latar</td><td class="border-b border-hairline py-2 pr-4">bg-canvas</td><td class="border-b border-hairline py-2">bg-ink-950</td></tr>
+            <tr><td class="border-b border-hairline py-2 pr-4 font-sans text-ink-500">Judul</td><td class="border-b border-hairline py-2 pr-4">text-ink-950</td><td class="border-b border-hairline py-2">text-canvas</td></tr>
+            <tr><td class="border-b border-hairline py-2 pr-4 font-sans text-ink-500">Body</td><td class="border-b border-hairline py-2 pr-4">text-ink-500</td><td class="border-b border-hairline py-2">text-canvas/70</td></tr>
+            <tr><td class="border-b border-hairline py-2 pr-4 font-sans text-ink-500">Eyebrow</td><td class="border-b border-hairline py-2 pr-4">text-ink-500</td><td class="border-b border-hairline py-2">text-canvas/60</td></tr>
+            <tr><td class="border-b border-hairline py-2 pr-4 font-sans text-ink-500">Garis</td><td class="border-b border-hairline py-2 pr-4">border-hairline</td><td class="border-b border-hairline py-2">border-white/10</td></tr>
+            <tr><td class="border-b border-hairline py-2 pr-4 font-sans text-ink-500">Permukaan kartu</td><td class="border-b border-hairline py-2 pr-4">bg-canvas-alt</td><td class="border-b border-hairline py-2">bg-white/5</td></tr>
+            <tr><td class="border-b border-hairline py-2 pr-4 font-sans text-ink-500">Aksen / ikon</td><td class="border-b border-hairline py-2 pr-4">text-brand-500</td><td class="border-b border-hairline py-2">text-gold-400</td></tr>
+            <tr><td class="py-2 pr-4 font-sans text-ink-500">Offset focus ring</td><td class="py-2 pr-4">ring-offset-canvas</td><td class="py-2">ring-offset-ink-950</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="mt-4 max-w-2xl text-xs leading-relaxed text-ink-500">
+        Aksen <strong class="text-ink-900">wajib pindah ke emas</strong> di latar gelap: crimson
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">brand-500</code> di atas <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">ink-950</code> kontrasnya jatuh di
+        bawah ambang keterbacaan. Emas juga yang dipakai untuk focus ring di area gelap.
+      </p>
+
+      <div class="mt-6 rounded-lg border border-hairline bg-ink-950 p-6 md:p-8">
+        <p class="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.14em] text-canvas/60">
+          <span class="h-px w-6 bg-gold-500" aria-hidden="true" />
+          Eyebrow on-dark
+        </p>
+        <h3 class="mt-3 font-serif text-xl font-semibold tracking-tight text-canvas">Judul di latar gelap</h3>
+        <p class="mt-2 max-w-md text-sm leading-relaxed text-canvas/70">
+          Body memakai <code class="font-mono text-xs bg-white/10 px-1 py-0.5 rounded">text-canvas/70</code>. Garis pemisah
+          <code class="font-mono text-xs bg-white/10 px-1 py-0.5 rounded">border-white/10</code>.
+        </p>
+        <div class="mt-5 flex flex-wrap items-center gap-3 border-t border-white/10 pt-5">
+          <span class="inline-flex h-10 w-10 items-center justify-center rounded-md border border-white/10 bg-white/5 text-gold-400">
+            <Sparkles class="h-5 w-5" :stroke-width="1.5" />
+          </span>
+          <a
+            href="#dark-section"
+            class="rounded-md bg-brand-500 px-4 py-2 text-sm font-semibold text-canvas transition-colors duration-200 ease-out hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950"
+          >CTA tetap crimson</a>
+          <span class="text-xs text-canvas/50">
+            Tombol solid boleh crimson — kontrasnya datang dari isian, bukan dari teks di atas hitam.
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================= Sorotan kursor ================================= -->
+    <section id="spotlight" class="mb-16 scroll-mt-20">
+      <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Sorotan kursor (spotlight)</h2>
+      <p class="mt-2 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        Kartu grid di landing memakai sorotan lembut yang mengikuti kursor. Gayanya ada di
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">assets/css/tailwind.css</code>, posisinya dikirim
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">useSpotlight()</code>.
+      </p>
+      <ul class="mt-3 max-w-2xl list-disc space-y-1 pl-5 text-xs text-ink-500 leading-relaxed">
+        <li>Pasang <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">@pointermove</code> di WADAH grid — satu listener untuk semua kartu, bukan satu per kartu.</li>
+        <li>Beri kelas <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">spotlight</code> pada kartunya; isi yang harus berada di atas sorotan diberi <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">relative z-10</code>.</li>
+        <li>Hanya aktif di perangkat berkursor (<code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">@media (hover: hover)</code>) — di layar sentuh, <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">:hover</code> menempel dan sorotannya tertinggal menyala.</li>
+        <li>Mati saat <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">prefers-reduced-motion</code>.</li>
+      </ul>
+
+      <div class="mt-6 grid gap-4 sm:grid-cols-2" @pointermove="onPointerMove">
+        <div class="spotlight rounded-lg border border-hairline bg-canvas p-6 transition-colors duration-200 ease-out hover:border-ink-300">
+          <h3 class="relative z-10 text-sm font-semibold text-ink-950">Arahkan kursor ke sini</h3>
+          <p class="relative z-10 mt-1 text-sm leading-relaxed text-ink-500">Sorotan mengikuti posisi kursor di dalam kartu.</p>
+        </div>
+        <div class="spotlight rounded-lg border border-hairline bg-canvas p-6 transition-colors duration-200 ease-out hover:border-ink-300">
+          <h3 class="relative z-10 text-sm font-semibold text-ink-950">Intensitas 7%</h3>
+          <p class="relative z-10 mt-1 text-sm leading-relaxed text-ink-500">Cukup terasa, tidak sampai mengubah warna kartu.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================= Gerak berbasis scroll ================================= -->
+    <section id="scroll-motion" class="mb-16 scroll-mt-20">
+      <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Gerak berbasis scroll</h2>
+      <p class="mt-2 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        Tiga efek di landing digerakkan posisi scroll lewat CSS <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">animation-timeline</code>,
+        bukan listener di JavaScript: garis progres baca (<code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">.scroll-progress</code> di layout),
+        hanyutan hero, dan hanyutan foto galeri proses. Animasinya berjalan di compositor, jadi tidak ada
+        frame yang dihitung di main thread.
+      </p>
+      <ul class="mt-3 max-w-2xl list-disc space-y-1 pl-5 text-xs text-ink-500 leading-relaxed">
+        <li>
+          <strong class="text-ink-900">Jebakan wadah scroll.</strong>
+          <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">view()</code> mengukur elemen terhadap wadah scroll TERDEKAT, dan
+          <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">overflow-hidden</code> / <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">overflow-x-auto</code> sudah dihitung
+          sebagai wadah scroll. Dipasang di dalamnya, animasi diam total tanpa memunculkan error apa pun.
+          Solusinya: taruh <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">view-timeline-name</code> di elemen luar yang memang diukur
+          terhadap dokumen, lalu rujuk namanya dari dalam.
+        </li>
+        <li>Semua dibungkus <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">@supports (animation-timeline: view())</code> — Safari melewatinya, elemen diam, tidak ada yang rusak.</li>
+        <li>Dibungkus juga <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">@media (prefers-reduced-motion: no-preference)</code>.</li>
+        <li>Keadaan diamnya wajib aman: garis progres mulai dari <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">scaleX(0)</code>, jadi kalau animasi tidak pernah jalan ia sekadar tak terlihat.</li>
+      </ul>
+      <p class="mt-3 text-xs text-ink-500">
+        Contoh hidupnya ada di puncak halaman publik — garis tipis di atas navbar yang memanjang saat halaman digulir.
+      </p>
     </section>
 
     <div class="rounded-lg border border-gold-200 bg-gold-50 p-4 text-xs text-gold-900 leading-relaxed">

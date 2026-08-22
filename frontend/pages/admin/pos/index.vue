@@ -279,8 +279,14 @@ function resetForm() {
   submitError.value = null
 }
 
+// Template ref ke ReceiptStruk — cetak WAJIB lewat method yang diekspos
+// komponen itu (`printNow()`), bukan `window.print()` langsung dari halaman
+// ini. `printNow()` yang men-teleport struk ke `<body>` sebelum mencetak
+// (lihat kontrak pemakaian di kepala `ReceiptStruk.vue`); memanggil
+// `window.print()` di sini akan mencetak seluruh halaman POS, bukan struk.
+const receiptRef = ref<{ printNow: () => Promise<void> } | null>(null)
 function printStruk() {
-  window.print()
+  receiptRef.value?.printNow()
 }
 </script>
 
@@ -316,6 +322,7 @@ function printStruk() {
            backend langsung menyetelnya ke status `dibayar` (§11). Panel ini
            cuma muncul kalau order itu sudah jadi. -->
       <AdminReceiptStruk
+        ref="receiptRef"
         :resi="successResult.resi"
         :created-at="successResult.created_at"
         :customer-name="successResult.customer_name"

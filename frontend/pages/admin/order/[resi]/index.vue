@@ -259,40 +259,33 @@ const PAID_STATUSES = new Set([
 ])
 const orderIsPaid = computed(() => !!order.value && PAID_STATUSES.has(order.value.status))
 
-/**
- * `nextTick()` SAJA TIDAK CUKUP di sini, dan ini pernah menghasilkan cetakan
- * kacau di lapangan: nextTick hanya menjamin DOM ter-patch, sementara dua hal
- * yang menentukan bentuk cetakan justru menyusul setelahnya —
- *
- *   1. `<style>` @page (lebar kertas 58/80mm) disuntik `useHead` secara
- *      ASINKRON, tidak pada tick yang sama dengan mount komponen.
- *   2. CSS isolasi cetak milik ReceiptStruk (`body *` disembunyikan, `#struk`
- *      ditampilkan) baru aktif setelah style komponen benar-benar terpasang.
- *
- * Kalau `window.print()` dipanggil sebelum keduanya siap, browser mencetak
- * SELURUH halaman admin dengan ukuran kertas default — bukan struk. Halaman
- * POS tidak kena karena di sana struk ter-mount permanen di panel sukses.
- *
- * Dua rAF berturut-turut menjamin satu siklus render + style flush penuh
- * selesai. Loop verifikasi di bawahnya adalah jaring pengaman terakhir:
- * lebih baik menunda cetak beberapa milidetik daripada mengeluarkan kertas
- * yang salah — kertas thermal yang sudah tercetak tidak bisa ditarik kembali.
- */
-async function waitForReceiptReady() {
-  await nextTick()
-  await new Promise<void>((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
-  })
-  for (let i = 0; i < 20 && !document.getElementById('struk'); i++) {
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-  }
-}
+// Template ref ke instance ReceiptStruk — dipakai memanggil `printNow()`
+// (lihat kontrak pemakaian di kepala `ReceiptStruk.vue`). Cuma terisi
+// selama `receiptMounted` true (component-nya memang cuma mount saat itu,
+// lihat wrapper `hidden print:block` di template).
+const receiptRef = ref<{ printNow: () => Promise<void> } | null>(null)
 
+/**
+ * Urutan wajib: mount komponen dulu (`receiptMounted = true`), tunggu DOM
+ * ter-patch (`nextTick()`) supaya `receiptRef` sudah terisi, BARU panggil
+ * `printNow()` lewat ref itu. `printNow()` sendiri yang menangani sisa
+ * detail teknis pencetakan (teleport ke `<body>`, timing `window.print()`,
+ * lihat `ReceiptStruk.vue`) — halaman ini tidak perlu tahu-menahu lagi soal
+ * itu, cukup pastikan komponennya sudah ter-mount sebelum minta cetak.
+ *
+ * Dulu di sini ada loop verifikasi manual (`waitForReceiptReady`, dua rAF +
+ * polling `document.getElementById('struk')`) karena isolasi cetak lama
+ * bergantung pada urutan `<style>` `@page` tersuntik & CSS visibility aktif
+ * di waktu yang tepat — kalau meleset, browser mencetak seluruh halaman
+ * admin. Sekarang tanggung jawab itu pindah ke dalam `printNow()`
+ * (teleport + `nextTick()` sebelum `window.print()`), jadi cukup `nextTick()`
+ * biasa di sini untuk menunggu komponennya mount.
+ */
 async function printStruk() {
   receiptMounted.value = true
-  await waitForReceiptReady()
+  await nextTick()
   try {
-    window.print()
+    await receiptRef.value?.printNow()
   } finally {
     // window.print() memblokir sampai dialog ditutup di sebagian besar
     // browser, tapi tidak dijamin — `finally` + afterprint dua-duanya
@@ -1196,14 +1189,20 @@ function waLink(phone: string): string {
 
     <!-- ============================ Struk (cetak ulang) ============================
          Tersembunyi di layar (semua datanya sudah tampil di section lain di
-         atas) — cuma dipakai saat `window.print()` dipicu tombol "Cetak
-         struk" di header. `hidden print:block` WAJIB dipakai (bukan
-         `visibility`/`sr-only`) supaya elemen ini tidak `display: none` saat
-         cetak — teknik isolasi print di ReceiptStruk.vue mengandalkan
-         `visibility: visible !important` pada `#struk`, yang tidak bisa
-         menembus `display: none` di elemen leluhurnya. -->
+         atas) — cuma dipakai saat tombol "Cetak struk" di header memanggil
+         `printStruk()`. `hidden` mencegah kedipan struk kelihatan sekilas di
+         layar selama jeda `receiptMounted = true` → `nextTick()` sebelum
+         `printNow()` benar-benar men-teleport-nya ke `<body>` (lihat
+         `ReceiptStruk.vue`) — begitu teleport aktif, elemen ini sudah kosong
+         karena isinya pindah keluar dari wrapper ini. `print:block` dulu
+         krusial untuk teknik `visibility` yang lama; sekarang isolasi cetak
+         sudah sepenuhnya ditangani ReceiptStruk sendiri (`display: none`
+         pada saudara `#struk-print-root` di `<body>`), jadi kelas ini cuma
+         jaring pengaman kalau suatu saat komponennya sempat dirender di sini
+         sebelum teleport aktif. -->
     <div v-if="order && receiptMounted" class="hidden print:block">
       <AdminReceiptStruk
+        ref="receiptRef"
         :resi="order.resi"
         :created-at="order.created_at"
         :customer-name="customer?.name ?? '—'"

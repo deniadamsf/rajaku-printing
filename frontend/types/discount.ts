@@ -4,6 +4,8 @@
 export type DiscountType = 'percent' | 'nominal'
 export type DiscountChannelScope = 'all' | 'online' | 'pos'
 export type DiscountStatus = 'aktif' | 'terjadwal' | 'kadaluarsa' | 'nonaktif' | 'kuota_habis'
+/** Cakupan produk (CLAUDE.md §28.9). `selected` TANPA `product_ids` bukan "berlaku semua" — itu diskon yang tidak bisa dipakai sama sekali. */
+export type DiscountAppliesTo = 'all' | 'selected'
 
 export interface Discount {
   id: string
@@ -21,6 +23,10 @@ export interface Discount {
   channel_scope: DiscountChannelScope
   is_active: boolean
   status: DiscountStatus
+  /** Default `all` — sinkron dengan default backend (§28.9). */
+  applies_to: DiscountAppliesTo
+  /** Kosong kalau `applies_to === 'all'`. */
+  product_ids: string[]
   created_at: string
   updated_at: string
 }
@@ -60,4 +66,7 @@ export interface DiscountInput {
   quota?: number | null
   channel_scope: DiscountChannelScope
   is_active: boolean
+  applies_to: DiscountAppliesTo
+  /** Wajib diisi (minimal 1) kalau `applies_to === 'selected'` — backend menolak daftar kosong (§28.9). */
+  product_ids: string[]
 }

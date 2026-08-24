@@ -95,6 +95,15 @@ async function copy(value: string, key: string) {
   }
 }
 
+// --- Pemilih produk (multi-select, dipakai form diskon §28.9) ---
+const demoProductSelection = ref<string[]>(['prod-2'])
+const demoProducts = [
+  { id: 'prod-1', name: 'Banner Vinyl', category: 'Outdoor', is_active: true },
+  { id: 'prod-2', name: 'X-Banner', category: 'Indoor', is_active: true },
+  { id: 'prod-3', name: 'Spanduk', category: 'Outdoor', is_active: true },
+  { id: 'prod-4', name: 'Roll Banner (lama)', category: 'Indoor', is_active: false },
+]
+
 // --- Interactive badge sample ---
 const badgeStates = [
   { label: 'draft', tone: 'amber' },
@@ -184,6 +193,7 @@ function onDemoOtpInput(e: Event) {
       <a href="#typography" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Tipografi</a>
       <a href="#buttons" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Buttons</a>
       <a href="#inputs" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Inputs</a>
+      <a href="#product-multiselect" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Pemilih produk</a>
       <a href="#badges" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Badges</a>
       <a href="#cards" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Cards</a>
       <a href="#media-upload" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Media upload</a>
@@ -524,6 +534,25 @@ function onDemoOtpInput(e: Event) {
             </button>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!-- ================================= Pemilih produk (multi-select) ================================= -->
+    <section id="product-multiselect" class="mb-16 scroll-mt-20">
+      <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Pemilih produk (multi-select)</h2>
+      <p class="mt-2 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">&lt;AdminProductMultiSelect&gt;</code> —
+        checklist produk + pencarian, dipakai form <strong class="text-ink-900">Diskon</strong>
+        (<code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/diskon</code>) untuk cakupan
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">applies_to: 'selected'</code> (§28.9). Produk
+        nonaktif tetap tampil (ditandai "Nonaktif"), tidak disembunyikan — supaya diskon lama yang sudah menunjuk
+        produk tak-aktif tetap terlihat apa adanya saat form dibuka ulang.
+      </p>
+      <div class="mt-6 max-w-md rounded-lg border border-hairline bg-canvas p-5">
+        <AdminProductMultiSelect v-model="demoProductSelection" :products="demoProducts" />
+        <p class="mt-3 text-xs text-ink-500">
+          Terpilih: <span class="font-mono text-ink-700">{{ demoProductSelection.join(', ') || '(kosong)' }}</span>
+        </p>
       </div>
     </section>
 

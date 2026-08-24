@@ -28,23 +28,37 @@ const (
 	ChannelScopePOS    ChannelScope = "pos"
 )
 
+// AppliesToScope — cakupan produk sebuah diskon (§28.9). Default 'all' wajib
+// membuat diskon lama (dibuat sebelum kolom ini ada) tetap berperilaku
+// persis seperti sebelumnya. 'selected' berarti diskon HANYA boleh dipakai
+// untuk produk yang terdaftar di tabel discount_products — dan daftar
+// kosong TIDAK PERNAH berarti "berlaku untuk semua" (lihat discountapi
+// ErrDiscountScopeEmpty).
+type AppliesToScope string
+
+const (
+	AppliesToAll      AppliesToScope = "all"
+	AppliesToSelected AppliesToScope = "selected"
+)
+
 // Discount — satu baris = satu program diskon (§28.1). TIDAK PERNAH
 // di-hard-delete — soft delete via DeletedAt/DeletedBy/DeleteReason, pola
 // sama seperti order.model.Order (migration 000025).
 type Discount struct {
-	ID                uuid.UUID    `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	Code              string       `gorm:"size:30;not null;column:code"                    json:"code"`
-	Name              string       `gorm:"size:150;not null;column:name"                   json:"name"`
-	Type              DiscountType `gorm:"size:20;not null;column:type"                    json:"type"`
-	ValuePercent      *float64     `gorm:"column:value_percent"                            json:"value_percent"`
-	ValueAmount       *int64       `gorm:"column:value_amount"                             json:"value_amount"`
-	MaxDiscountAmount *int64       `gorm:"column:max_discount_amount"                      json:"max_discount_amount"`
-	MinSubtotal       int64        `gorm:"not null;default:0;column:min_subtotal"          json:"min_subtotal"`
-	StartsAt          *time.Time   `gorm:"column:starts_at"                                json:"starts_at"`
-	EndsAt            *time.Time   `gorm:"column:ends_at"                                  json:"ends_at"`
-	Quota             *int         `gorm:"column:quota"                                    json:"quota"`
-	ChannelScope      ChannelScope `gorm:"size:20;not null;default:all;column:channel_scope" json:"channel_scope"`
-	IsActive          bool         `gorm:"not null;default:true;column:is_active"          json:"is_active"`
+	ID                uuid.UUID      `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	Code              string         `gorm:"size:30;not null;column:code"                    json:"code"`
+	Name              string         `gorm:"size:150;not null;column:name"                   json:"name"`
+	Type              DiscountType   `gorm:"size:20;not null;column:type"                    json:"type"`
+	ValuePercent      *float64       `gorm:"column:value_percent"                            json:"value_percent"`
+	ValueAmount       *int64         `gorm:"column:value_amount"                             json:"value_amount"`
+	MaxDiscountAmount *int64         `gorm:"column:max_discount_amount"                      json:"max_discount_amount"`
+	MinSubtotal       int64          `gorm:"not null;default:0;column:min_subtotal"          json:"min_subtotal"`
+	StartsAt          *time.Time     `gorm:"column:starts_at"                                json:"starts_at"`
+	EndsAt            *time.Time     `gorm:"column:ends_at"                                  json:"ends_at"`
+	Quota             *int           `gorm:"column:quota"                                    json:"quota"`
+	ChannelScope      ChannelScope   `gorm:"size:20;not null;default:all;column:channel_scope" json:"channel_scope"`
+	AppliesTo         AppliesToScope `gorm:"size:20;not null;default:all;column:applies_to"  json:"applies_to"`
+	IsActive          bool           `gorm:"not null;default:true;column:is_active"          json:"is_active"`
 
 	DeletedAt    *time.Time `gorm:"column:deleted_at"    json:"deleted_at,omitempty"`
 	DeletedBy    *uuid.UUID `gorm:"type:uuid;column:deleted_by" json:"deleted_by,omitempty"`

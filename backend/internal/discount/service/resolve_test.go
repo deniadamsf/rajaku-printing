@@ -24,8 +24,9 @@ type fakeDiscountStore struct {
 	usageMap map[uuid.UUID]int64
 	usageErr error
 
-	createErr error
-	created   *model.Discount
+	createErr        error
+	created          *model.Discount
+	createProductIDs []uuid.UUID
 
 	listResult []model.Discount
 	listErr    error
@@ -33,15 +34,26 @@ type fakeDiscountStore struct {
 	activeResult []model.Discount
 	activeErr    error
 
-	updateErr    error
-	updateFields map[string]any
+	updateWithProductsErr error
+	updateFields          map[string]any
 
 	softDeleteErr    error
 	softDeleteParams repository.SoftDeleteParams
+
+	productIDsResult map[uuid.UUID][]uuid.UUID
+	productIDsErr    error
+
+	// replaceProductsID/replaceProductsIDs are only populated when
+	// UpdateWithProducts is called with replaceProducts=true — mirrors the
+	// old standalone ReplaceProducts fake so existing test assertions keep
+	// working unchanged.
+	replaceProductsID  uuid.UUID
+	replaceProductsIDs []uuid.UUID
 }
 
-func (f *fakeDiscountStore) Create(_ context.Context, d *model.Discount) error {
+func (f *fakeDiscountStore) Create(_ context.Context, d *model.Discount, productIDs []uuid.UUID) error {
 	f.created = d
+	f.createProductIDs = productIDs
 	return f.createErr
 }
 
@@ -75,14 +87,29 @@ func (f *fakeDiscountStore) CountUsageOne(_ context.Context, _ uuid.UUID) (int64
 	return f.usageOne, f.usageOneErr
 }
 
-func (f *fakeDiscountStore) Update(_ context.Context, _ uuid.UUID, fields map[string]any) error {
+func (f *fakeDiscountStore) UpdateWithProducts(_ context.Context, id uuid.UUID, fields map[string]any, replaceProducts bool, productIDs []uuid.UUID) error {
 	f.updateFields = fields
-	return f.updateErr
+	if replaceProducts {
+		f.replaceProductsID = id
+		f.replaceProductsIDs = productIDs
+	}
+	return f.updateWithProductsErr
 }
 
 func (f *fakeDiscountStore) SoftDelete(_ context.Context, p repository.SoftDeleteParams) error {
 	f.softDeleteParams = p
 	return f.softDeleteErr
+}
+
+func (f *fakeDiscountStore) ProductIDs(_ context.Context, ids []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	if f.productIDsErr != nil {
+		return nil, f.productIDsErr
+	}
+	if f.productIDsResult != nil {
+		return f.productIDsResult, nil
+	}
+	out := make(map[uuid.UUID][]uuid.UUID, len(ids))
+	return out, nil
 }
 
 // ---- ResolveForOrder ----
@@ -186,6 +213,106 @@ func TestResolveForOrder_ManualDiscount_NegativeAmountRejected(t *testing.T) {
 	})
 	if err != discountapi.ErrManualDiscountInvalidAmount {
 		t.Fatalf("ResolveForOrder() error = %v, want ErrManualDiscountInvalidAmount", err)
+	}
+}
+
+// ---- Cakupan diskon per produk (§28.9) ----
+
+func TestResolveForOrder_MasterDiscount_ProductScope_Match(t *testing.T) {
+	id := uuid.New()
+	productID := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "PRODUKA", Name: "Diskon Produk A",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToSelected,
+		},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {productID}},
+	}
+	svc := New(store)
+	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Subtotal: 100_000, Channel: "pos", ProductID: productID,
+	})
+	if err != nil {
+		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
+	}
+	if snap.Amount != 10_000 {
+		t.Fatalf("ResolveForOrder() amount = %d, want 10000", snap.Amount)
+	}
+}
+
+// TestResolveForOrder_MasterDiscount_ProductScope_Mismatch — kasus gagal
+// wajib (brief §4): produk order di luar cakupan applies_to="selected".
+func TestResolveForOrder_MasterDiscount_ProductScope_Mismatch(t *testing.T) {
+	id := uuid.New()
+	scopedProductID := uuid.New()
+	otherProductID := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "PRODUKA", Name: "Diskon Produk A",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToSelected,
+		},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {scopedProductID}},
+	}
+	svc := New(store)
+	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Subtotal: 100_000, Channel: "pos", ProductID: otherProductID,
+	})
+	if err != discountapi.ErrDiscountProductMismatch {
+		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountProductMismatch", err)
+	}
+}
+
+// TestResolveForOrder_MasterDiscount_SelectedScopeEmpty_Rejected — §28.9
+// aturan keras: applies_to="selected" dengan daftar produk kosong (mis.
+// produk satu-satunya sudah dilepas dari cakupan setelah diskon dibuat)
+// TIDAK BOLEH dianggap berlaku untuk semua produk — dicek lagi di sini, di
+// TITIK PEMAKAIAN, bukan hanya saat create/update (lihat
+// discount_service_test.go untuk sisi create/update-nya).
+func TestResolveForOrder_MasterDiscount_SelectedScopeEmpty_Rejected(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "PRODUKA", Name: "Diskon Produk A",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToSelected,
+		},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{}, // kosong, BUKAN berarti semua
+	}
+	svc := New(store)
+	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Subtotal: 100_000, Channel: "pos", ProductID: uuid.New(),
+	})
+	if err != discountapi.ErrDiscountScopeEmpty {
+		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountScopeEmpty", err)
+	}
+}
+
+// TestResolveForOrder_MasterDiscount_AppliesToAll_IgnoresProductID —
+// applies_to="all" tidak pernah terpengaruh product_id apa pun (brief §4).
+func TestResolveForOrder_MasterDiscount_AppliesToAll_IgnoresProductID(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "GLOBAL10", Name: "Diskon Semua Produk",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToAll,
+		},
+	}
+	svc := New(store)
+	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Subtotal: 100_000, Channel: "pos", ProductID: uuid.New(),
+	})
+	if err != nil {
+		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
+	}
+	if snap.Amount != 10_000 {
+		t.Fatalf("ResolveForOrder() amount = %d, want 10000", snap.Amount)
 	}
 }
 

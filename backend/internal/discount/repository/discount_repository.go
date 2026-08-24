@@ -19,9 +19,20 @@ var (
 	// ErrCodeConflict — unique index idx_discounts_code_active violated
 	// (kode sudah dipakai diskon lain yang masih aktif/belum dihapus).
 	ErrCodeConflict = errors.New("discount/repository: code unique conflict")
+	// ErrProductNotFound — satu atau lebih product_id di cakupan diskon
+	// (discount_products) tidak ada di tabel products (temuan review #3).
+	// Ditegakkan DUA lapis: bulk existence check SEBELUM insert (jalur
+	// normal, menghasilkan error ini langsung), DAN FK violation (23503)
+	// sebagai jaring pengaman kalau produk terhapus di antara pengecekan
+	// dan insert (race) — keduanya dipetakan ke sentinel yang sama supaya
+	// caller tidak perlu tahu bedanya.
+	ErrProductNotFound = errors.New("discount/repository: one or more product ids not found")
 )
 
-const pgUniqueViolationCode = "23505"
+const (
+	pgUniqueViolationCode     = "23505"
+	pgForeignKeyViolationCode = "23503"
+)
 
 type DiscountRepository struct {
 	db *gorm.DB
@@ -29,12 +40,23 @@ type DiscountRepository struct {
 
 func NewDiscountRepository(db *gorm.DB) *DiscountRepository { return &DiscountRepository{db: db} }
 
-// Create inserts a new discount row. Returns ErrCodeConflict specifically
+// Create inserts a new discount row plus its initial product scope
+// (discount_products, §28.9 — empty productIDs is fine, e.g. applies_to=
+// "all") atomically in one transaction. Returns ErrCodeConflict specifically
 // when the partial unique index on `code` is violated.
-func (r *DiscountRepository) Create(ctx context.Context, d *model.Discount) error {
-	if err := r.db.WithContext(ctx).Create(d).Error; err != nil {
+func (r *DiscountRepository) Create(ctx context.Context, d *model.Discount, productIDs []uuid.UUID) error {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(d).Error; err != nil {
+			return err
+		}
+		return insertDiscountProducts(tx, d.ID, productIDs)
+	})
+	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrCodeConflict
+		}
+		if errors.Is(err, ErrProductNotFound) || isForeignKeyViolation(err) {
+			return ErrProductNotFound
 		}
 		return fmt.Errorf("create discount: %w", err)
 	}
@@ -136,28 +158,62 @@ func (r *DiscountRepository) CountUsageOne(ctx context.Context, id uuid.UUID) (i
 	return count, nil
 }
 
-// Update applies a partial update to a discount row. Returns ErrNotFound if
-// the row doesn't exist or is already soft-deleted.
-func (r *DiscountRepository) Update(ctx context.Context, id uuid.UUID, fields map[string]any) error {
-	if len(fields) == 0 {
+// UpdateWithProducts applies a partial field update AND (kalau
+// replaceProducts true) mengganti SELURUH cakupan produk diskon, DALAM SATU
+// TRANSAKSI (temuan review #1). Sebelum ini, Update dan ReplaceProducts
+// adalah dua transaksi terpisah dipanggil berurutan dari service — kalau
+// yang kedua gagal (koneksi putus, ctx timeout, produk tidak ditemukan),
+// field diskon (mis. applies_to='selected') sudah ter-commit duluan TANPA
+// cakupan produknya, persis state yang §28.9 larang keras. Sekarang
+// keduanya hidup/mati bersama, sama seperti Create.
+//
+// Mengembalikan ErrNotFound kalau baris tidak ada/sudah di-soft-delete
+// (hanya dicek kalau fields tidak kosong — kalau caller cuma mengganti
+// cakupan produk, PK/FK constraint discount_products sudah menegakkan
+// keberadaan discountID). ErrProductNotFound kalau salah satu productIDs
+// tidak ada di tabel products.
+func (r *DiscountRepository) UpdateWithProducts(ctx context.Context, id uuid.UUID, fields map[string]any, replaceProducts bool, productIDs []uuid.UUID) error {
+	if len(fields) == 0 && !replaceProducts {
 		return nil
 	}
-	updates := make(map[string]any, len(fields)+1)
-	for k, v := range fields {
-		updates[k] = v
-	}
-	updates["updated_at"] = gorm.Expr("NOW()")
-	res := r.db.WithContext(ctx).Model(&model.Discount{}).
-		Where("id = ? AND deleted_at IS NULL", id).
-		Updates(updates)
-	if res.Error != nil {
-		if isUniqueViolation(res.Error) {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if len(fields) > 0 {
+			updates := make(map[string]any, len(fields)+1)
+			for k, v := range fields {
+				updates[k] = v
+			}
+			updates["updated_at"] = gorm.Expr("NOW()")
+			res := tx.Model(&model.Discount{}).
+				Where("id = ? AND deleted_at IS NULL", id).
+				Updates(updates)
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				return ErrNotFound
+			}
+		}
+		if replaceProducts {
+			if err := tx.Exec("DELETE FROM discount_products WHERE discount_id = ?", id).Error; err != nil {
+				return fmt.Errorf("clear discount product scope: %w", err)
+			}
+			if err := insertDiscountProducts(tx, id, productIDs); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotFound
+		}
+		if isUniqueViolation(err) {
 			return ErrCodeConflict
 		}
-		return fmt.Errorf("update discount %s: %w", id, res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return ErrNotFound
+		if errors.Is(err, ErrProductNotFound) || isForeignKeyViolation(err) {
+			return ErrProductNotFound
+		}
+		return fmt.Errorf("update discount %s: %w", id, err)
 	}
 	return nil
 }
@@ -189,10 +245,87 @@ func (r *DiscountRepository) SoftDelete(ctx context.Context, p SoftDeleteParams)
 	return nil
 }
 
+// ProductIDs returns, for each discount id in `discountIDs`, the list of
+// product ids currently scoped to it (discount_products rows) — bulk
+// variant used both for single lookups (Get, ResolveForOrder) and for
+// listing pages (List, Applicable) to avoid N+1 queries (§28.9 brief).
+func (r *DiscountRepository) ProductIDs(ctx context.Context, discountIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	out := make(map[uuid.UUID][]uuid.UUID, len(discountIDs))
+	if len(discountIDs) == 0 {
+		return out, nil
+	}
+	var rows []model.DiscountProduct
+	if err := r.db.WithContext(ctx).Where("discount_id IN ?", discountIDs).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list discount product scope: %w", err)
+	}
+	for _, row := range rows {
+		out[row.DiscountID] = append(out[row.DiscountID], row.ProductID)
+	}
+	return out, nil
+}
+
+// insertDiscountProducts bulk-inserts discount_products rows for
+// discountID — shared by Create and UpdateWithProducts. No-op when
+// productIDs is empty. Validates every id exists in `products` FIRST
+// (temuan review #3) — kalau tidak, memberikan ErrProductNotFound yang
+// jelas alih-alih membiarkan raw FK violation (23503) meledak jadi 500 di
+// lapisan atas. Repository ini boleh query tabel `products` langsung
+// (bukan import package catalog) — pola sama seperti CountUsage terhadap
+// `orders`.
+func insertDiscountProducts(tx *gorm.DB, discountID uuid.UUID, productIDs []uuid.UUID) error {
+	if len(productIDs) == 0 {
+		return nil
+	}
+	if err := ensureProductsExist(tx, productIDs); err != nil {
+		return err
+	}
+	values := make([]any, 0, len(productIDs)*2)
+	placeholders := ""
+	for i, pid := range productIDs {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "(?, ?)"
+		values = append(values, discountID, pid)
+	}
+	sql := "INSERT INTO discount_products (discount_id, product_id) VALUES " + placeholders
+	if err := tx.Exec(sql, values...).Error; err != nil {
+		return fmt.Errorf("insert discount product scope: %w", err)
+	}
+	return nil
+}
+
+// ensureProductsExist bulk-checks (single query) that every id in
+// productIDs exists in `products`, BEFORE any insert is attempted (temuan
+// review #3). Caller is expected to have already de-duplicated productIDs
+// (service.dedupeUUIDs) — count is compared against len(productIDs)
+// exactly, so a caller passing duplicates would false-positive here.
+func ensureProductsExist(tx *gorm.DB, productIDs []uuid.UUID) error {
+	var count int64
+	if err := tx.Table("products").Where("id IN ?", productIDs).Count(&count).Error; err != nil {
+		return fmt.Errorf("verify product ids exist: %w", err)
+	}
+	if count != int64(len(productIDs)) {
+		return ErrProductNotFound
+	}
+	return nil
+}
+
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		return pgErr.Code == pgUniqueViolationCode
+	}
+	return false
+}
+
+// isForeignKeyViolation — jaring pengaman kalau produk terhapus di antara
+// ensureProductsExist dan INSERT (race sempit); ensureProductsExist
+// menangani jalur normal (produk memang tidak ada dari awal).
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == pgForeignKeyViolationCode
 	}
 	return false
 }

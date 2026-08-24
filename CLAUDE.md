@@ -770,3 +770,47 @@ jangan cetak "Diskon Rp 0". Nama diskon diambil dari
 - `/admin/rekap` — ikon Lucide `ClipboardList`, grup sidebar `kelola`.
 - Form POS (`/admin/pos`) — pemilih diskon + ringkasan harga yang menunjukkan
   potongan sebelum kasir menekan "Buat Pesanan".
+
+### 28.9. Cakupan diskon per produk (24 Agustus 2026)
+
+Awalnya diskon berlaku global — disaring hanya oleh `channel_scope`,
+`min_subtotal`, dan masa berlaku. Ditambahkan kemampuan membatasi sebuah
+diskon hanya untuk produk tertentu.
+
+Yang membuat ini murah: **satu order = satu produk** di sistem ini. `orders`
+menyimpan satu `product_id`, satu bahan, satu ukuran, satu `subtotal` — tidak
+ada tabel item baris. Jadi "diskon per produk" tidak menuntut pembongkaran
+struktur order, cukup penyaringan saat diskon dipakai.
+
+**Struktur**
+- `discounts.applies_to` — `all` (default) atau `selected`. Default `all`
+  membuat semua diskon yang sudah ada berperilaku persis seperti sebelumnya.
+- Tabel `discount_products` (`discount_id`, `product_id`, unique berpasangan,
+  FK ke `products`). Produk **tidak pernah di-hard-delete** di modul catalog
+  (hanya `is_active=false`), jadi FK ini aman dan relasinya tidak perlu ikut
+  soft-delete.
+
+**Validasi** — sentinel `ErrDiscountProductMismatch` di `validateForUse`:
+kalau `applies_to='selected'` dan `product_id` order tidak ada di daftar,
+tolak.
+
+**Aturan yang tidak boleh dilanggar:** diskon `applies_to='selected'` yang
+daftar produknya kosong (atau seluruh produknya sudah nonaktif) **tidak boleh
+diperlakukan sebagai berlaku-untuk-semua**. Daftar kosong = tidak ada order
+yang cocok = diskon tidak bisa dipakai. Menganggap "kosong berarti semua"
+adalah kegagalan senyap yang memberi potongan ke seluruh katalog, dan itu
+kerugian uang nyata. Jalur create/update wajib menolak `applies_to='selected'`
+tanpa satu pun produk, dan `validateForUse` wajib menolak lagi saat dipakai —
+dua-duanya, karena produk bisa dinonaktifkan setelah diskon dibuat.
+
+**Endpoint `/applicable`** — tambah parameter `product_id`, supaya daftar
+diskon yang muncul di layar kasir sudah tersaring sejak awal dan kasir tidak
+pernah melihat promo yang akan ditolak saat disimpan.
+
+**Yang TIDAK berubah:** aturan snapshot §28.2. `discount_amount` tetap
+disalin ke order saat transaksi. Cakupan produk hanya menentukan **boleh atau
+tidaknya sebuah diskon dipakai**, bukan cara pencatatannya — jadi jaminan
+"diskon tetap tercatat di rekap walau sudah dihapus" berdiri tanpa disentuh.
+
+Cakupan per **bahan** (`material_id`) sengaja belum dibuat — kalau nanti
+dibutuhkan, polanya sama persis (`discount_materials` + satu sentinel lagi).

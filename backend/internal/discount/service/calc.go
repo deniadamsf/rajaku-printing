@@ -4,6 +4,8 @@ import (
 	"math"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/rajaku-printing/backend/internal/discount/discountapi"
 	"github.com/rajaku-printing/backend/internal/discount/model"
 )
@@ -31,7 +33,15 @@ func computeStatus(d *model.Discount, usageCount int64, now time.Time) string {
 // validateForUse checks every rule in §28.4 (in the order sentinel errors
 // are documented there) and returns the FIRST one that fails, or nil if the
 // discount may be used for this subtotal/channel right now.
-func validateForUse(d *model.Discount, subtotal int64, channel string, usageCount int64, now time.Time) error {
+//
+// productID + scopedProductIDs implement §28.9: only checked when
+// d.AppliesTo == "selected" — an "all" discount ignores both arguments
+// entirely. scopedProductIDs being empty is NEVER treated as "applies to
+// everything" (ErrDiscountScopeEmpty), even though the discount's row was
+// saved with applies_to="selected" — a product that used to be the sole
+// member of the scope can be dropped from it AFTER the discount was created,
+// so this must be re-checked here every time, not just at create/update.
+func validateForUse(d *model.Discount, subtotal int64, channel string, usageCount int64, now time.Time, productID uuid.UUID, scopedProductIDs []uuid.UUID) error {
 	if !d.IsActive {
 		return discountapi.ErrDiscountInactive
 	}
@@ -50,7 +60,32 @@ func validateForUse(d *model.Discount, subtotal int64, channel string, usageCoun
 	if d.Quota != nil && usageCount >= int64(*d.Quota) {
 		return discountapi.ErrDiscountQuotaExhausted
 	}
+	if d.AppliesTo == model.AppliesToSelected {
+		// Cakupan kosong ditolak TANPA SYARAT (temuan review #4) — tidak
+		// peduli productID diisi atau tidak, applies_to="selected" dengan
+		// discount_products kosong TIDAK PERNAH bisa dipakai.
+		if len(scopedProductIDs) == 0 {
+			return discountapi.ErrDiscountScopeEmpty
+		}
+		// productID == uuid.Nil berarti "tidak difilter berdasarkan produk
+		// tertentu" (dipakai Applicable ketika caller tidak mengirim
+		// product_id sama sekali) — kecocokan produk baru dicek kalau
+		// caller benar-benar menyebutkan produknya.
+		if productID != uuid.Nil && !containsUUID(scopedProductIDs, productID) {
+			return discountapi.ErrDiscountProductMismatch
+		}
+	}
 	return nil
+}
+
+// containsUUID reports whether id is present in ids.
+func containsUUID(ids []uuid.UUID, id uuid.UUID) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
 }
 
 // computeAmount implements the §28.3 formula for a MASTER discount (percent
@@ -97,9 +132,14 @@ func clampAmount(raw, subtotal int64) int64 {
 	return raw
 }
 
-// toDiscountView projects a model.Discount + usage count into the
-// admin-facing DiscountView (§28.8), computing the derived `status` field.
-func toDiscountView(d *model.Discount, usageCount int64, now time.Time) DiscountView {
+// toDiscountView projects a model.Discount + usage count + product scope
+// into the admin-facing DiscountView (§28.8/§28.9), computing the derived
+// `status` field. productIDs is always normalized to a non-nil slice so the
+// JSON field serializes as `[]`, never `null`.
+func toDiscountView(d *model.Discount, usageCount int64, productIDs []uuid.UUID, now time.Time) DiscountView {
+	if productIDs == nil {
+		productIDs = []uuid.UUID{}
+	}
 	return DiscountView{
 		ID:                d.ID,
 		Code:              d.Code,
@@ -114,6 +154,8 @@ func toDiscountView(d *model.Discount, usageCount int64, now time.Time) Discount
 		Quota:             d.Quota,
 		UsageCount:        usageCount,
 		ChannelScope:      string(d.ChannelScope),
+		AppliesTo:         string(d.AppliesTo),
+		ProductIDs:        productIDs,
 		IsActive:          d.IsActive,
 		Status:            computeStatus(d, usageCount, now),
 		CreatedAt:         d.CreatedAt,

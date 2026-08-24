@@ -74,6 +74,8 @@ func (h *Handler) Create(c *gin.Context) {
 		Quota:             req.Quota,
 		ChannelScope:      req.ChannelScope,
 		IsActive:          isActive,
+		AppliesTo:         req.AppliesTo,
+		ProductIDs:        req.ProductIDs,
 	})
 	if err != nil {
 		h.mapErr(c, err)
@@ -82,9 +84,16 @@ func (h *Handler) Create(c *gin.Context) {
 	httpx.Created(c, view)
 }
 
-// GET /admin/discounts/applicable?channel=pos&subtotal=250000 — dipakai
-// layar kasir (§28.5/§28.8). Permission BERBEDA dari CRUD lain
+// GET /admin/discounts/applicable?channel=pos&subtotal=250000&product_id=...
+// — dipakai layar kasir (§28.5/§28.8). Permission BERBEDA dari CRUD lain
 // (discount.apply, bukan discount.manage) — dicek di routes.go.
+//
+// product_id (§28.9) opsional — kalau dikirim, WAJIB UUID valid DAN bukan
+// UUID kosong (temuan review #4 — 00000000-...-0000 ditolak 400, supaya
+// tidak diam-diam disamakan dengan "tidak dikirim"), lalu hasilnya disaring
+// supaya diskon applies_to="selected" yang cakupannya tidak menyertakan
+// produk itu tidak ikut muncul. Tidak dikirim sama sekali = tidak difilter
+// berdasarkan produk (kompatibel dgn pemanggil lama).
 func (h *Handler) Applicable(c *gin.Context) {
 	channel := c.Query("channel")
 	if channel != "online" && channel != "pos" {
@@ -96,7 +105,24 @@ func (h *Handler) Applicable(c *gin.Context) {
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "subtotal wajib angka >= 0")
 		return
 	}
-	views, err := h.svc.Applicable(c.Request.Context(), channel, subtotal)
+	var productID uuid.UUID
+	if raw := c.Query("product_id"); raw != "" {
+		productID, err = uuid.Parse(raw)
+		if err != nil {
+			httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "product_id bukan UUID valid")
+			return
+		}
+		// Temuan review #4 (efek samping) — product_id=00000000-...-0000
+		// adalah UUID yang SAH secara sintaks tapi berarti "tidak ada
+		// produk", jadi kalau dikirim eksplisit harus ditolak, bukan
+		// diam-diam diperlakukan sama seperti "product_id tidak dikirim
+		// sama sekali" (yang juga memakai uuid.Nil sebagai sentinel).
+		if productID == uuid.Nil {
+			httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "product_id tidak boleh UUID kosong")
+			return
+		}
+	}
+	views, err := h.svc.Applicable(c.Request.Context(), channel, subtotal, productID)
 	if err != nil {
 		h.mapErr(c, err)
 		return
@@ -182,7 +208,11 @@ func (h *Handler) mapErr(c *gin.Context, err error) {
 		errors.Is(err, discountapi.ErrDiscountMaxAmountInvalid),
 		errors.Is(err, discountapi.ErrDiscountMaxAmountNotAllowed),
 		errors.Is(err, discountapi.ErrDiscountMinSubtotalInvalid),
-		errors.Is(err, discountapi.ErrDiscountInvalidPeriod):
+		errors.Is(err, discountapi.ErrDiscountInvalidPeriod),
+		errors.Is(err, discountapi.ErrDiscountAppliesToInvalid),
+		errors.Is(err, discountapi.ErrDiscountScopeEmpty),
+		errors.Is(err, discountapi.ErrDiscountProductMismatch),
+		errors.Is(err, discountapi.ErrDiscountProductNotFound):
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, err.Error())
 	case errors.Is(err, discountapi.ErrDiscountCodeConflict):
 		httpx.Error(c, http.StatusConflict, httpx.CodeConflict,

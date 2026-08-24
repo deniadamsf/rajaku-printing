@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/rajaku-printing/backend/internal/discount/discountapi"
 	"github.com/rajaku-printing/backend/internal/discount/model"
 )
@@ -69,7 +71,7 @@ func baseDiscount(now time.Time) *model.Discount {
 func TestValidateForUse_HappyPath(t *testing.T) {
 	now := time.Now()
 	d := baseDiscount(now)
-	if err := validateForUse(d, 100_000, "pos", 0, now); err != nil {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil); err != nil {
 		t.Fatalf("validateForUse() error = %v, want nil", err)
 	}
 }
@@ -78,7 +80,7 @@ func TestValidateForUse_Inactive(t *testing.T) {
 	now := time.Now()
 	d := baseDiscount(now)
 	d.IsActive = false
-	if err := validateForUse(d, 100_000, "pos", 0, now); err != discountapi.ErrDiscountInactive {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil); err != discountapi.ErrDiscountInactive {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountInactive", err)
 	}
 }
@@ -88,7 +90,7 @@ func TestValidateForUse_NotStarted(t *testing.T) {
 	d := baseDiscount(now)
 	future := now.Add(24 * time.Hour)
 	d.StartsAt = &future
-	if err := validateForUse(d, 100_000, "pos", 0, now); err != discountapi.ErrDiscountNotStarted {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil); err != discountapi.ErrDiscountNotStarted {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountNotStarted", err)
 	}
 }
@@ -98,7 +100,7 @@ func TestValidateForUse_Expired(t *testing.T) {
 	d := baseDiscount(now)
 	past := now.Add(-24 * time.Hour)
 	d.EndsAt = &past
-	if err := validateForUse(d, 100_000, "pos", 0, now); err != discountapi.ErrDiscountExpired {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil); err != discountapi.ErrDiscountExpired {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountExpired", err)
 	}
 }
@@ -107,7 +109,7 @@ func TestValidateForUse_ChannelMismatch(t *testing.T) {
 	now := time.Now()
 	d := baseDiscount(now)
 	d.ChannelScope = model.ChannelScopeOnline
-	if err := validateForUse(d, 100_000, "pos", 0, now); err != discountapi.ErrDiscountChannelMismatch {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil); err != discountapi.ErrDiscountChannelMismatch {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountChannelMismatch", err)
 	}
 }
@@ -116,7 +118,7 @@ func TestValidateForUse_MinSubtotal(t *testing.T) {
 	now := time.Now()
 	d := baseDiscount(now)
 	d.MinSubtotal = 200_000
-	if err := validateForUse(d, 100_000, "pos", 0, now); err != discountapi.ErrDiscountMinSubtotal {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil); err != discountapi.ErrDiscountMinSubtotal {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountMinSubtotal", err)
 	}
 }
@@ -125,12 +127,57 @@ func TestValidateForUse_QuotaExhausted(t *testing.T) {
 	now := time.Now()
 	d := baseDiscount(now)
 	d.Quota = intPtr(5)
-	if err := validateForUse(d, 100_000, "pos", 5, now); err != discountapi.ErrDiscountQuotaExhausted {
+	if err := validateForUse(d, 100_000, "pos", 5, now, uuid.Nil, nil); err != discountapi.ErrDiscountQuotaExhausted {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountQuotaExhausted", err)
 	}
 	// One below quota should still pass.
-	if err := validateForUse(d, 100_000, "pos", 4, now); err != nil {
+	if err := validateForUse(d, 100_000, "pos", 4, now, uuid.Nil, nil); err != nil {
 		t.Fatalf("validateForUse() error = %v, want nil (usage below quota)", err)
+	}
+}
+
+// ---- Cakupan diskon per produk (§28.9) ----
+
+func TestValidateForUse_SelectedScope_ProductMatches(t *testing.T) {
+	now := time.Now()
+	d := baseDiscount(now)
+	d.AppliesTo = model.AppliesToSelected
+	productID := uuid.New()
+	if err := validateForUse(d, 100_000, "pos", 0, now, productID, []uuid.UUID{productID}); err != nil {
+		t.Fatalf("validateForUse() error = %v, want nil", err)
+	}
+}
+
+func TestValidateForUse_SelectedScope_ProductMismatch(t *testing.T) {
+	now := time.Now()
+	d := baseDiscount(now)
+	d.AppliesTo = model.AppliesToSelected
+	scopedID := uuid.New()
+	otherID := uuid.New()
+	if err := validateForUse(d, 100_000, "pos", 0, now, otherID, []uuid.UUID{scopedID}); err != discountapi.ErrDiscountProductMismatch {
+		t.Fatalf("validateForUse() error = %v, want ErrDiscountProductMismatch", err)
+	}
+}
+
+// TestValidateForUse_SelectedScope_EmptyListNeverMatchesAll — §28.9 aturan
+// keras: daftar produk kosong TIDAK berarti "berlaku untuk semua", bahkan
+// waktu diskon benar-benar dipakai (bukan hanya saat create/update) — produk
+// satu-satunya anggota cakupan bisa saja sudah dilepas setelah diskon dibuat.
+func TestValidateForUse_SelectedScope_EmptyListNeverMatchesAll(t *testing.T) {
+	now := time.Now()
+	d := baseDiscount(now)
+	d.AppliesTo = model.AppliesToSelected
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.New(), nil); err != discountapi.ErrDiscountScopeEmpty {
+		t.Fatalf("validateForUse() error = %v, want ErrDiscountScopeEmpty", err)
+	}
+}
+
+func TestValidateForUse_AppliesToAll_IgnoresProductID(t *testing.T) {
+	now := time.Now()
+	d := baseDiscount(now)
+	d.AppliesTo = model.AppliesToAll
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.New(), nil); err != nil {
+		t.Fatalf("validateForUse() error = %v, want nil (applies_to=all ignores product_id)", err)
 	}
 }
 

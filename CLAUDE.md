@@ -34,6 +34,9 @@ Modul terpisah (masing-masing punya service/route sendiri, komunikasi via intern
 11. `cms` — artikel SEO, auto-webp
 12. `admin` — role & menu toggle per staff
 13. `tracking` — public endpoint cek resi (no-login)
+14. `discount` — master diskon (persen/nominal), masa berlaku, kuota, soft-delete; nilainya di-*snapshot* ke order saat dipakai (§28)
+
+> Rekap order (§28.5) **tidak** jadi modul sendiri — ia laporan baca-saja di atas tabel `orders`, jadi tinggal di modul `order` (`repository.Recap` → `service.RecapOrders` → `GET /admin/orders/recap`). Bikin modul `report` terpisah malah memaksa cross-module read ke internal `order`, yang dilarang §22.
 
 ## 4. Order State Machine
 ```
@@ -267,6 +270,8 @@ Selain skill yang sudah kamu punya (`ui-ux-pro-max`, sudah disesuaikan ke Vue), 
 ## 24. Status Keputusan
 Tidak ada lagi item TBD terbuka. Seluruh keputusan arsitektur & fitur (section 1-23) sudah final per tanggal dokumen ini disepakati. Spec ini siap dijadikan acuan penuh untuk mulai development.
 
+> **Addendum (2026-08-24):** Section 28 (Modul Diskon & Rekap Order) ditambahkan. Aturan snapshot di §28.2 **binding** — setiap perhitungan uang yang menyentuh diskon wajib membaca kolom snapshot di `orders`, bukan JOIN ke tabel `discounts`.
+>
 > **Addendum (2026-08-12):** Section 26 (Design Language) ditambahkan setelah spec awal. Semua UI baru **wajib** patuh; UI yang sudah terlanjur dibuat pakai palet Tailwind default (rose/slate + emoji) di-mark sebagai drift dan refactor bertahap.
 
 ## 25. Checklist Sebelum Mulai Development
@@ -544,3 +549,224 @@ Project ini punya subagent di `.claude/agents/`. **Delegasikan otomatis** — ja
 **Kapan TIDAK usah delegasi** (overhead spawn lebih mahal dari kerjanya sendiri): edit satu baris, jawab pertanyaan soal kode yang sudah ada di context, baca 1 file, jalankan 1 perintah git/make.
 
 **Batas subagent:** subagent mulai dari context kosong — kirim brief yang berdiri sendiri (path file, nama modul, status yang terlibat, hasil yang diharapkan). Jangan asumsikan dia tahu isi percakapan sebelumnya. Subagent juga tidak bisa memanggil subagent lain.
+
+## 28. Modul Diskon & Rekap Order (24 Agustus 2026)
+
+Ditambahkan setelah spec awal. Keputusan pemilik proyek pada tanggal yang sama:
+diskon **dikelola & dipakai internal** (admin bikin master diskon, kasir/admin
+memilihnya saat membuat order) — **tidak ada** kolom "kode promo" di form order
+publik; dan diskon **hanya memotong subtotal produk**, tidak menyentuh ongkir.
+
+### 28.1. Bentuk diskon
+
+Tabel master `discounts`. Satu baris = satu program diskon:
+
+| Kolom | Isi |
+|---|---|
+| `code` | Handle pendek unik, huruf besar (`LEBARAN25`) — dipakai kasir untuk mencari cepat, **bukan** kode yang diketik pelanggan |
+| `name` | Nama yang dibaca manusia & yang muncul di struk/invoice ("Promo Lebaran 25%") |
+| `type` | `percent` \| `nominal` |
+| `value_percent` | Diisi hanya kalau `type='percent'`. `NUMERIC(5,2)`, 0 < v <= 100 |
+| `value_amount` | Diisi hanya kalau `type='nominal'`. Rupiah bulat, > 0 |
+| `max_discount_amount` | Batas atas rupiah untuk tipe persen (mis. "20% maks Rp50.000"). NULL = tanpa batas |
+| `min_subtotal` | Subtotal minimum agar diskon boleh dipakai. Default 0 |
+| `starts_at` / `ends_at` | Masa berlaku. NULL = tanpa batas di sisi itu |
+| `quota` | Maksimum berapa order boleh memakai diskon ini. NULL = tak terbatas |
+| `channel_scope` | `all` \| `online` \| `pos` |
+| `is_active` | Saklar manual admin, terpisah dari masa berlaku |
+| `deleted_at` / `deleted_by` / `delete_reason` | Soft delete — lihat §28.2 |
+
+Selain diskon dari master, kasir boleh memberi **diskon manual** (nominal +
+alasan wajib) untuk kasus tawar-menawar di tempat. Diskon manual tersimpan
+dengan `discount_id = NULL` dan `discount_type_snapshot = 'manual'`.
+
+**CHECK constraint wajib** di migration: kombinasi `type` dengan kolom nilainya
+harus konsisten (`percent` → `value_percent` NOT NULL & `value_amount` NULL, dan
+sebaliknya). Jangan andalkan validasi service saja — DB yang jadi penjaga
+terakhir.
+
+### 28.2. Aturan inti — diskon di rekap TIDAK BOLEH hilang
+
+Masalahnya: diskon punya masa berlaku dan bisa dinonaktifkan/dihapus admin.
+Kalau order cuma menyimpan `discount_id`, begitu diskonnya dihapus, rekap
+transaksi bulan lalu ikut rusak — angka diskonnya jadi kosong atau query-nya
+error. Tiga lapis pencegahan, ketiganya wajib:
+
+**1. Snapshot nilai ke baris order (bukan cuma foreign key).**
+Saat order dibuat, salin nilai diskon yang berlaku *saat itu* ke kolom milik
+`orders` sendiri:
+
+```
+discount_id              UUID NULL   -- referensi, hanya untuk telusur balik
+discount_code_snapshot   VARCHAR(30) NULL
+discount_name_snapshot   VARCHAR(150) NULL
+discount_type_snapshot   VARCHAR(20) NULL   -- percent | nominal | manual
+discount_value_snapshot  NUMERIC(12,2) NULL -- 25.00 (persen) atau 50000 (nominal)
+discount_amount          BIGINT NOT NULL DEFAULT 0  -- rupiah yang BENAR-BENAR dipotong
+discount_note            TEXT NULL          -- wajib diisi untuk diskon manual
+```
+
+`discount_amount` adalah angka yang dipakai semua perhitungan uang. Snapshot
+lain hanya untuk menjelaskan angka itu ke manusia.
+
+**2. Master diskon tidak pernah di-hard-delete.**
+Tombol "Hapus" di admin = soft delete (`deleted_at` terisi), pola yang sama
+dengan `orders` di migration `000025`. Barisnya tetap ada, jadi foreign key
+`orders.discount_id` tidak pernah menggantung dan telusur balik ("order mana
+saja yang pakai promo ini?") tetap jalan selamanya. Kalau nanti ada yang
+tergoda menambah `ON DELETE CASCADE` di FK ini: jangan — itu persis jalan yang
+membuat rekap hilang.
+
+**3. Semua query uang membaca kolom snapshot, tidak pernah JOIN ke `discounts`.**
+Rekap, invoice, struk, dan laporan rekonsiliasi mengambil
+`orders.discount_amount` / `discount_name_snapshot`. `discounts` hanya
+di-JOIN di layar **kelola diskon**, tidak di layar uang.
+
+Konsekuensi yang harus disadari & memang diinginkan: kalau admin mengubah nilai
+sebuah diskon dari 20% jadi 25%, order lama **tetap** tercatat 20% — karena yang
+dicatat adalah apa yang benar-benar terjadi saat transaksi, bukan isi master
+hari ini. Nonaktif/kadaluarsa/hapus hanya memblokir pemakaian **baru**.
+
+### 28.3. Rumus total
+
+Diskon memotong **subtotal produk saja**. Ongkir tidak pernah didiskon.
+
+```
+discount_amount = min(hitungan_diskon, subtotal)     -- dijepit, tidak boleh > subtotal
+total           = subtotal - discount_amount + COALESCE(shipping_cost, 0)
+```
+
+Untuk `type='percent'`:
+`hitungan = round(subtotal × value_percent / 100)`, lalu dipotong
+`max_discount_amount` kalau ada. Pembulatan **HALF-UP ke rupiah**, konsisten
+dengan `calcPerM2` di `catalog/service/pricing.go`.
+
+`total` **tidak boleh negatif** — penjepitan `min(..., subtotal)` di atas sudah
+menjaminnya, dan wajib ada CHECK `discount_amount >= 0` di DB.
+
+Titik kode yang WAJIB ikut memakai rumus ini (kalau salah satu terlewat, total
+jadi tidak konsisten antar jalur):
+- `order/service/order_service.go` — `CreateOrder` (online) dan `CreatePOSOrder`
+- `SetShippingCost` — `newTotal` sekarang `Subtotal - DiscountAmount + ongkir`
+- `ConfirmPickupTotal`
+- `order/service/admin_override.go` — edit data pesanan super admin
+
+### 28.4. Validasi saat diskon dipakai
+
+Dicek di `discount` service sebelum order dibuat; gagal salah satu = tolak
+dengan sentinel error masing-masing (§22 — `errors.Is`, bukan bandingkan string):
+
+- `ErrDiscountNotFound` — id tidak ada, atau `deleted_at` terisi
+- `ErrDiscountInactive` — `is_active = false`
+- `ErrDiscountNotStarted` / `ErrDiscountExpired` — di luar `starts_at`/`ends_at`
+- `ErrDiscountChannelMismatch` — `channel_scope` tidak cocok channel order
+- `ErrDiscountMinSubtotal` — subtotal di bawah `min_subtotal`
+- `ErrDiscountQuotaExhausted` — kuota habis
+
+**Pemakaian kuota dihitung, bukan disimpan.** Tidak ada kolom `used_count` yang
+di-increment — jumlah pemakaian = `COUNT(*) FROM orders WHERE discount_id = ?
+AND deleted_at IS NULL`. Alasannya: kolom counter berarti dual-write, dan
+begitu ada satu jalur yang lupa meng-update-nya, angkanya melenceng diam-diam
+dan tidak ada cara mendeteksinya. Menghitung dari `orders` membuat pesanan
+sebagai satu-satunya sumber kebenaran.
+
+Konsekuensi yang diterima sadar: dua kasir yang menekan "Buat Pesanan"
+bersamaan pada diskon yang tersisa 1 kuota bisa sama-sama lolos, jadi kuota
+terlampaui paling banyak sejumlah request yang benar-benar bersamaan. Untuk
+volume satu toko ini tidak masalah, dan konsekuensinya (memberi diskon satu
+kali lebih banyak) jauh lebih ringan daripada risiko counter yang melenceng.
+Kalau suatu saat perlu ketat, kuncinya `SELECT ... FOR UPDATE` pada baris
+`discounts` di dalam transaksi pembuatan order — bukan menambah counter.
+
+### 28.5. Rekap Order (admin panel)
+
+Halaman `/admin/rekap`, permission `report.view`. Laporan baca-saja di atas
+tabel `orders` (`deleted_at IS NULL`), tinggal di modul `order` — lihat catatan
+di §3.
+
+Route-nya `GET /api/v1/admin/order-recap` (+ `/export` untuk CSV), **bukan**
+sub-path `/admin/orders/...`. Alasannya: grup itu sudah punya `GET
+/admin/orders/:resi`, dan menaruh path statis bersebelahan dengan wildcard di
+level yang sama mengundang bentrok routing — pola grup terpisah ini sama dengan
+`/admin/audit-log` yang sudah ada di `order/handler/routes.go`.
+
+**Filter**: rentang tanggal (wajib, zona WIB seperti rekonsiliasi POS §11),
+channel (`semua`/`online`/`pos`), status order, kasir/pembuat, dan diskon
+(termasuk pilihan "hanya order berdiskon").
+
+**Kartu ringkasan**: jumlah order, omzet kotor (Σ `subtotal`), total diskon
+(Σ `discount_amount`), total ongkir, omzet bersih (Σ `total`), dan rata-rata
+nilai order.
+
+**Tabel per order**: tanggal, resi, pelanggan, produk, channel, status,
+subtotal, **diskon (nama snapshot + nominal)**, ongkir, total, metode bayar.
+Baris diskon menampilkan `discount_name_snapshot` — jadi tetap terbaca lengkap
+walau diskonnya sudah dihapus dari master.
+
+**Ekspor CSV**: `GET /admin/order-recap/export` dengan filter yang sama, kolom
+sama dengan tabel. Header `Content-Disposition: attachment`. Angka rupiah
+ditulis polos tanpa pemisah ribuan supaya langsung terbaca sebagai angka di
+spreadsheet.
+
+Rekap **tidak** menghitung ulang apa pun dari master diskon — semuanya
+penjumlahan kolom di `orders` (§28.2 lapis 3).
+
+**Batas rentang tanggal: maksimum 366 hari**, berlaku untuk ketiga endpoint
+rekap. Ini bukan pembatasan hemat-hematan: ekspor CSV tanpa batas berarti satu
+staff yang mengetik `from=2000-01-01&to=2099-12-31` menarik seluruh tabel order
+ke memori sekaligus, dan di VPS Hostinger tunggal (§19, tanpa autoscale) itu
+cukup untuk mematikan proses backend. Ekspornya juga wajib **ditulis
+mengalir ke `c.Writer` per batch**, bukan dirakit jadi satu `[]byte` lalu
+dikirim — kalau tidak, batas 366 hari cuma menggeser masalahnya, tidak
+menghilangkannya.
+
+**Isi dropdown filter**: `GET /api/v1/admin/order-recap/filters?from=&to=`
+(permission `report.view`) mengembalikan daftar kasir & diskon yang
+**benar-benar muncul** pada rentang tanggal itu, jadi dropdown-nya ikut berubah
+saat rentangnya diubah. Daftar diskonnya dibaca dari kolom **snapshot** di
+`orders`, bukan dari tabel `discounts` — konsekuensinya persis yang diinginkan
+§28.2: diskon yang sudah dihapus dari master tetap bisa dipilih sebagai filter,
+karena order yang memakainya masih ada. Order berdiskon manual dikelompokkan
+jadi satu entri `id: null` berlabel "Diskon manual".
+
+### 28.6. Permission baru
+
+| Kode | Untuk apa | Default |
+|---|---|---|
+| `discount.manage` | Buat/ubah/nonaktifkan/hapus master diskon | `super_admin` |
+| `discount.apply` | Memakai diskon (master atau manual) saat membuat order | `super_admin`, `cashier` |
+| `report.view` | Buka halaman Rekap Order & ekspor CSV | `super_admin` |
+
+Seperti permission lain (§10), ketiganya tetap bisa di-toggle ke role manapun
+lewat "Kelola Role". Yang perlu disadari sebelum memberikan `discount.apply`
+ke role lain: pemegangnya bisa memotong harga jual, termasuk lewat diskon
+manual tanpa batas nominal — beri hanya ke role yang memang berwenang
+menentukan harga.
+
+### 28.7. Tampilan diskon di dokumen
+
+Kalau `discount_amount > 0`, struk thermal (§12) dan invoice PDF wajib
+menampilkan barisnya di antara subtotal dan ongkir:
+
+```
+Subtotal                 Rp 250.000
+Diskon (Promo Lebaran)  -Rp  50.000
+Ongkir                   Rp  15.000
+TOTAL                    Rp 215.000
+```
+
+Kalau `discount_amount = 0`, barisnya **tidak** ditampilkan sama sekali —
+jangan cetak "Diskon Rp 0". Nama diskon diambil dari
+`discount_name_snapshot`; untuk diskon manual pakai teks "Diskon" saja
+(nama snapshot-nya kosong).
+
+### 28.8. UI (§26 berlaku penuh)
+
+- `/admin/diskon` — daftar + form buat/ubah, badge status (`Aktif`, `Terjadwal`,
+  `Kadaluarsa`, `Nonaktif`, `Kuota habis`) memakai warna semantic §26.7, ikon
+  Lucide `TicketPercent`. Hapus = modal konfirmasi dengan input alasan (§26.7
+  "destructive"), dan modalnya wajib menyebut bahwa order lama tetap mencatat
+  diskon ini.
+- `/admin/rekap` — ikon Lucide `ClipboardList`, grup sidebar `kelola`.
+- Form POS (`/admin/pos`) — pemilih diskon + ringkasan harga yang menunjukkan
+  potongan sebelum kasir menekan "Buat Pesanan".

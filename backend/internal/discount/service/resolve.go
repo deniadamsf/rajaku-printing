@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/rajaku-printing/backend/internal/discount/discountapi"
 	"github.com/rajaku-printing/backend/internal/discount/model"
 	"github.com/rajaku-printing/backend/internal/discount/repository"
@@ -68,7 +70,18 @@ func (s *Service) resolveMasterDiscount(ctx context.Context, in discountapi.Reso
 	if err != nil {
 		return nil, fmt.Errorf("resolve discount for order: count usage: %w", err)
 	}
-	if err := validateForUse(d, in.Subtotal, in.Channel, usage, time.Now()); err != nil {
+	// Cakupan produk (§28.9) hanya perlu dimuat kalau applies_to="selected" —
+	// diskon "all" (mayoritas kasus) tidak butuh query tambahan ini sama
+	// sekali.
+	var scopedProductIDs []uuid.UUID
+	if d.AppliesTo == model.AppliesToSelected {
+		scoped, err := s.discounts.ProductIDs(ctx, []uuid.UUID{d.ID})
+		if err != nil {
+			return nil, fmt.Errorf("resolve discount for order: product scope: %w", err)
+		}
+		scopedProductIDs = scoped[d.ID]
+	}
+	if err := validateForUse(d, in.Subtotal, in.Channel, usage, time.Now(), in.ProductID, scopedProductIDs); err != nil {
 		return nil, err
 	}
 

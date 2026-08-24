@@ -79,6 +79,25 @@ var (
 	// Diskon begini tersimpan tapi validateForUse menolaknya SELAMANYA tanpa
 	// petunjuk (§28 temuan #3) — ditolak sejak create/update.
 	ErrDiscountInvalidPeriod = errors.New("discountapi: ends_at harus setelah starts_at")
+
+	// --- Cakupan diskon per produk (§28.9) ---
+
+	// ErrDiscountAppliesToInvalid — applies_to bukan "all" atau "selected".
+	ErrDiscountAppliesToInvalid = errors.New("discountapi: applies_to harus all atau selected")
+	// ErrDiscountScopeEmpty — applies_to="selected" tapi daftar produknya
+	// kosong (belum diisi admin, ATAU seluruh produk cakupannya sudah tidak
+	// lagi tercakup). Daftar kosong TIDAK PERNAH berarti "berlaku untuk
+	// semua" — ditolak DUA KALI: saat create/update DAN saat validateForUse
+	// dipakai (produk bisa berubah cakupannya setelah diskon dibuat).
+	ErrDiscountScopeEmpty = errors.New("discountapi: cakupan produk diskon kosong")
+	// ErrDiscountProductMismatch — applies_to="selected" dan product_id order
+	// yang mau memakainya tidak ada dalam daftar cakupan.
+	ErrDiscountProductMismatch = errors.New("discountapi: diskon tidak berlaku untuk produk ini")
+	// ErrDiscountProductNotFound — salah satu product_id yang dikirim di
+	// create/PATCH (product_ids) tidak ditemukan di katalog produk (temuan
+	// review #3). Sebelumnya ini lolos validasi lalu meledak jadi FK
+	// violation mentah (500) di repository.
+	ErrDiscountProductNotFound = errors.New("discountapi: satu atau lebih product_id tidak ditemukan")
 )
 
 // ResolveInput — payload untuk menghitung potongan diskon sebuah order.
@@ -92,6 +111,10 @@ type ResolveInput struct {
 	Note         string
 	Subtotal     int64
 	Channel      string // "online" | "pos" — dicocokkan dengan channel_scope
+	// ProductID — produk order ini, dicocokkan dengan cakupan diskon kalau
+	// applies_to="selected" (§28.9). Diabaikan untuk diskon manual & diskon
+	// applies_to="all".
+	ProductID uuid.UUID
 }
 
 // Snapshot — hasil resolusi diskon, SIAP disalin ke kolom snapshot orders

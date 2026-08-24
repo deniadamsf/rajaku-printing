@@ -80,6 +80,158 @@ func TestCreate_CodeConflict(t *testing.T) {
 	}
 }
 
+// ---- Cakupan diskon per produk (§28.9) ----
+
+func TestCreate_AppliesToSelected_HappyPath(t *testing.T) {
+	store := &fakeDiscountStore{}
+	svc := New(store)
+	productID := uuid.New()
+	view, err := svc.Create(context.Background(), CreateInput{
+		Code: "PRODUKA", Name: "Diskon Produk A", Type: "percent", ValuePercent: floatPtr(10),
+		ChannelScope: "all", IsActive: true,
+		AppliesTo: "selected", ProductIDs: []uuid.UUID{productID},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	if view.AppliesTo != "selected" {
+		t.Fatalf("Create() applies_to = %q, want selected", view.AppliesTo)
+	}
+	if len(view.ProductIDs) != 1 || view.ProductIDs[0] != productID {
+		t.Fatalf("Create() product_ids = %+v, want [%s]", view.ProductIDs, productID)
+	}
+	if len(store.createProductIDs) != 1 || store.createProductIDs[0] != productID {
+		t.Fatalf("Create() productIDs passed to store = %+v, want [%s]", store.createProductIDs, productID)
+	}
+}
+
+// TestCreate_AppliesToSelected_EmptyProductList_Rejected — §28.9 aturan
+// keras: daftar produk kosong TIDAK boleh diperlakukan sebagai "berlaku
+// untuk semua" — ditolak sejak create.
+func TestCreate_AppliesToSelected_EmptyProductList_Rejected(t *testing.T) {
+	svc := New(&fakeDiscountStore{})
+	_, err := svc.Create(context.Background(), CreateInput{
+		Code: "PRODUKA", Name: "Diskon Produk A", Type: "percent", ValuePercent: floatPtr(10),
+		AppliesTo: "selected",
+	})
+	if !errors.Is(err, discountapi.ErrDiscountScopeEmpty) {
+		t.Fatalf("Create() error = %v, want ErrDiscountScopeEmpty", err)
+	}
+}
+
+func TestCreate_AppliesToAll_DefaultWhenOmitted(t *testing.T) {
+	store := &fakeDiscountStore{}
+	svc := New(store)
+	view, err := svc.Create(context.Background(), CreateInput{
+		Code: "GLOBAL", Name: "Diskon Semua", Type: "percent", ValuePercent: floatPtr(10),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	if view.AppliesTo != "all" {
+		t.Fatalf("Create() applies_to = %q, want all (default kalau tidak dikirim)", view.AppliesTo)
+	}
+	if len(view.ProductIDs) != 0 {
+		t.Fatalf("Create() product_ids = %+v, want empty", view.ProductIDs)
+	}
+}
+
+func TestCreate_InvalidAppliesTo_ReturnsSentinel(t *testing.T) {
+	svc := New(&fakeDiscountStore{})
+	_, err := svc.Create(context.Background(), CreateInput{
+		Code: "X", Name: "Promo", Type: "percent", ValuePercent: floatPtr(10),
+		AppliesTo: "sebagian",
+	})
+	if !errors.Is(err, discountapi.ErrDiscountAppliesToInvalid) {
+		t.Fatalf("Create() error = %v, want ErrDiscountAppliesToInvalid", err)
+	}
+}
+
+// TestUpdate_ReplacesProductScopeEntirely — §28.9: PATCH product_ids
+// mengganti SELURUH daftar (delete+insert), bukan menambah/merge parsial.
+func TestUpdate_ReplacesProductScopeEntirely(t *testing.T) {
+	id := uuid.New()
+	oldProductID := uuid.New()
+	newProductID := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToSelected,
+		},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {oldProductID}},
+	}
+	svc := New(store)
+	newIDs := []uuid.UUID{newProductID}
+	view, err := svc.Update(context.Background(), id, UpdateInput{ProductIDs: &newIDs})
+	if err != nil {
+		t.Fatalf("Update() error = %v, want nil", err)
+	}
+	if store.replaceProductsID != id {
+		t.Fatalf("ReplaceProducts discountID = %s, want %s", store.replaceProductsID, id)
+	}
+	if len(store.replaceProductsIDs) != 1 || store.replaceProductsIDs[0] != newProductID {
+		t.Fatalf("ReplaceProducts productIDs = %+v, want [%s] (entire replace, old id dropped)", store.replaceProductsIDs, newProductID)
+	}
+	if len(view.ProductIDs) != 1 || view.ProductIDs[0] != newProductID {
+		t.Fatalf("Update() view.product_ids = %+v, want [%s]", view.ProductIDs, newProductID)
+	}
+}
+
+// TestUpdate_AppliesToSelected_EmptyProductList_Rejected — checked again at
+// update time using the discount's CURRENT scope when product_ids isn't
+// explicitly sent in the PATCH body — switching applies_to to "selected"
+// without ever having assigned any product must be rejected, not silently
+// treated as "all".
+func TestUpdate_AppliesToSelected_EmptyProductList_Rejected(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToAll,
+		},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{}, // belum ada produk manapun
+	}
+	svc := New(store)
+	scope := "selected"
+	_, err := svc.Update(context.Background(), id, UpdateInput{AppliesTo: &scope})
+	if !errors.Is(err, discountapi.ErrDiscountScopeEmpty) {
+		t.Fatalf("Update() error = %v, want ErrDiscountScopeEmpty", err)
+	}
+}
+
+// TestUpdate_ProductIDsOmitted_KeepsExistingScope — kalau PATCH tidak
+// menyertakan product_ids sama sekali, cakupan produk yang sudah ada TIDAK
+// disentuh (bukan direset kosong).
+func TestUpdate_ProductIDsOmitted_KeepsExistingScope(t *testing.T) {
+	id := uuid.New()
+	existingProductID := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToSelected,
+		},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {existingProductID}},
+	}
+	svc := New(store)
+	newName := "Promo Diperbarui"
+	view, err := svc.Update(context.Background(), id, UpdateInput{Name: &newName})
+	if err != nil {
+		t.Fatalf("Update() error = %v, want nil", err)
+	}
+	if store.replaceProductsID != uuid.Nil {
+		t.Fatalf("ReplaceProducts must NOT be called when product_ids omitted, got discountID=%s", store.replaceProductsID)
+	}
+	if len(view.ProductIDs) != 1 || view.ProductIDs[0] != existingProductID {
+		t.Fatalf("Update() product_ids = %+v, want existing [%s] untouched", view.ProductIDs, existingProductID)
+	}
+}
+
 func TestDelete_ReasonRequired(t *testing.T) {
 	svc := New(&fakeDiscountStore{})
 	err := svc.Delete(context.Background(), uuid.New(), uuid.New(), "   ")
@@ -274,5 +426,254 @@ func TestUpdate_SwitchToNominalWithExistingMaxDiscountAmount_ReturnsSentinel(t *
 	})
 	if !errors.Is(err, discountapi.ErrDiscountMaxAmountNotAllowed) {
 		t.Fatalf("Update() error = %v, want ErrDiscountMaxAmountNotAllowed", err)
+	}
+}
+
+// ---- Review finding #1: Update field + product scope harus atomik ----
+
+// TestUpdate_ProductScopeReplaceFails_ReturnsError memastikan kegagalan
+// repository (dilempar sebagai satu kesatuan lewat UpdateWithProducts) tetap
+// dipropagasi sebagai error ke caller — atomicity SEBENARNYA (rollback DB)
+// dibuktikan di repository_test.go (butuh sqlmock, bukan fake); test ini
+// hanya menjaga service TIDAK menelan errornya atau melaporkan sukses palsu.
+func TestUpdate_ProductScopeReplaceFails_ReturnsError(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToSelected,
+		},
+		productIDsResult:      map[uuid.UUID][]uuid.UUID{id: {uuid.New()}},
+		updateWithProductsErr: repository.ErrProductNotFound,
+	}
+	svc := New(store)
+	newIDs := []uuid.UUID{uuid.New()}
+	_, err := svc.Update(context.Background(), id, UpdateInput{ProductIDs: &newIDs})
+	if !errors.Is(err, discountapi.ErrDiscountProductNotFound) {
+		t.Fatalf("Update() error = %v, want ErrDiscountProductNotFound", err)
+	}
+}
+
+// ---- Review finding #2: applies_to/channel_scope "" di PATCH ditolak ----
+
+// TestUpdate_AppliesToEmptyString_Rejected — PATCH {"applies_to": ""} WAJIB
+// ditolak 400, BUKAN diperlakukan sebagai "tidak dikirim" (yang akan diam-
+// diam melebarkan cakupan diskon jadi "all" — kerugian uang).
+func TestUpdate_AppliesToEmptyString_Rejected(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{findResult: &model.Discount{
+		ID: id, Code: "X", Name: "Promo",
+		Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+		IsActive: true, ChannelScope: model.ChannelScopeAll,
+		AppliesTo: model.AppliesToSelected,
+	}}
+	svc := New(store)
+	empty := ""
+	_, err := svc.Update(context.Background(), id, UpdateInput{AppliesTo: &empty})
+	if !errors.Is(err, discountapi.ErrDiscountAppliesToInvalid) {
+		t.Fatalf("Update() error = %v, want ErrDiscountAppliesToInvalid", err)
+	}
+}
+
+// TestUpdate_ChannelScopeEmptyString_Rejected — bug kembar dari
+// applies_to: "" di atas. PATCH {"channel_scope": ""} WAJIB ditolak 400,
+// bukan diam-diam melebarkan diskon pos-only jadi berlaku di semua channel.
+func TestUpdate_ChannelScopeEmptyString_Rejected(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{findResult: &model.Discount{
+		ID: id, Code: "X", Name: "Promo",
+		Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+		IsActive: true, ChannelScope: model.ChannelScopePOS,
+	}}
+	svc := New(store)
+	empty := ""
+	_, err := svc.Update(context.Background(), id, UpdateInput{ChannelScope: &empty})
+	if !errors.Is(err, discountapi.ErrDiscountChannelScopeInvalid) {
+		t.Fatalf("Update() error = %v, want ErrDiscountChannelScopeInvalid", err)
+	}
+}
+
+// TestCreate_AppliesToEmptyString_StillDefaultsToAll — regression guard:
+// perbaikan finding #2 HANYA berlaku di jalur PATCH; create tetap boleh
+// menerima "" sebagai "tidak diisi" -> default "all" (perilaku lama, tidak
+// boleh berubah).
+func TestCreate_AppliesToEmptyString_StillDefaultsToAll(t *testing.T) {
+	store := &fakeDiscountStore{}
+	svc := New(store)
+	view, err := svc.Create(context.Background(), CreateInput{
+		Code: "X", Name: "Promo", Type: "percent", ValuePercent: floatPtr(10),
+		AppliesTo: "",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	if view.AppliesTo != "all" {
+		t.Fatalf("Create() applies_to = %q, want all", view.AppliesTo)
+	}
+}
+
+// ---- Review finding #3: product_ids tak dikenal / uuid.Nil ----
+
+// TestCreate_UnknownProductID_MapsToSentinel — repository menolak product
+// id yang tidak ada di `products` dengan ErrProductNotFound; service harus
+// memetakannya ke discountapi.ErrDiscountProductNotFound (400), bukan
+// meneruskan error mentah (yang di handler akan jatuh ke 500).
+func TestCreate_UnknownProductID_MapsToSentinel(t *testing.T) {
+	store := &fakeDiscountStore{createErr: repository.ErrProductNotFound}
+	svc := New(store)
+	_, err := svc.Create(context.Background(), CreateInput{
+		Code: "X", Name: "Promo", Type: "percent", ValuePercent: floatPtr(10),
+		AppliesTo: "selected", ProductIDs: []uuid.UUID{uuid.New()},
+	})
+	if !errors.Is(err, discountapi.ErrDiscountProductNotFound) {
+		t.Fatalf("Create() error = %v, want ErrDiscountProductNotFound", err)
+	}
+}
+
+// TestCreate_ProductIDsOnlyNilUUID_TreatedAsEmptyScope — dedupeUUIDs
+// membuang uuid.Nil (temuan review #3); product_ids berisi HANYA uuid.Nil
+// jadi setara "tidak ada produk", ditolak sebagai ErrDiscountScopeEmpty
+// (400) alih-alih lolos validasi lalu meledak jadi FK violation (500) di
+// repository.
+func TestCreate_ProductIDsOnlyNilUUID_TreatedAsEmptyScope(t *testing.T) {
+	svc := New(&fakeDiscountStore{})
+	_, err := svc.Create(context.Background(), CreateInput{
+		Code: "X", Name: "Promo", Type: "percent", ValuePercent: floatPtr(10),
+		AppliesTo: "selected", ProductIDs: []uuid.UUID{uuid.Nil},
+	})
+	if !errors.Is(err, discountapi.ErrDiscountScopeEmpty) {
+		t.Fatalf("Create() error = %v, want ErrDiscountScopeEmpty", err)
+	}
+}
+
+// ---- Tes yang reviewer sebut belum ada ----
+
+// TestUpdate_ProductIDsEmptyList_OnSelectedDiscount_Rejected — PATCH
+// {"product_ids": []} pada diskon yang SUDAH applies_to="selected" harus
+// ditolak (mengosongkan cakupan diskon yang masih dipakai), bukan diam-diam
+// diterima.
+func TestUpdate_ProductIDsEmptyList_OnSelectedDiscount_Rejected(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToSelected,
+		},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {uuid.New()}},
+	}
+	svc := New(store)
+	empty := []uuid.UUID{}
+	_, err := svc.Update(context.Background(), id, UpdateInput{ProductIDs: &empty})
+	if !errors.Is(err, discountapi.ErrDiscountScopeEmpty) {
+		t.Fatalf("Update() error = %v, want ErrDiscountScopeEmpty", err)
+	}
+}
+
+// ---- Review finding #4/#5: Applicable menyaring lewat validateForUse ----
+
+// TestApplicable_EmptyScope_FilteredOut_EvenWithoutProductID — diskon
+// applies_to="selected" dengan cakupan KOSONG tidak boleh muncul di
+// Applicable, TERLEPAS dari product_id dikirim atau tidak (temuan review
+// #4 — sebelumnya hanya disaring kalau product_id dikirim).
+func TestApplicable_EmptyScope_FilteredOut_EvenWithoutProductID(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		activeResult: []model.Discount{{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToSelected,
+		}},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{}, // cakupan kosong
+	}
+	svc := New(store)
+	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil)
+	if err != nil {
+		t.Fatalf("Applicable() error = %v, want nil", err)
+	}
+	if len(views) != 0 {
+		t.Fatalf("Applicable() = %+v, want empty (scope kosong harus disaring tanpa syarat)", views)
+	}
+}
+
+// TestApplicable_SelectedNonEmptyScope_ShownWhenProductIDOmitted — regresi:
+// diskon applies_to="selected" dengan cakupan TIDAK kosong tetap tampil
+// kalau caller tidak memfilter berdasarkan produk tertentu (product_id
+// tidak dikirim, uuid.Nil) — perilaku lama yang harus tetap dipertahankan.
+func TestApplicable_SelectedNonEmptyScope_ShownWhenProductIDOmitted(t *testing.T) {
+	id := uuid.New()
+	scopedProductID := uuid.New()
+	store := &fakeDiscountStore{
+		activeResult: []model.Discount{{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToSelected,
+		}},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {scopedProductID}},
+	}
+	svc := New(store)
+	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil)
+	if err != nil {
+		t.Fatalf("Applicable() error = %v, want nil", err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("Applicable() = %+v, want 1 item (selected discount w/ non-empty scope shown when product_id omitted)", views)
+	}
+}
+
+// TestApplicable_ProductIDGiven_FiltersOutOfScopeDiscount — diskon
+// applies_to="selected" yang cakupannya TIDAK menyertakan product_id yang
+// diminta harus disaring (kasir tidak boleh melihat promo yang akan
+// ditolak saat disimpan).
+func TestApplicable_ProductIDGiven_FiltersOutOfScopeDiscount(t *testing.T) {
+	id := uuid.New()
+	scopedProductID := uuid.New()
+	requestedProductID := uuid.New()
+	store := &fakeDiscountStore{
+		activeResult: []model.Discount{{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToSelected,
+		}},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {scopedProductID}},
+	}
+	svc := New(store)
+	views, err := svc.Applicable(context.Background(), "pos", 100_000, requestedProductID)
+	if err != nil {
+		t.Fatalf("Applicable() error = %v, want nil", err)
+	}
+	if len(views) != 0 {
+		t.Fatalf("Applicable() = %+v, want empty (produk yang diminta tidak ada di cakupan)", views)
+	}
+}
+
+// TestApplicable_QuotaExhausted_FilteredOut — regresi cepat: Applicable
+// masih menyaring kuota habis setelah refactor ke validateForUse (temuan
+// review #5) — bukan cuma cakupan produk yang harus tetap benar.
+func TestApplicable_QuotaExhausted_FilteredOut(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		activeResult: []model.Discount{{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToAll,
+			Quota:     intPtr(5),
+		}},
+		usageMap: map[uuid.UUID]int64{id: 5},
+	}
+	svc := New(store)
+	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil)
+	if err != nil {
+		t.Fatalf("Applicable() error = %v, want nil", err)
+	}
+	if len(views) != 0 {
+		t.Fatalf("Applicable() = %+v, want empty (kuota sudah habis)", views)
 	}
 }

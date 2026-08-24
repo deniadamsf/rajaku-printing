@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/rajaku-printing/backend/internal/discount/service"
 )
 
@@ -24,6 +26,13 @@ type createDiscountRequest struct {
 	Quota             *int       `json:"quota"`
 	ChannelScope      string     `json:"channel_scope"       binding:"omitempty,oneof=all online pos"`
 	IsActive          *bool      `json:"is_active"`
+
+	AppliesTo string `json:"applies_to"  binding:"omitempty,oneof=all selected"`
+	// ProductIDs — dibatasi max=500 (temuan review #6): tanpa batas, sebuah
+	// list yang sangat panjang berakhir jadi satu INSERT dengan 2 parameter
+	// per baris (insertDiscountProducts) yang bisa melampaui batas 65.535
+	// parameter protokol Postgres, meledak jadi 500 alih-alih 400 yang jelas.
+	ProductIDs []uuid.UUID `json:"product_ids" binding:"omitempty,max=500"`
 }
 
 type deleteDiscountRequest struct {
@@ -121,6 +130,32 @@ func parseUpdateInput(raw map[string]json.RawMessage) (*service.UpdateInput, err
 			return nil, fmt.Errorf("is_active: %w", err)
 		}
 		in.IsActive = &b
+	}
+	if v, ok := raw["applies_to"]; ok {
+		if isJSONNull(v) {
+			return nil, fmt.Errorf("applies_to tidak boleh null")
+		}
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return nil, fmt.Errorf("applies_to: %w", err)
+		}
+		in.AppliesTo = &s
+	}
+	if v, ok := raw["product_ids"]; ok {
+		if isJSONNull(v) {
+			return nil, fmt.Errorf("product_ids tidak boleh null")
+		}
+		var ids []uuid.UUID
+		if err := json.Unmarshal(v, &ids); err != nil {
+			return nil, fmt.Errorf("product_ids: %w", err)
+		}
+		// Temuan review #6 — batas sama seperti createDiscountRequest;
+		// parseUpdateInput tidak lewat binding tag (unmarshal manual di
+		// atas), jadi dicek eksplisit di sini.
+		if len(ids) > 500 {
+			return nil, fmt.Errorf("product_ids maksimal 500 item")
+		}
+		in.ProductIDs = &ids
 	}
 
 	if v, ok := raw["max_discount_amount"]; ok {

@@ -34,7 +34,9 @@ func mapDomainErr(c *gin.Context, err error) {
 		errors.Is(err, discountapi.ErrDiscountAmbiguousInput),
 		errors.Is(err, discountapi.ErrManualDiscountNoteRequired),
 		errors.Is(err, discountapi.ErrManualDiscountInvalidAmount),
-		errors.Is(err, discountapi.ErrDiscountMinSubtotal):
+		errors.Is(err, discountapi.ErrDiscountMinSubtotal),
+		errors.Is(err, discountapi.ErrDiscountScopeEmpty),
+		errors.Is(err, discountapi.ErrDiscountProductMismatch):
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, err.Error())
 	case errors.Is(err, discountapi.ErrDiscountNotFound):
 		httpx.Error(c, http.StatusNotFound, httpx.CodeNotFound, err.Error())

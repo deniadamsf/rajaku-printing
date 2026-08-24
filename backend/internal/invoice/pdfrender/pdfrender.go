@@ -140,6 +140,18 @@ func Render(company CompanyInfo, meta Meta, order *orderapi.OrderInvoiceView, cu
 	pdf.CellFormat(120, 6, "Subtotal", "", 0, "R", false, 0, "")
 	pdf.CellFormat(30, 6, "Rp "+formatIDR(order.Subtotal), "", 1, "R", false, 0, "")
 
+	// Diskon (§28.7) — HANYA ditampilkan kalau discount_amount > 0, jangan
+	// pernah cetak "Diskon Rp 0". Label sudah final (nama snapshot atau
+	// "Diskon" untuk manual — dihitung sekali di order module).
+	if order.DiscountAmount > 0 {
+		label := order.DiscountLabel
+		if label == "" {
+			label = "Diskon"
+		}
+		pdf.CellFormat(120, 6, "Diskon ("+label+")", "", 0, "R", false, 0, "")
+		pdf.CellFormat(30, 6, "-Rp "+formatIDR(order.DiscountAmount), "", 1, "R", false, 0, "")
+	}
+
 	if order.ShippingCost != nil && *order.ShippingCost > 0 {
 		pdf.CellFormat(120, 6, "Ongkos Kirim", "", 0, "R", false, 0, "")
 		pdf.CellFormat(30, 6, "Rp "+formatIDR(*order.ShippingCost), "", 1, "R", false, 0, "")

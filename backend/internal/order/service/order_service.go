@@ -12,6 +12,7 @@ import (
 
 	"github.com/rajaku-printing/backend/internal/auth/authapi"
 	"github.com/rajaku-printing/backend/internal/catalog/catalogapi"
+	"github.com/rajaku-printing/backend/internal/discount/discountapi"
 	"github.com/rajaku-printing/backend/internal/notification/notificationapi"
 	"github.com/rajaku-printing/backend/internal/order/model"
 	"github.com/rajaku-printing/backend/internal/order/orderapi"
@@ -36,6 +37,18 @@ type OrderStore interface {
 	ListPOSByDateRange(ctx context.Context, start, end time.Time) ([]model.Order, error)
 	SetShippingCostAndAdvance(ctx context.Context, p repository.SetShippingCostParams) error
 	AdvanceStatus(ctx context.Context, p repository.AdvanceStatusParams) error
+
+	// --- Order recap (§28.5) ---
+	RecapSummary(ctx context.Context, f repository.RecapFilter) (*repository.RecapSummary, error)
+	RecapList(ctx context.Context, f repository.RecapFilter) ([]repository.RecapRow, error)
+	// RecapListBatch — dipakai streaming CSV export (temuan review #4b),
+	// SELALU offset/limit-bounded terlepas dari f.NoLimit/f.Page/f.PageSize.
+	RecapListBatch(ctx context.Context, f repository.RecapFilter, offset, limit int) ([]repository.RecapRow, error)
+	// RecapDistinctKasir/RecapDistinctDiscounts — dipakai
+	// GET /admin/order-recap/filters (dropdown kasir/diskon, bukan kotak
+	// teks UUID).
+	RecapDistinctKasir(ctx context.Context, from, to time.Time) ([]repository.RecapKasirOption, error)
+	RecapDistinctDiscounts(ctx context.Context, from, to time.Time) ([]repository.RecapDiscountSnapshotRow, error)
 
 	// --- Super admin order tools (§ super admin order tools) ---
 	UpdateFields(ctx context.Context, p repository.UpdateFieldsParams) error
@@ -79,6 +92,13 @@ type Service struct {
 	// tools review finding #5). Wired via SetNotificationCanceller, same
 	// pattern as SetNotifier.
 	notifCanceller notificationapi.JobCanceller
+	// discount — opsional; kalau nil DAN sebuah order membawa discount_id
+	// atau manual discount amount, CreatePOSOrder menolak eksplisit dengan
+	// orderapi.ErrDiscountUnavailable (§22 no-silent-stub — TIDAK diam-diam
+	// mengabaikan diskon yang diminta). Wired via SetDiscountResolver, same
+	// setter-injection pattern as SetNotifier (discount.Service dibuat
+	// setelah order.Service di composition root).
+	discount discountapi.Resolver
 }
 
 func New(orders OrderStore, catalog catalogapi.CatalogService, customers authapi.CustomerService) *Service {
@@ -102,6 +122,10 @@ func (s *Service) SetAuditStore(a AuditStore) { s.audit = a }
 // rationale/pattern as SetNotifier — see admin_override.go's
 // cancelPendingNotifications (SoftDeleteOrder).
 func (s *Service) SetNotificationCanceller(c notificationapi.JobCanceller) { s.notifCanceller = c }
+
+// SetDiscountResolver wires an optional discountapi.Resolver (§28). Same
+// rationale/pattern as SetNotifier — see CreatePOSOrder for the consumer.
+func (s *Service) SetDiscountResolver(r discountapi.Resolver) { s.discount = r }
 
 // CreateOnlineOrder creates a new order coming from the web (channel=online).
 // Kalau CustomerID nil, service akan resolve/create guest via CustomerService
@@ -402,7 +426,8 @@ func (s *Service) SetShippingCost(ctx context.Context, in SetShippingCostInput) 
 		return nil, orderapi.ErrInvalidTransition
 	}
 
-	newTotal := o.Subtotal + in.ShippingCost
+	// §28.3 — ongkir tidak pernah didiskon; diskon hanya memotong subtotal.
+	newTotal := o.Subtotal - o.DiscountAmount + in.ShippingCost
 	params := repository.SetShippingCostParams{
 		OrderID:      o.ID,
 		ShippingCost: in.ShippingCost,
@@ -436,6 +461,15 @@ func (s *Service) SetShippingCost(ctx context.Context, in SetShippingCostInput) 
 // ConfirmPickupTotal advances a pickup order from order_masuk to
 // menunggu_pembayaran (no ongkir to fill; admin just acknowledges the total).
 // Only valid when metode_ambil == pickup && current status == order_masuk.
+//
+// Discount (§28.3): this does NOT recompute Total — for a pickup order,
+// Total was already set correctly (Subtotal - DiscountAmount + 0) at
+// creation time by CreateOnlineOrder/CreatePOSOrder, and this method never
+// touches Subtotal/ShippingCost/DiscountAmount, so there's nothing to
+// recompute here. (CreateOnlineOrder itself never carries a discount — §28
+// forbids public promo codes on the online order form — so DiscountAmount is
+// always 0 for that path; a POS pickup order already resolves its discount
+// in CreatePOSOrder before this method is ever reached.)
 func (s *Service) ConfirmPickupTotal(ctx context.Context, resiStr string, staffID uuid.UUID, note string) (*model.Order, error) {
 	o, err := s.orders.FindByResi(ctx, resiStr)
 	if err != nil {
@@ -551,6 +585,8 @@ func orderToInvoiceView(o *model.Order) *orderapi.OrderInvoiceView {
 		Quantity:           o.Quantity,
 		UnitPrice:          o.UnitPrice,
 		Subtotal:           o.Subtotal,
+		DiscountAmount:     o.DiscountAmount,
+		DiscountLabel:      discountLabel(o),
 		Total:              o.Total,
 		ShippingCost:       o.ShippingCost,
 		ShippingAddress:    o.ShippingAddress,
@@ -566,26 +602,44 @@ func orderToInvoiceView(o *model.Order) *orderapi.OrderInvoiceView {
 	return v
 }
 
+// discountLabel implements §28.7's "nama apa yang ditampilkan" rule ONCE
+// (order module), so every consumer (POS struk, invoice PDF, admin detail)
+// gets a ready-to-print string instead of re-deriving it: order's own
+// discount_name_snapshot when there is one, "Diskon" for a manual discount
+// (which has no name), "" when discount_amount is 0 (caller must NOT print a
+// "Diskon Rp 0" line — §28.7).
+func discountLabel(o *model.Order) string {
+	if o.DiscountAmount <= 0 {
+		return ""
+	}
+	if o.DiscountNameSnapshot != nil && *o.DiscountNameSnapshot != "" {
+		return *o.DiscountNameSnapshot
+	}
+	return "Diskon"
+}
+
 func orderToSummary(o *model.Order) *orderapi.OrderSummary {
 	sum := &orderapi.OrderSummary{
-		ID:           o.ID,
-		Resi:         o.Resi,
-		CustomerID:   o.CustomerID,
-		Status:       string(o.Status),
-		Total:        o.Total,
-		MetodeAmbil:  string(o.MetodeAmbil),
-		Channel:      string(o.Channel),
-		DesignSource: string(o.DesignSource),
-		CreatedBy:    o.CreatedBy,
-		CreatedAt:    o.CreatedAt,
-		ProductName:  o.ProductNameSnapshot,
-		MaterialName: o.MaterialNameSnapshot,
-		WidthCm:      o.WidthCm,
-		HeightCm:     o.HeightCm,
-		Quantity:     o.Quantity,
-		UnitPrice:    o.UnitPrice,
-		Subtotal:     o.Subtotal,
-		ShippingCost: o.ShippingCost,
+		ID:             o.ID,
+		Resi:           o.Resi,
+		CustomerID:     o.CustomerID,
+		Status:         string(o.Status),
+		Total:          o.Total,
+		MetodeAmbil:    string(o.MetodeAmbil),
+		Channel:        string(o.Channel),
+		DesignSource:   string(o.DesignSource),
+		CreatedBy:      o.CreatedBy,
+		CreatedAt:      o.CreatedAt,
+		ProductName:    o.ProductNameSnapshot,
+		MaterialName:   o.MaterialNameSnapshot,
+		WidthCm:        o.WidthCm,
+		HeightCm:       o.HeightCm,
+		Quantity:       o.Quantity,
+		UnitPrice:      o.UnitPrice,
+		Subtotal:       o.Subtotal,
+		DiscountAmount: o.DiscountAmount,
+		DiscountLabel:  discountLabel(o),
+		ShippingCost:   o.ShippingCost,
 	}
 	if o.MetodeBayar != nil {
 		sum.MetodeBayar = string(*o.MetodeBayar)
@@ -915,7 +969,20 @@ func (s *Service) CreatePOSOrder(ctx context.Context, in orderapi.POSCreateOrder
 		return nil, err
 	}
 	subtotal := quote.TotalPrice * int64(in.Quantity)
-	total := subtotal + shippingCost
+
+	// Discount (§28.3) — resolved AFTER subtotal, BEFORE total. Ongkir tidak
+	// pernah didiskon: total = subtotal - discount_amount + shipping_cost.
+	discountSnap, err := s.resolveDiscount(ctx, discountapi.ResolveInput{
+		DiscountID:   in.DiscountID,
+		ManualAmount: in.ManualDiscountAmount,
+		Note:         in.DiscountNote,
+		Subtotal:     subtotal,
+		Channel:      string(model.ChannelPOS),
+	})
+	if err != nil {
+		return nil, err
+	}
+	total := subtotal - discountSnap.Amount + shippingCost
 
 	order := &model.Order{
 		CustomerID:           in.CustomerID,
@@ -937,6 +1004,7 @@ func (s *Service) CreatePOSOrder(ctx context.Context, in orderapi.POSCreateOrder
 		Total:                total,
 		CreatedBy:            &in.KasirID,
 	}
+	applyDiscountSnapshot(order, discountSnap)
 	if metodeAmbil == model.MetodeAmbilKirim {
 		order.ShippingAddress = strPtr(in.ShippingAddress)
 		order.ShippingRecipientName = strPtr(in.ShippingRecipientName)
@@ -963,6 +1031,58 @@ func (s *Service) CreatePOSOrder(ctx context.Context, in orderapi.POSCreateOrder
 		return nil, err
 	}
 	return orderToSummary(order), nil
+}
+
+// resolveDiscount is the single gate every order-creation path (currently
+// just CreatePOSOrder — CreateOnlineOrder never carries a discount, §28)
+// funnels through before computing `total`. Refuses explicitly
+// (orderapi.ErrDiscountUnavailable) rather than silently skipping the
+// discount when a discount/manual-discount was requested but s.discount was
+// never wired (§22 no-silent-stub) — a genuinely "no discount requested"
+// input (both DiscountID nil and ManualAmount<=0) is fine even without a
+// resolver, since discountapi.Resolver itself would just return a zero
+// Snapshot for that case anyway.
+func (s *Service) resolveDiscount(ctx context.Context, in discountapi.ResolveInput) (*discountapi.Snapshot, error) {
+	if s.discount == nil {
+		if in.DiscountID != nil || in.ManualAmount > 0 {
+			return nil, orderapi.ErrDiscountUnavailable
+		}
+		return &discountapi.Snapshot{}, nil
+	}
+	return s.discount.ResolveForOrder(ctx, in)
+}
+
+// applyDiscountSnapshot copies a resolved discountapi.Snapshot onto the
+// order's own snapshot columns (§28.2 lapis 1) — a no-op (every field stays
+// at its zero value) when snap describes "no discount" (Type == "").
+// DiscountValueSnapshot is deliberately left nil for manual discounts (the
+// column is documented as NULL for that case in migration 000027 — a manual
+// discount has no meaningful "value", only an Amount).
+func applyDiscountSnapshot(o *model.Order, snap *discountapi.Snapshot) {
+	o.DiscountAmount = snap.Amount
+	if snap.DiscountID != nil {
+		id := *snap.DiscountID
+		o.DiscountID = &id
+	}
+	if snap.Code != "" {
+		o.DiscountCodeSnapshot = strPtr(snap.Code)
+	}
+	if snap.Name != "" {
+		o.DiscountNameSnapshot = strPtr(snap.Name)
+	}
+	if snap.Type != "" {
+		o.DiscountTypeSnapshot = strPtr(snap.Type)
+		// "manual" — discountapi.Snapshot's documented sentinel value for a
+		// cashier-entered manual discount (order module intentionally does
+		// NOT import discount/model — only discountapi, its public contract).
+		if snap.Type != "manual" {
+			v := snap.Value
+			o.DiscountValueSnapshot = &v
+		}
+	}
+	if snap.Note != "" {
+		o.DiscountNote = strPtr(snap.Note)
+	}
 }
 
 // ListPOSOrdersByDate implements orderapi.OrderCommandService (§11 rekonsiliasi).

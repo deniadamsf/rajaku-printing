@@ -20,6 +20,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/rajaku-printing/backend/internal/auth/authapi"
+	"github.com/rajaku-printing/backend/internal/discount/discountapi"
 	"github.com/rajaku-printing/backend/internal/invoice/invoiceapi"
 	"github.com/rajaku-printing/backend/internal/notification/notificationapi"
 	"github.com/rajaku-printing/backend/internal/order/orderapi"
@@ -87,16 +88,30 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (*Create
 		ShippingRecipientPhone: in.ShippingRecipientPhone,
 		ShippingCost:           in.ShippingCost,
 		MetodeBayar:            in.MetodeBayar,
+		DiscountID:             in.DiscountID,
+		ManualDiscountAmount:   in.ManualDiscountAmount,
+		DiscountNote:           in.DiscountNote,
 		DesignSource:           in.DesignSource,
 		DesignApprovalMode:     in.DesignApprovalMode,
 		DesignBrief:            in.DesignBrief,
 		Notes:                  in.Notes,
 	})
 	if err != nil {
-		// Bubble up known orderapi errors; wrap sisanya.
+		// Bubble up known orderapi/discountapi errors; wrap sisanya.
 		if errors.Is(err, orderapi.ErrShippingFieldsRequired) ||
 			errors.Is(err, orderapi.ErrInvalidShippingCost) ||
-			errors.Is(err, orderapi.ErrResiCollisionGaveUp) {
+			errors.Is(err, orderapi.ErrResiCollisionGaveUp) ||
+			errors.Is(err, orderapi.ErrDiscountUnavailable) ||
+			errors.Is(err, discountapi.ErrDiscountNotFound) ||
+			errors.Is(err, discountapi.ErrDiscountInactive) ||
+			errors.Is(err, discountapi.ErrDiscountNotStarted) ||
+			errors.Is(err, discountapi.ErrDiscountExpired) ||
+			errors.Is(err, discountapi.ErrDiscountChannelMismatch) ||
+			errors.Is(err, discountapi.ErrDiscountMinSubtotal) ||
+			errors.Is(err, discountapi.ErrDiscountQuotaExhausted) ||
+			errors.Is(err, discountapi.ErrManualDiscountNoteRequired) ||
+			errors.Is(err, discountapi.ErrManualDiscountInvalidAmount) ||
+			errors.Is(err, discountapi.ErrDiscountAmbiguousInput) {
 			return nil, err
 		}
 		// Deteksi metode_bayar invalid via string check (order.Service
@@ -126,16 +141,18 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (*Create
 		// ke pelanggan menyebut orang lain, sekaligus membocorkan siapa yang
 		// terdaftar di nomor itu. Telepon tetap dari identity karena itu
 		// versi ternormalisasi 62xxx (§13).
-		CustomerName:  strings.TrimSpace(in.CustomerName),
-		CustomerPhone: identity.Phone,
-		ProductName:   sum.ProductName,
-		MaterialName:  sum.MaterialName,
-		WidthCm:       sum.WidthCm,
-		HeightCm:      sum.HeightCm,
-		Quantity:      sum.Quantity,
-		UnitPrice:     sum.UnitPrice,
-		Subtotal:      sum.Subtotal,
-		ShippingCost:  sum.ShippingCost,
+		CustomerName:   strings.TrimSpace(in.CustomerName),
+		CustomerPhone:  identity.Phone,
+		ProductName:    sum.ProductName,
+		MaterialName:   sum.MaterialName,
+		WidthCm:        sum.WidthCm,
+		HeightCm:       sum.HeightCm,
+		Quantity:       sum.Quantity,
+		UnitPrice:      sum.UnitPrice,
+		Subtotal:       sum.Subtotal,
+		DiscountAmount: sum.DiscountAmount,
+		DiscountLabel:  sum.DiscountLabel,
+		ShippingCost:   sum.ShippingCost,
 	}
 	// Lebar kertas struk — order sudah tersimpan di atas, kegagalan baca
 	// setting ini cuma menurunkan kualitas struk (fallback default), jangan

@@ -31,6 +31,14 @@ type CreateOrderInput struct {
 	// Payment
 	MetodeBayar string // "cash" | "qris_pos"
 
+	// Discount (§28) — mutually exclusive: DiscountID (master, dipilih dari
+	// GET /admin/discounts/applicable) ATAU ManualDiscountAmount+DiscountNote
+	// (nego di tempat, kasir). Handler menolak field ini dari kasir tanpa
+	// permission discount.apply — lihat pos/handler/pos_handler.go.
+	DiscountID           *uuid.UUID
+	ManualDiscountAmount int64
+	DiscountNote         string
+
 	// Design
 	DesignSource       string // "upload" | "request"
 	DesignApprovalMode string // "instant_walkin" | "async_notify"
@@ -68,6 +76,12 @@ type CreateOrderResult struct {
 	Quantity      int    `json:"quantity"`
 	UnitPrice     int64  `json:"unit_price"`
 	Subtotal      int64  `json:"subtotal"`
+	// DiscountAmount/DiscountLabel — §28.7: struk kasir menampilkan baris
+	// diskon HANYA kalau DiscountAmount > 0 (frontend TIDAK boleh cetak
+	// "Diskon Rp 0"). DiscountLabel sudah final (nama snapshot, atau
+	// "Diskon" untuk manual — dihitung sekali di order module).
+	DiscountAmount int64  `json:"discount_amount"`
+	DiscountLabel  string `json:"discount_label,omitempty"`
 	// ShippingCost — nil kalau pickup / belum di-set (§8).
 	ShippingCost *int64 `json:"shipping_cost,omitempty"`
 }

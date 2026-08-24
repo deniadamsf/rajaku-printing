@@ -64,6 +64,27 @@ type fakeStore struct {
 	softDeleteParams repository.SoftDeleteParams
 	softDeleteErr    error
 	softDeleteCalls  int
+
+	// Order recap (§28.5):
+	recapSummary    *repository.RecapSummary
+	recapRows       []repository.RecapRow
+	recapErr        error
+	lastRecapFilter repository.RecapFilter
+
+	// RecapListBatch call tracking (temuan review #4b — streaming export):
+	// each entry records the offset/limit RecapListBatch was called with, so
+	// tests can assert the service paginates instead of loading everything
+	// in one shot.
+	recapBatchCalls []recapBatchCall
+
+	// Recap filters dropdown (fitur baru §28 — GET /admin/order-recap/filters):
+	recapKasirOptions []repository.RecapKasirOption
+	recapDiscountRows []repository.RecapDiscountSnapshotRow
+	recapFiltersErr   error
+}
+
+type recapBatchCall struct {
+	Offset, Limit int
 }
 
 func (f *fakeStore) CreateWithHistory(_ context.Context, o *model.Order, h *model.OrderStateHistory) error {
@@ -145,6 +166,59 @@ func (f *fakeStore) FindHistoryByOrderID(_ context.Context, _ uuid.UUID) ([]mode
 
 func (f *fakeStore) ListPOSByDateRange(_ context.Context, _, _ time.Time) ([]model.Order, error) {
 	return nil, nil
+}
+
+// recapSummary/recapRows/recapErr — configurable stub result for the order
+// recap tests (recap_test.go).
+func (f *fakeStore) RecapSummary(_ context.Context, _ repository.RecapFilter) (*repository.RecapSummary, error) {
+	if f.recapErr != nil {
+		return nil, f.recapErr
+	}
+	if f.recapSummary != nil {
+		return f.recapSummary, nil
+	}
+	return &repository.RecapSummary{}, nil
+}
+
+func (f *fakeStore) RecapList(_ context.Context, filter repository.RecapFilter) ([]repository.RecapRow, error) {
+	f.lastRecapFilter = filter
+	if f.recapErr != nil {
+		return nil, f.recapErr
+	}
+	return f.recapRows, nil
+}
+
+// RecapListBatch slices f.recapRows by [offset, offset+limit) — mirrors the
+// real repository's Offset().Limit() behaviour closely enough to exercise
+// the service's batching loop (temuan review #4b).
+func (f *fakeStore) RecapListBatch(_ context.Context, filter repository.RecapFilter, offset, limit int) ([]repository.RecapRow, error) {
+	f.lastRecapFilter = filter
+	f.recapBatchCalls = append(f.recapBatchCalls, recapBatchCall{Offset: offset, Limit: limit})
+	if f.recapErr != nil {
+		return nil, f.recapErr
+	}
+	if offset >= len(f.recapRows) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(f.recapRows) {
+		end = len(f.recapRows)
+	}
+	return f.recapRows[offset:end], nil
+}
+
+func (f *fakeStore) RecapDistinctKasir(_ context.Context, _, _ time.Time) ([]repository.RecapKasirOption, error) {
+	if f.recapFiltersErr != nil {
+		return nil, f.recapFiltersErr
+	}
+	return f.recapKasirOptions, nil
+}
+
+func (f *fakeStore) RecapDistinctDiscounts(_ context.Context, _, _ time.Time) ([]repository.RecapDiscountSnapshotRow, error) {
+	if f.recapFiltersErr != nil {
+		return nil, f.recapFiltersErr
+	}
+	return f.recapDiscountRows, nil
 }
 
 func (f *fakeStore) UpdateFields(_ context.Context, p repository.UpdateFieldsParams) error {

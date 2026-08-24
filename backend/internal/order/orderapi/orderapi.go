@@ -55,6 +55,36 @@ var (
 	// would vanish from cash reconciliation (ListPOSByDateRange etc. filter
 	// deleted_at IS NULL) without a trace.
 	ErrDeleteNotAllowedPaid = errors.New("orderapi: order already paid — batalkan dulu sebelum dihapus")
+
+	// --- Discount integration (§28) ---
+
+	// ErrDiscountUnavailable — an order carried a discount_id or manual
+	// discount amount, but the order service was never wired with a
+	// discountapi.Resolver (composition-root bug, not a user error) — §22
+	// no-silent-stub: refuse explicitly instead of silently ignoring the
+	// requested discount.
+	ErrDiscountUnavailable = errors.New("orderapi: discount resolver not configured, tapi permintaan diskon disertakan")
+
+	// --- Order recap (§28.5) ---
+
+	// ErrRecapInvalidDateRange — 'to' date is before 'from' date.
+	ErrRecapInvalidDateRange = errors.New("orderapi: rentang tanggal rekap tidak valid, 'to' harus >= 'from'")
+	// ErrRecapDateRangeTooWide — rentang 'from'..'to' lebih dari 366 hari
+	// (temuan review #4a) — membatasi memori/waktu query rekap & ekspor CSV
+	// di VPS Hostinger tunggal (§19), yang tidak punya auto-scaling resource.
+	ErrRecapDateRangeTooWide = errors.New("orderapi: rentang tanggal rekap maksimum 366 hari")
+	// ErrRecapInvalidStatus — filter status tidak dikenal §4/state package
+	// (temuan review #5) — mis. typo "dibayarkan" akan diam-diam mengembalikan
+	// 0 baris kalau tidak ditolak eksplisit.
+	ErrRecapInvalidStatus = errors.New("orderapi: status filter rekap tidak dikenal")
+	// ErrRecapInvalidChannel — filter channel bukan 'online' atau 'pos'
+	// (temuan review #5).
+	ErrRecapInvalidChannel = errors.New("orderapi: channel filter rekap harus 'online' atau 'pos'")
+	// ErrRecapDiscountFilterAmbiguous — caller mengirim discount_manual=true
+	// DAN discount_id sekaligus; keduanya mutually exclusive (permintaan
+	// frontend: discount_manual berdiri sendiri, tidak pernah bareng
+	// discount_id) — ditolak eksplisit, bukan diam-diam pilih salah satu.
+	ErrRecapDiscountFilterAmbiguous = errors.New("orderapi: discount_manual tidak boleh dikirim bersama discount_id")
 )
 
 // OrderSummary — projection modul lain (payment, notification, POS) butuh baca
@@ -83,6 +113,14 @@ type OrderSummary struct {
 	UnitPrice    int64
 	Subtotal     int64
 	ShippingCost *int64 // nil kalau pickup / belum di-set
+
+	// Discount (§28) — DiscountAmount 0 = tidak ada diskon dipakai (DiscountLabel
+	// akan "" dalam kondisi itu). DiscountLabel dihitung sekali di sini
+	// (order module) dari discount_name_snapshot / "Diskon" untuk manual —
+	// konsumer (POS struk, invoice) tinggal pakai, tidak perlu duplikasi
+	// logic "label apa untuk diskon manual" (§28.7).
+	DiscountAmount int64
+	DiscountLabel  string
 }
 
 // POSCreateOrderInput — payload untuk create walk-in order (§11).
@@ -109,6 +147,16 @@ type POSCreateOrderInput struct {
 
 	// Payment (POS-only)
 	MetodeBayar string // "cash" | "qris_pos"
+
+	// Discount (§28) — mutually exclusive: DiscountID (master) ATAU
+	// ManualDiscountAmount+DiscountNote (manual kasir). Kosong semua = order
+	// ini tidak pakai diskon (kasus normal, bukan error). Diselesaikan lewat
+	// discountapi.Resolver — order service TIDAK tahu aturan validasi
+	// diskon, cuma menyalurkan input ke Resolver lalu menyalin hasilnya
+	// (discountapi.Snapshot) ke kolom snapshot orders.
+	DiscountID           *uuid.UUID
+	ManualDiscountAmount int64
+	DiscountNote         string
 
 	// Design
 	DesignSource       string // "upload" | "request"
@@ -139,6 +187,12 @@ type OrderInvoiceView struct {
 	Quantity     int
 	UnitPrice    int64
 	Subtotal     int64
+
+	// Discount (§28.7) — DiscountAmount 0 = tidak ditampilkan sama sekali di
+	// invoice/struk (jangan cetak "Diskon Rp 0"). DiscountLabel sudah final
+	// (nama snapshot, atau "Diskon" untuk manual) — lihat OrderSummary doc.
+	DiscountAmount int64
+	DiscountLabel  string
 
 	// Fulfillment
 	ShippingCost       *int64

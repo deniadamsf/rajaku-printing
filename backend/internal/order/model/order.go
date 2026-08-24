@@ -82,6 +82,20 @@ type Order struct {
 	DesignApprovalMode *DesignApprovalMode `gorm:"size:20"                       json:"design_approval_mode,omitempty"`
 	DesignBrief        *string             `                                     json:"design_brief,omitempty"`
 
+	// Discount snapshot (§28) — nilai diskon disalin ke order SAAT DIBUAT,
+	// bukan cuma foreign key, supaya rekap/invoice/struk tetap benar walau
+	// master diskon diubah/dihapus nanti. DiscountAmount adalah SATU-SATUNYA
+	// kolom yang dipakai perhitungan uang di mana pun (rekap, invoice,
+	// struk) — jangan pernah JOIN ke discounts untuk angka uang (§28.2 lapis
+	// 3). Lihat migration 000027 & discountapi.Snapshot.
+	DiscountID            *uuid.UUID `gorm:"type:uuid;column:discount_id"                      json:"discount_id,omitempty"`
+	DiscountCodeSnapshot  *string    `gorm:"size:30;column:discount_code_snapshot"              json:"discount_code_snapshot,omitempty"`
+	DiscountNameSnapshot  *string    `gorm:"size:150;column:discount_name_snapshot"             json:"discount_name_snapshot,omitempty"`
+	DiscountTypeSnapshot  *string    `gorm:"size:20;column:discount_type_snapshot"              json:"discount_type_snapshot,omitempty"`
+	DiscountValueSnapshot *float64   `gorm:"column:discount_value_snapshot"                     json:"discount_value_snapshot,omitempty"`
+	DiscountAmount        int64      `gorm:"not null;default:0;column:discount_amount"          json:"discount_amount"`
+	DiscountNote          *string    `gorm:"column:discount_note"                               json:"discount_note,omitempty"`
+
 	// Total
 	Total int64 `gorm:"not null"                               json:"total"`
 

@@ -129,6 +129,92 @@ func TestEditOrder_SubtotalChange_PostDibayar_LongReason_RecomputesTotal(t *test
 	}
 }
 
+// TestEditOrder_SubtotalDroppedBelowDiscount_ClampsDiscountAndTotal is the
+// regression guard for review finding #1: correcting subtotal DOWN below a
+// previously-applied DiscountAmount must clamp discount_amount to the new
+// subtotal (never let total go negative), persist the clamped value to the
+// discount_amount column (not just use it in local total math), and record
+// the clamp in the audit changes JSON.
+func TestEditOrder_SubtotalDroppedBelowDiscount_ClampsDiscountAndTotal(t *testing.T) {
+	orderID := uuid.New()
+	shipping := int64(10000)
+	existing := &model.Order{
+		ID: orderID, Resi: "RJK-EDIT11", Status: state.Dibayar,
+		Subtotal: 100000, DiscountAmount: 80000, ShippingCost: &shipping, Total: 30000,
+	}
+	updated := &model.Order{
+		ID: orderID, Resi: "RJK-EDIT11", Status: state.Dibayar,
+		Subtotal: 50000, DiscountAmount: 50000, ShippingCost: &shipping, Total: 10000,
+	}
+	store := &fakeStore{findOrders: []*model.Order{existing, updated}}
+	svc := New(store, &fakeCatalog{}, &fakeCustomers{})
+
+	newSubtotal := int64(50000) // below the old discount_amount of 80000
+	got, err := svc.EditOrder(context.Background(), "RJK-EDIT11", uuid.New(), EditOrderInput{
+		Subtotal: &newSubtotal,
+	}, "koreksi subtotal karena salah input awal")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	fields := store.updateFieldsParams.Fields
+	if fields["discount_amount"] != int64(50000) {
+		t.Fatalf("discount_amount must be clamped to new subtotal, got %+v", fields)
+	}
+	wantTotal := int64(10000) // 50000 - 50000(clamped discount) + 10000 shipping
+	if fields["total"] != wantTotal {
+		t.Errorf("total not recomputed with clamped discount: %+v (want %d)", fields, wantTotal)
+	}
+	changes := store.updateFieldsParams.Audit.Changes
+	dc, ok := changes["discount_amount"]
+	if !ok {
+		t.Fatalf("audit changes must record discount_amount clamp, got %+v", changes)
+	}
+	if dc.From != int64(80000) || dc.To != int64(50000) {
+		t.Errorf("discount_amount change wrong: %+v", dc)
+	}
+	if got.Total != wantTotal {
+		t.Errorf("returned total wrong: %d", got.Total)
+	}
+}
+
+// TestEditOrder_SubtotalDroppedButStillAboveDiscount_DiscountUnchanged
+// verifies the clamp only kicks in when necessary — dropping subtotal but
+// staying above the existing discount_amount must leave discount_amount
+// untouched (no false-positive audit entry).
+func TestEditOrder_SubtotalDroppedButStillAboveDiscount_DiscountUnchanged(t *testing.T) {
+	orderID := uuid.New()
+	existing := &model.Order{
+		ID: orderID, Resi: "RJK-EDIT12", Status: state.Dibayar,
+		Subtotal: 200000, DiscountAmount: 50000, Total: 150000,
+	}
+	updated := &model.Order{
+		ID: orderID, Resi: "RJK-EDIT12", Status: state.Dibayar,
+		Subtotal: 100000, DiscountAmount: 50000, Total: 50000,
+	}
+	store := &fakeStore{findOrders: []*model.Order{existing, updated}}
+	svc := New(store, &fakeCatalog{}, &fakeCustomers{})
+
+	newSubtotal := int64(100000) // still above discount_amount 50000
+	_, err := svc.EditOrder(context.Background(), "RJK-EDIT12", uuid.New(), EditOrderInput{
+		Subtotal: &newSubtotal,
+	}, "koreksi subtotal turun tapi masih di atas diskon")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	fields := store.updateFieldsParams.Fields
+	if _, touched := fields["discount_amount"]; touched {
+		t.Errorf("discount_amount must NOT be staged when unaffected: %+v", fields)
+	}
+	changes := store.updateFieldsParams.Audit.Changes
+	if _, ok := changes["discount_amount"]; ok {
+		t.Errorf("audit must NOT record discount_amount when unchanged: %+v", changes)
+	}
+	wantTotal := int64(50000) // 100000 - 50000
+	if fields["total"] != wantTotal {
+		t.Errorf("total wrong: %+v (want %d)", fields, wantTotal)
+	}
+}
+
 // TestEditOrder_ShippingCostChange_PreDibayar_RecomputesTotal_NoLongReasonNeeded
 // covers the pre-payment branch of the same invariant: shipping_cost alone
 // changing must also recompute total, and (being pre-dibayar) doesn't need

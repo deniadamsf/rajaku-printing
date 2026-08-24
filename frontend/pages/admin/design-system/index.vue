@@ -157,6 +157,10 @@ const dsTransition = computed(() =>
 const demoInput = ref('')
 const demoTextarea = ref('')
 
+// --- Select / dropdown filter demo (pola dipakai di /admin/rekap) ---
+const demoSelect = ref('')
+const demoSelectLoading = ref(false)
+
 // --- OTP input demo state (pola dipakai di /auth/google, sub-state otp_form) ---
 const demoOtp = ref('')
 function onDemoOtpInput(e: Event) {
@@ -457,6 +461,69 @@ function onDemoOtpInput(e: Event) {
           >
           <p class="text-xs text-ink-500">Countdown kedaluwarsa & tombol kirim ulang pakai style link/tombol standar (lihat halaman aslinya) — bukan komponen terpisah di sini.</p>
         </div>
+
+        <div class="rounded-lg border border-hairline bg-canvas p-5 space-y-2 md:col-span-2">
+          <label class="block text-sm font-medium text-ink-900">Rentang tanggal (date range)</label>
+          <p class="text-xs text-ink-500 leading-relaxed">
+            Dipakai di <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/rekap</code> — dua
+            <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">&lt;input type="date"&gt;</code> berdampingan,
+            saling membatasi lewat <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">:max</code>/<code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">:min</code>
+            satu sama lain supaya "Dari" tidak bisa lebih besar dari "Sampai" — bukan komponen date-range picker
+            kustom, cukup native input yang sudah didukung semua browser modern.
+          </p>
+          <div class="flex flex-wrap items-end gap-3">
+            <div>
+              <label class="block text-xs font-medium text-ink-700">Dari tanggal</label>
+              <input
+                type="date"
+                value="2026-07-25"
+                class="mt-1 block rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+              >
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-ink-700">Sampai tanggal</label>
+              <input
+                type="date"
+                value="2026-08-24"
+                class="mt-1 block rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+              >
+            </div>
+          </div>
+        </div>
+
+        <div class="rounded-lg border border-hairline bg-canvas p-5 space-y-2 md:col-span-2">
+          <label class="block text-sm font-medium text-ink-900">Select / dropdown filter berbasis data server</label>
+          <p class="text-xs text-ink-500 leading-relaxed">
+            Dipakai di <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/rekap</code> untuk
+            filter kasir & diskon — <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">&lt;select&gt;</code>
+            native (bukan combobox/searchable kustom), opsinya dimuat dari endpoint (bukan hardcode) dan
+            dimuat ulang tiap dependensinya berubah (di sini: rentang tanggal). Kalau pilihan yang sedang aktif
+            hilang dari daftar baru, kosongkan otomatis — jangan biarkan filter menyaring dengan nilai yang
+            sudah tak terlihat di dropdown.
+          </p>
+          <div class="flex flex-wrap items-end gap-3">
+            <div>
+              <label class="block text-xs font-medium text-ink-700">Diskon</label>
+              <select
+                v-model="demoSelect"
+                :disabled="demoSelectLoading"
+                class="mt-1 block w-56 rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:opacity-60"
+              >
+                <option value="">Semua diskon</option>
+                <option value="__manual__">Diskon manual</option>
+                <option value="a1b2c3d4-0000-0000-0000-000000000001">Promo Lebaran</option>
+              </select>
+              <p class="mt-1 text-xs text-ink-500">{{ demoSelectLoading ? 'Memuat pilihan…' : 'Opsi "Diskon manual" dikirim lewat parameter query terpisah, bukan sebagai ID.' }}</p>
+            </div>
+            <button
+              type="button"
+              class="rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors"
+              @click="demoSelectLoading = !demoSelectLoading"
+            >
+              Toggle loading
+            </button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -468,6 +535,20 @@ function onDemoOtpInput(e: Event) {
       </p>
       <div class="mt-6 rounded-lg border border-hairline bg-canvas p-5 flex flex-wrap gap-2">
         <AdminStatusBadge v-for="b in badgeStates" :key="b.label" :status="b.label" />
+      </div>
+
+      <p class="mt-4 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        Kosakata di luar keyword bawaan (mis. status modul <strong class="text-ink-900">Diskon</strong> — 'aktif',
+        'terjadwal', 'kadaluarsa', 'nonaktif', 'kuota_habis' — tidak cocok dengan keyword order/artikel manapun)
+        WAJIB memberi prop <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">tone</code> eksplisit,
+        bukan mengandalkan deteksi kata kunci otomatis:
+      </p>
+      <div class="mt-3 rounded-lg border border-hairline bg-canvas p-5 flex flex-wrap gap-2">
+        <AdminStatusBadge status="Aktif" tone="green" />
+        <AdminStatusBadge status="Terjadwal" tone="amber" />
+        <AdminStatusBadge status="Kuota habis" tone="rose" />
+        <AdminStatusBadge status="Kadaluarsa" tone="ink" />
+        <AdminStatusBadge status="Nonaktif" tone="ink" />
       </div>
     </section>
 

@@ -23,6 +23,8 @@ import {
   SlidersHorizontal,
   Images,
   QrCode,
+  TicketPercent,
+  ClipboardList,
 } from '@lucide/vue'
 
 export interface AdminNavItem {
@@ -104,6 +106,22 @@ export function useAdminNav() {
       description: 'Produk, bahan, aturan harga',
       icon: FolderTree,
       permission: 'catalog.manage',
+      group: 'kelola',
+    },
+    {
+      label: 'Diskon',
+      to: '/admin/diskon',
+      description: 'Kelola promo & potongan harga',
+      icon: TicketPercent,
+      permission: 'discount.manage',
+      group: 'kelola',
+    },
+    {
+      label: 'Rekap Order',
+      to: '/admin/rekap',
+      description: 'Laporan penjualan & diskon',
+      icon: ClipboardList,
+      permission: 'report.view',
       group: 'kelola',
     },
     {

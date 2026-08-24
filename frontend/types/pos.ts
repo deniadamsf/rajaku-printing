@@ -23,6 +23,12 @@ export interface PosCreateOrderInput {
   design_approval_mode: PosDesignApprovalMode
   design_brief?: string
   notes?: string
+  /** Diskon master (CLAUDE.md §28) yang dipilih kasir — mutually exclusive dengan `manual_discount_amount`. */
+  discount_id?: string | null
+  /** Diskon manual (nominal Rp) — backend WAJIB menolak kalau `discount_note` kosong. */
+  manual_discount_amount?: number
+  /** Alasan diskon manual. Wajib diisi kalau `manual_discount_amount` > 0. */
+  discount_note?: string
 }
 
 export interface PosCreateOrderResult {
@@ -53,6 +59,10 @@ export interface PosCreateOrderResult {
   subtotal: number
   /** undefined kalau pickup / belum di-set (§8). */
   shipping_cost?: number
+  /** 0 kalau tidak ada diskon dipakai. */
+  discount_amount?: number
+  /** Nama diskon master ATAU keterangan diskon manual — null/undefined kalau `discount_amount` 0. */
+  discount_label?: string | null
 }
 
 /** Konfigurasi lebar kertas struk aktif — GET /admin/pos/receipt-config (§12, dipakai fitur cetak ulang di Detail Order). */

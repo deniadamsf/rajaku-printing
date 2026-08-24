@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/rajaku-printing/backend/internal/auth/authapi"
+	"github.com/rajaku-printing/backend/internal/discount/discountapi"
 	"github.com/rajaku-printing/backend/internal/httpx"
 	"github.com/rajaku-printing/backend/internal/order/orderapi"
 	"github.com/rajaku-printing/backend/internal/pos/posapi"
@@ -29,10 +30,24 @@ func mapDomainErr(c *gin.Context, err error) {
 		errors.Is(err, posapi.ErrInvalidMetodeBayar),
 		errors.Is(err, posapi.ErrInvalidDate),
 		errors.Is(err, orderapi.ErrShippingFieldsRequired),
-		errors.Is(err, orderapi.ErrInvalidShippingCost):
+		errors.Is(err, orderapi.ErrInvalidShippingCost),
+		errors.Is(err, discountapi.ErrDiscountAmbiguousInput),
+		errors.Is(err, discountapi.ErrManualDiscountNoteRequired),
+		errors.Is(err, discountapi.ErrManualDiscountInvalidAmount),
+		errors.Is(err, discountapi.ErrDiscountMinSubtotal):
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, err.Error())
+	case errors.Is(err, discountapi.ErrDiscountNotFound):
+		httpx.Error(c, http.StatusNotFound, httpx.CodeNotFound, err.Error())
+	case errors.Is(err, discountapi.ErrDiscountInactive),
+		errors.Is(err, discountapi.ErrDiscountNotStarted),
+		errors.Is(err, discountapi.ErrDiscountExpired),
+		errors.Is(err, discountapi.ErrDiscountChannelMismatch),
+		errors.Is(err, discountapi.ErrDiscountQuotaExhausted):
+		httpx.Error(c, http.StatusUnprocessableEntity, httpx.CodeUnprocessable, err.Error())
 	case errors.Is(err, posapi.ErrCustomerResolve):
 		httpx.Error(c, http.StatusUnprocessableEntity, httpx.CodeUnprocessable, err.Error())
+	case errors.Is(err, orderapi.ErrDiscountUnavailable):
+		httpx.Error(c, http.StatusInternalServerError, httpx.CodeInternal, err.Error())
 	case errors.Is(err, posapi.ErrOrderCreate),
 		errors.Is(err, orderapi.ErrResiCollisionGaveUp):
 		httpx.Error(c, http.StatusInternalServerError, httpx.CodeInternal, err.Error())
@@ -59,6 +74,16 @@ type createOrderBody struct {
 	ShippingCost           int64  `json:"shipping_cost"`
 
 	MetodeBayar string `json:"metode_bayar"`
+
+	// Discount (§28) — mutually exclusive: DiscountID (master) ATAU
+	// ManualDiscountAmount+DiscountNote (manual). Kosong semua = tanpa
+	// diskon. Wajib permission discount.apply (dicek di handler, bukan
+	// route — lihat CreateOrder).
+	DiscountID string `json:"discount_id"`
+	// Review finding #6 — binding gte=0 menolak nominal negatif di edge
+	// (§22), sebelum sempat lolos ke pengecekan requestsDiscount di bawah.
+	ManualDiscountAmount int64  `json:"manual_discount_amount" binding:"gte=0"`
+	DiscountNote         string `json:"discount_note"`
 
 	DesignSource       string `json:"design_source"`
 	DesignApprovalMode string `json:"design_approval_mode"`
@@ -90,6 +115,29 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 		return
 	}
 
+	// Diskon (§28) — dicek DI HANDLER (bukan route middleware, karena
+	// aturannya "hanya kalau body membawa diskon", bukan blanket per-route):
+	// kasir tanpa permission discount.apply TIDAK BOLEH menyertakan
+	// discount_id ATAU manual_discount_amount sama sekali.
+	// Review finding #6 — `!= 0` (bukan `> 0`) supaya nominal negatif (kalau
+	// entah bagaimana lolos binding gte=0 di atas) tetap dianggap "meminta
+	// diskon" dan masuk jalur permission+validasi, bukan diam-diam dilewati.
+	requestsDiscount := body.DiscountID != "" || body.ManualDiscountAmount != 0
+	if requestsDiscount && !id.HasPermission("discount.apply") {
+		httpx.Error(c, http.StatusForbidden, httpx.CodeForbidden,
+			"missing permission: discount.apply")
+		return
+	}
+	var discountID *uuid.UUID
+	if body.DiscountID != "" {
+		parsed, derr := uuid.Parse(body.DiscountID)
+		if derr != nil {
+			httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "invalid discount_id")
+			return
+		}
+		discountID = &parsed
+	}
+
 	result, err := h.svc.CreateOrder(c.Request.Context(), service.CreateOrderInput{
 		KasirID:                id.UserID,
 		CustomerName:           body.CustomerName,
@@ -104,6 +152,9 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 		ShippingRecipientName:  body.ShippingRecipientName,
 		ShippingRecipientPhone: body.ShippingRecipientPhone,
 		ShippingCost:           body.ShippingCost,
+		DiscountID:             discountID,
+		ManualDiscountAmount:   body.ManualDiscountAmount,
+		DiscountNote:           body.DiscountNote,
 		MetodeBayar:            body.MetodeBayar,
 		DesignSource:           body.DesignSource,
 		DesignApprovalMode:     body.DesignApprovalMode,

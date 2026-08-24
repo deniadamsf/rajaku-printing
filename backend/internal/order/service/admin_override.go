@@ -191,7 +191,26 @@ func applyFinancialFields(o *model.Order, in EditOrderInput, reason string, fiel
 		newShippingCost = *in.ShippingCost
 	}
 
-	newTotal := newSubtotal + newShippingCost
+	// Temuan review #1 — DiscountAmount cuma dijepit ke subtotal SAAT order
+	// dibuat, tidak pernah dijepit ulang di sini. Kalau subtotal dikoreksi
+	// turun di bawah DiscountAmount lama, total bisa negatif (ditolak CHECK
+	// `total >= 0` di DB → 500 mentah) atau, kalau masih di atas diskon,
+	// persentase diskon efektif membengkak tanpa jejak. Jepit ulang ke
+	// subtotal BARU dan simpan nilai jepitan itu ke kolom discount_amount
+	// (bukan cuma dipakai di hitungan lokal) supaya kolomnya tidak berbohong
+	// terhadap total, dan catat di audit log kalau berubah.
+	effectiveDiscount := o.DiscountAmount
+	if touchesSubtotal && effectiveDiscount > newSubtotal {
+		effectiveDiscount = newSubtotal
+	}
+	if effectiveDiscount != o.DiscountAmount {
+		fields["discount_amount"] = effectiveDiscount
+		changes["discount_amount"] = model.FieldChange{From: o.DiscountAmount, To: effectiveDiscount}
+	}
+
+	// §28.3 — ongkir tidak pernah didiskon; diskon (kalau ada di order ini)
+	// tetap ikut mengurangi total hasil edit super admin.
+	newTotal := newSubtotal - effectiveDiscount + newShippingCost
 	if newTotal != o.Total {
 		fields["total"] = newTotal
 		changes["total"] = model.FieldChange{From: o.Total, To: newTotal}

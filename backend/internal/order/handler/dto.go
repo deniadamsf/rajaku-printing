@@ -75,30 +75,54 @@ type orderResponse struct {
 	MetodeBayar            string    `json:"metode_bayar,omitempty"`
 	DesignSource           string    `json:"design_source"`
 	DesignBrief            string    `json:"design_brief,omitempty"`
-	Total                  int64     `json:"total"`
-	Notes                  string    `json:"notes,omitempty"`
-	CreatedAt              string    `json:"created_at"`
+	// Discount (§28) — DiscountAmount 0 (default) berarti order ini tidak
+	// pakai diskon; field snapshot lain dibiarkan omitempty dalam kondisi itu.
+	DiscountID            *uuid.UUID `json:"discount_id,omitempty"`
+	DiscountCodeSnapshot  string     `json:"discount_code_snapshot,omitempty"`
+	DiscountNameSnapshot  string     `json:"discount_name_snapshot,omitempty"`
+	DiscountTypeSnapshot  string     `json:"discount_type_snapshot,omitempty"`
+	DiscountValueSnapshot *float64   `json:"discount_value_snapshot,omitempty"`
+	DiscountAmount        int64      `json:"discount_amount"`
+	DiscountNote          string     `json:"discount_note,omitempty"`
+	Total                 int64      `json:"total"`
+	Notes                 string     `json:"notes,omitempty"`
+	CreatedAt             string     `json:"created_at"`
 }
 
 func toOrderResponse(o *model.Order) orderResponse {
 	r := orderResponse{
-		ID:           o.ID,
-		Resi:         o.Resi,
-		Status:       string(o.Status),
-		Channel:      string(o.Channel),
-		ProductName:  o.ProductNameSnapshot,
-		MaterialName: o.MaterialNameSnapshot,
-		PricingType:  o.PricingTypeSnapshot,
-		WidthCm:      o.WidthCm,
-		HeightCm:     o.HeightCm,
-		Quantity:     o.Quantity,
-		UnitPrice:    o.UnitPrice,
-		Subtotal:     o.Subtotal,
-		MetodeAmbil:  string(o.MetodeAmbil),
-		ShippingCost: o.ShippingCost,
-		Total:        o.Total,
-		DesignSource: string(o.DesignSource),
-		CreatedAt:    o.CreatedAt.UTC().Format(time.RFC3339),
+		ID:                    o.ID,
+		Resi:                  o.Resi,
+		Status:                string(o.Status),
+		Channel:               string(o.Channel),
+		ProductName:           o.ProductNameSnapshot,
+		MaterialName:          o.MaterialNameSnapshot,
+		PricingType:           o.PricingTypeSnapshot,
+		WidthCm:               o.WidthCm,
+		HeightCm:              o.HeightCm,
+		Quantity:              o.Quantity,
+		UnitPrice:             o.UnitPrice,
+		Subtotal:              o.Subtotal,
+		MetodeAmbil:           string(o.MetodeAmbil),
+		ShippingCost:          o.ShippingCost,
+		DiscountID:            o.DiscountID,
+		DiscountValueSnapshot: o.DiscountValueSnapshot,
+		DiscountAmount:        o.DiscountAmount,
+		Total:                 o.Total,
+		DesignSource:          string(o.DesignSource),
+		CreatedAt:             o.CreatedAt.UTC().Format(time.RFC3339),
+	}
+	if o.DiscountCodeSnapshot != nil {
+		r.DiscountCodeSnapshot = *o.DiscountCodeSnapshot
+	}
+	if o.DiscountNameSnapshot != nil {
+		r.DiscountNameSnapshot = *o.DiscountNameSnapshot
+	}
+	if o.DiscountTypeSnapshot != nil {
+		r.DiscountTypeSnapshot = *o.DiscountTypeSnapshot
+	}
+	if o.DiscountNote != nil {
+		r.DiscountNote = *o.DiscountNote
 	}
 	if o.ShippingAddress != nil {
 		r.ShippingAddress = *o.ShippingAddress

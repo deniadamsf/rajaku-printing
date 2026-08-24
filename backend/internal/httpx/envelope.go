@@ -12,7 +12,9 @@ package httpx
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -56,6 +58,24 @@ func ErrorWithDetails(c *gin.Context, status int, code, message string, details 
 		Success: false,
 		Error:   &ErrorPayload{Code: code, Message: message, Details: details},
 	})
+}
+
+// ParseIntQuery parses an integer query param, returning defaultVal if the
+// param is absent/empty. Returns an error (never silently ignored — §22
+// dilarang `_ = err`) if the param IS present but isn't a valid integer, so
+// callers can reject with 400 instead of e.g. `?page=abc` silently becoming
+// page 1. Shared by every handler that parses page/per_page/limit query
+// params, so the behaviour stays consistent across the codebase.
+func ParseIntQuery(c *gin.Context, key string, defaultVal int) (int, error) {
+	raw := c.Query(key)
+	if raw == "" {
+		return defaultVal, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("query param '%s' harus berupa angka: %w", key, err)
+	}
+	return n, nil
 }
 
 // ErrorFromDomain maps a domain-layer error (see errors.go) to an HTTP

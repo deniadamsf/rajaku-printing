@@ -47,4 +47,17 @@ func (h *Handler) RegisterRoutes(v1, public *gin.RouterGroup, auth authapi.Servi
 	auditAdmin := v1.Group("/admin/audit-log")
 	auditAdmin.Use(authapi.RequireAuth(auth), authapi.RequireUserType(authapi.UserTypeStaff))
 	auditAdmin.GET("", authapi.RequirePermission("audit.view"), h.AdminListAuditLog)
+
+	// GET /admin/order-recap(/export) — laporan rekap order (§28.5). Grup
+	// terpisah dari /admin/orders untuk alasan yang SAMA seperti audit-log di
+	// atas: /admin/orders sudah punya GET /:resi (wildcard) di level yang
+	// sama, dan §28.5 brief eksplisit minta path statis ini TIDAK ditaruh
+	// bersebelahan dengan wildcard itu.
+	recapAdmin := v1.Group("/admin/order-recap")
+	recapAdmin.Use(authapi.RequireAuth(auth), authapi.RequireUserType(authapi.UserTypeStaff))
+	recapAdmin.GET("", authapi.RequirePermission("report.view"), h.AdminOrderRecap)
+	recapAdmin.GET("/export", authapi.RequirePermission("report.view"), h.AdminOrderRecapExport)
+	// GET /admin/order-recap/filters — dropdown kasir/diskon (fitur baru
+	// §28), path statis, tidak bentrok dengan wildcard apapun di grup ini.
+	recapAdmin.GET("/filters", authapi.RequirePermission("report.view"), h.AdminOrderRecapFilters)
 }

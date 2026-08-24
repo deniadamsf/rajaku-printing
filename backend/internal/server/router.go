@@ -28,6 +28,9 @@ import (
 	designhandler "github.com/rajaku-printing/backend/internal/design/handler"
 	designrepo "github.com/rajaku-printing/backend/internal/design/repository"
 	designservice "github.com/rajaku-printing/backend/internal/design/service"
+	discounthandler "github.com/rajaku-printing/backend/internal/discount/handler"
+	discountrepo "github.com/rajaku-printing/backend/internal/discount/repository"
+	discountservice "github.com/rajaku-printing/backend/internal/discount/service"
 	invoicehandler "github.com/rajaku-printing/backend/internal/invoice/handler"
 	"github.com/rajaku-printing/backend/internal/invoice/pdfrender"
 	invoicerepo "github.com/rajaku-printing/backend/internal/invoice/repository"
@@ -234,6 +237,16 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	adminAuditRepo := orderrepo.NewAdminAuditLogRepository(d.DB)
 	orderSvc.SetAuditStore(adminAuditRepo)
 
+	// --- Wiring modul discount (§28) ---
+	// Dibuat SETELAH order (discountSvc tidak butuh orderSvc — resolusi
+	// kuota query langsung ke tabel orders, §28.4), lalu di-inject BALIK ke
+	// orderSvc lewat setter (pola sama seperti SetNotifier) supaya
+	// CreatePOSOrder bisa resolve diskon.
+	discountRepo := discountrepo.NewDiscountRepository(d.DB)
+	discountSvc := discountservice.New(discountRepo)
+	discountH := discounthandler.New(discountSvc)
+	orderSvc.SetDiscountResolver(discountSvc)
+
 	// --- Wiring modul payment ---
 	paymentProofRepo := paymentrepo.NewProofRepository(d.DB)
 	// orderSvc satisfies orderapi.OrderCommandService — payment triggers order
@@ -380,6 +393,8 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 		adminH.RegisterRoutes(v1, authSvc)
 		// Admin catalog: kelola bahan/produk/pricing (§9/§10).
 		catalogH.RegisterAdminRoutes(v1, authSvc)
+		// Admin discount: kelola master diskon + GET /applicable dipakai kasir (§28).
+		discountH.RegisterRoutes(v1, authSvc)
 
 		// Public endpoints (no auth) — rate limited to prevent scraping/bruteforce.
 		public := v1.Group("")

@@ -50,11 +50,15 @@ export function useDiscount() {
   /**
    * Backend membungkus hasil sebagai `{ items: [...] }`, bukan array polos.
    * `channel` HANYA menerima 'online'/'pos' (backend menolak 'all' — §28.5).
+   * `product_id` opsional (§28.9) — dikirim kasir POS supaya diskon yang
+   * cakupannya `selected` dan tidak mencakup produk terpilih tidak pernah
+   * muncul di daftar (mencegah kasir memilih diskon yang bakal ditolak
+   * backend saat submit).
    */
-  async function applicable(params: { channel: Exclude<DiscountChannelScope, 'all'>; subtotal: number }): Promise<ApplicableDiscount[]> {
-    const res = await api.get<{ items: ApplicableDiscount[] }>('/admin/discounts/applicable', {
-      query: { channel: params.channel, subtotal: String(params.subtotal) },
-    })
+  async function applicable(params: { channel: Exclude<DiscountChannelScope, 'all'>; subtotal: number; product_id?: string }): Promise<ApplicableDiscount[]> {
+    const query: Record<string, string> = { channel: params.channel, subtotal: String(params.subtotal) }
+    if (params.product_id) query.product_id = params.product_id
+    const res = await api.get<{ items: ApplicableDiscount[] }>('/admin/discounts/applicable', { query })
     return res.items
   }
 

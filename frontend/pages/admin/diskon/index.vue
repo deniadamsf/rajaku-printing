@@ -16,7 +16,8 @@ import {
 } from '@lucide/vue'
 import type { DataTableColumn } from '~/components/admin/DataTable.vue'
 import { ApiError } from '~/composables/useApi'
-import type { Discount, DiscountInput, DiscountStatus, DiscountType } from '~/types/discount'
+import type { Discount, DiscountAppliesTo, DiscountInput, DiscountStatus, DiscountType } from '~/types/discount'
+import type { AdminProduct } from '~/types/catalog-admin'
 
 definePageMeta({
   middleware: ['staff-only'],
@@ -26,6 +27,27 @@ definePageMeta({
 useSeoMeta({ title: 'Diskon — Rajaku Admin' })
 
 const discountSvc = useDiscount()
+const catalogSvc = useAdminCatalog()
+
+// -------------------- produk (untuk cakupan §28.9) --------------------
+const products = ref<AdminProduct[]>([])
+const productsLoading = ref(false)
+async function fetchProducts() {
+  productsLoading.value = true
+  try {
+    const res = await catalogSvc.listProducts()
+    products.value = res.products
+  } catch {
+    // Non-blocking — kalau gagal, pemilih produk tampil kosong dan admin
+    // masih bisa memakai "Semua produk"; daftar diskon utama tetap jalan.
+  } finally {
+    productsLoading.value = false
+  }
+}
+/** Nama produk untuk ringkasan cakupan di tabel — fallback ke id kalau produk sudah tidak ada di katalog yang termuat. */
+function productName(id: string): string {
+  return products.value.find((p) => p.id === id)?.name ?? id
+}
 
 // -------------------- list state --------------------
 const items = ref<Discount[]>([])
@@ -81,7 +103,10 @@ async function fetchList() {
   }
 }
 
-onMounted(fetchList)
+onMounted(() => {
+  fetchList()
+  fetchProducts()
+})
 watch([statusFilter, page], fetchList)
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null
@@ -100,6 +125,7 @@ const columns: DataTableColumn[] = [
   { key: 'period', label: 'Periode', class: 'w-44 hidden lg:table-cell' },
   { key: 'usage', label: 'Pemakaian', class: 'w-28 hidden md:table-cell' },
   { key: 'channel_scope', label: 'Channel', class: 'w-24 hidden lg:table-cell' },
+  { key: 'scope', label: 'Cakupan', class: 'w-32 hidden md:table-cell' },
   { key: 'status', label: 'Status', class: 'w-32' },
   { key: 'actions', label: '', class: 'w-24 text-right' },
 ]
@@ -122,6 +148,8 @@ const form = reactive<DiscountInput>({
   quota: null,
   channel_scope: 'all',
   is_active: true,
+  applies_to: 'all',
+  product_ids: [],
 })
 
 /** Kode diskon: huruf besar, angka, dan `-`/`_` saja — dirapikan sambil mengetik. */
@@ -167,6 +195,8 @@ function openCreate() {
   form.quota = null
   form.channel_scope = 'all'
   form.is_active = true
+  form.applies_to = 'all'
+  form.product_ids = []
   startsAtLocal.value = ''
   endsAtLocal.value = ''
   formOpen.value = true
@@ -188,9 +218,20 @@ function openEdit(d: Discount) {
   form.quota = d.quota
   form.channel_scope = d.channel_scope
   form.is_active = d.is_active
+  // Backend lama (belum di-deploy paralel) mungkin belum mengirim dua field
+  // ini — jatuh ke default "semua produk" supaya form tidak error, bukan
+  // diam-diam menganggap daftar kosong = tercakup semua (§28.9).
+  form.applies_to = d.applies_to ?? 'all'
+  form.product_ids = d.product_ids ? [...d.product_ids] : []
   startsAtLocal.value = isoToLocalInput(d.starts_at)
   endsAtLocal.value = isoToLocalInput(d.ends_at)
   formOpen.value = true
+}
+
+/** Ganti "Semua produk" → bersihkan daftar tercentang lama (jangan ikut kirim sisa pilihan §-brief). */
+function onAppliesToChange(v: DiscountAppliesTo) {
+  form.applies_to = v
+  if (v === 'all') form.product_ids = []
 }
 
 function onTypeChange(t: DiscountType) {
@@ -204,8 +245,15 @@ function onTypeChange(t: DiscountType) {
 }
 
 async function saveDiscount() {
-  saving.value = true
   modalError.value = null
+  // Validasi wajib di UI (§28.9 brief): "Produk tertentu" tanpa satu pun
+  // produk tercentang HARUS ditolak sebelum request dikirim — daftar kosong
+  // bukan berarti "berlaku semua", itu diskon yang mustahil dipakai.
+  if (form.applies_to === 'selected' && form.product_ids.length === 0) {
+    modalError.value = 'Pilih minimal satu produk, atau ubah cakupan ke "Semua produk".'
+    return
+  }
+  saving.value = true
   try {
     const body: DiscountInput = {
       code: form.code.trim(),
@@ -226,6 +274,8 @@ async function saveDiscount() {
       quota: form.quota || null,
       channel_scope: form.channel_scope,
       is_active: form.is_active,
+      applies_to: form.applies_to,
+      product_ids: form.applies_to === 'selected' ? [...form.product_ids] : [],
     }
     if (editingId.value) {
       await discountSvc.update(editingId.value, body)
@@ -307,6 +357,16 @@ function periodLabel(d: Discount): string {
 }
 function usageLabel(d: Discount): string {
   return d.quota != null ? `${d.usage_count} / ${d.quota}` : String(d.usage_count)
+}
+/** Ringkasan cakupan produk (§28.9) untuk kolom tabel — supaya admin bisa membedakan sekilas tanpa membuka form. */
+function scopeLabel(d: Discount): string {
+  if (d.applies_to !== 'selected') return 'Semua produk'
+  const n = d.product_ids?.length ?? 0
+  return n === 1 ? '1 produk' : `${n} produk`
+}
+function scopeTooltip(d: Discount): string | undefined {
+  if (d.applies_to !== 'selected' || !d.product_ids?.length) return undefined
+  return d.product_ids.map((id) => productName(id)).join(', ')
 }
 function statusLabel(s: DiscountStatus | string): string {
   const map: Record<string, string> = {
@@ -403,6 +463,9 @@ function statusTone(s: DiscountStatus | string): 'green' | 'amber' | 'ink' | 'ro
       </template>
       <template #cell-channel_scope="{ row }">
         <span class="text-xs uppercase text-ink-600">{{ (row as Discount).channel_scope }}</span>
+      </template>
+      <template #cell-scope="{ row }">
+        <span class="text-xs text-ink-600" :title="scopeTooltip(row as Discount)">{{ scopeLabel(row as Discount) }}</span>
       </template>
       <template #cell-status="{ row }">
         <AdminStatusBadge :status="statusLabel((row as Discount).status)" :tone="statusTone((row as Discount).status)" />
@@ -609,6 +672,43 @@ function statusTone(s: DiscountStatus | string): 'green' | 'amber' | 'ink' | 'ro
                     <input v-model="form.is_active" type="checkbox" class="h-4 w-4 rounded border-hairline accent-brand-500">
                     Aktifkan diskon ini
                   </label>
+                </div>
+
+                <div class="sm:col-span-2">
+                  <label class="block text-sm font-medium text-ink-900">Berlaku untuk</label>
+                  <div class="mt-1 flex gap-2">
+                    <label
+                      :class="[
+                        'flex-1 flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors',
+                        form.applies_to === 'all' ? 'border-brand-500 bg-brand-50/50 text-ink-950' : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                      ]"
+                    >
+                      <input type="radio" value="all" :checked="form.applies_to === 'all'" class="accent-brand-500" @change="onAppliesToChange('all')">
+                      <span class="font-semibold">Semua produk</span>
+                    </label>
+                    <label
+                      :class="[
+                        'flex-1 flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors',
+                        form.applies_to === 'selected' ? 'border-brand-500 bg-brand-50/50 text-ink-950' : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                      ]"
+                    >
+                      <input type="radio" value="selected" :checked="form.applies_to === 'selected'" class="accent-brand-500" @change="onAppliesToChange('selected')">
+                      <span class="font-semibold">Produk tertentu</span>
+                    </label>
+                  </div>
+
+                  <div v-if="form.applies_to === 'selected'" class="mt-2">
+                    <AdminProductMultiSelect
+                      v-model="form.product_ids"
+                      :products="products"
+                      :loading="productsLoading"
+                    />
+                    <p class="mt-1 text-xs text-ink-500">
+                      Diskon ini hanya bisa dipakai kalau order-nya untuk salah satu produk tercentang. Kosongkan
+                      pilihan bukan cara untuk "berlaku semua" — daftar kosong membuat diskon tidak bisa dipakai
+                      sama sekali.
+                    </p>
+                  </div>
                 </div>
               </div>
 

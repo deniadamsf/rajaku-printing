@@ -216,10 +216,12 @@ const discountLabelPreview = computed(() => {
 
 const grandTotal = computed(() => Math.max(0, subtotal.value - discountAmount.value) + shippingCost.value)
 
-// Ambil diskon yang berlaku setiap subtotal berubah (debounced) — hanya kalau
-// kasir punya izin & subtotal sudah > 0. Reset pilihan diskon yang sedang
-// aktif kalau subtotal berubah signifikan (produk/ukuran diganti) supaya
-// kasir tidak diam-diam memakai preview_amount basi dari subtotal sebelumnya.
+// Ambil diskon yang berlaku setiap subtotal ATAU produk terpilih berubah
+// (debounced) — hanya kalau kasir punya izin & subtotal sudah > 0. `product_id`
+// dikirim supaya diskon yang cakupannya (§28.9) tidak mencakup produk ini
+// tidak pernah muncul di daftar. Reset pilihan diskon yang sedang aktif kalau
+// daftar baru tidak lagi memuatnya — jangan biarkan kasir menekan "Buat
+// Pesanan" dengan diskon yang akan ditolak backend.
 let discountTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleDiscountFetch() {
   if (discountTimer) clearTimeout(discountTimer)
@@ -228,12 +230,20 @@ function scheduleDiscountFetch() {
 async function fetchApplicableDiscounts() {
   if (!canApplyDiscount.value || subtotal.value <= 0) {
     applicableDiscounts.value = []
+    if (discountMode.value === 'master') {
+      selectedDiscountId.value = ''
+      discountMode.value = 'none'
+    }
     return
   }
   discountsLoading.value = true
   discountsError.value = null
   try {
-    applicableDiscounts.value = await discountSvc.applicable({ channel: 'pos', subtotal: subtotal.value })
+    applicableDiscounts.value = await discountSvc.applicable({
+      channel: 'pos',
+      subtotal: subtotal.value,
+      product_id: form.productId || undefined,
+    })
     if (selectedDiscountId.value && !applicableDiscounts.value.some((d) => d.id === selectedDiscountId.value)) {
       selectedDiscountId.value = ''
       if (discountMode.value === 'master') discountMode.value = 'none'
@@ -245,7 +255,7 @@ async function fetchApplicableDiscounts() {
     discountsLoading.value = false
   }
 }
-watch(subtotal, scheduleDiscountFetch)
+watch([subtotal, () => form.productId], scheduleDiscountFetch)
 
 const canSubmit = computed(() => {
   if (submitting.value) return false

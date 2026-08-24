@@ -846,6 +846,16 @@ function waLink(phone: string): string {
               <dt class="text-ink-500">Subtotal</dt>
               <dd class="text-ink-900">{{ fmtIDR(order.subtotal) }}</dd>
             </div>
+            <div v-if="order.discount_amount && order.discount_amount > 0" class="flex justify-between">
+              <dt class="text-ink-500">
+                Diskon
+                <span v-if="order.discount_name_snapshot" class="block text-xs text-ink-400">
+                  {{ order.discount_name_snapshot }}
+                  <span v-if="order.discount_code_snapshot" class="font-mono">· {{ order.discount_code_snapshot }}</span>
+                </span>
+              </dt>
+              <dd class="text-brand-600 font-medium">-{{ fmtIDR(order.discount_amount) }}</dd>
+            </div>
             <div class="flex justify-between">
               <dt class="text-ink-500">Ongkir</dt>
               <dd class="text-ink-900">
@@ -863,6 +873,12 @@ function waLink(phone: string): string {
               <dd class="uppercase text-ink-700">{{ order.metode_bayar }}</dd>
             </div>
           </dl>
+          <p
+            v-if="order.discount_note"
+            class="mt-3 text-xs text-ink-500 leading-relaxed border-l-2 border-gold-300 pl-3"
+          >
+            Catatan diskon: "{{ order.discount_note }}"
+          </p>
         </div>
 
         <!-- Customer -->
@@ -1215,6 +1231,8 @@ function waLink(phone: string): string {
         :unit-price="order.unit_price"
         :subtotal="order.subtotal"
         :shipping-cost="order.shipping_cost"
+        :discount-amount="order.discount_amount"
+        :discount-label="order.discount_name_snapshot"
         :total="order.total"
         :metode-ambil="order.metode_ambil"
         :metode-bayar="order.metode_bayar ?? '-'"

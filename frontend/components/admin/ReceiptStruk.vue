@@ -53,6 +53,10 @@ export interface ReceiptStrukProps {
   subtotal: number
   /** null/undefined = pickup atau ongkir belum di-set (§8) — baris disembunyikan kecuali metodeAmbil "kirim". */
   shippingCost?: number | null
+  /** Nominal diskon terpakai (CLAUDE.md §28) — baris disembunyikan kecuali > 0. */
+  discountAmount?: number | null
+  /** Nama diskon master ATAU keterangan diskon manual — tampil di bawah baris nominal diskon kalau ada. */
+  discountLabel?: string | null
   total: number
   metodeAmbil: string
   metodeBayar: string
@@ -76,6 +80,8 @@ export interface ReceiptStrukProps {
 
 const props = withDefaults(defineProps<ReceiptStrukProps>(), {
   shippingCost: null,
+  discountAmount: null,
+  discountLabel: null,
   widthMm: 58,
 })
 
@@ -137,6 +143,10 @@ const qrSvg = computed(() => {
 const showShipping = computed(
   () => props.metodeAmbil === 'kirim' || (props.shippingCost != null && props.shippingCost > 0),
 )
+
+// Baris diskon HANYA muncul kalau nominalnya > 0 — jangan pernah cetak
+// "Diskon Rp 0" (brief §28.7).
+const showDiscount = computed(() => props.discountAmount != null && props.discountAmount > 0)
 
 /**
  * `@page { size: ... }` HARUS pakai angka literal — browser tidak bisa membaca
@@ -365,6 +375,10 @@ defineExpose({ printNow })
         <div class="flex justify-between gap-2">
           <span>Subtotal</span>
           <span class="shrink-0 tabular-nums">{{ fmtIDR(subtotal) }}</span>
+        </div>
+        <div v-if="showDiscount" class="flex justify-between gap-2">
+          <span class="min-w-0 break-words">Diskon{{ discountLabel ? ` (${discountLabel})` : '' }}</span>
+          <span class="shrink-0 tabular-nums">-{{ fmtIDR(discountAmount) }}</span>
         </div>
         <div v-if="showShipping" class="flex justify-between gap-2">
           <span>Ongkir</span>

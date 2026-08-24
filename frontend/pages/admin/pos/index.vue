@@ -26,6 +26,7 @@ import {
   ExternalLink,
   CheckCircle2,
   Loader2,
+  TicketPercent,
 } from '@lucide/vue'
 import type { CatalogProduct, CatalogProductDetail, CatalogQuote } from '~/types/catalog'
 import type {
@@ -35,6 +36,7 @@ import type {
   PosMetodeAmbil,
   PosMetodeBayar,
 } from '~/types/pos'
+import type { ApplicableDiscount } from '~/types/discount'
 import { ApiError } from '~/composables/useApi'
 
 definePageMeta({
@@ -46,6 +48,11 @@ useSeoMeta({ title: 'POS / Kasir — Rajaku Admin' })
 
 const catalog = useCatalog()
 const pos = usePos()
+const discountSvc = useDiscount()
+const auth = useAuthStore()
+
+/** Blok diskon (pilih promo / diskon manual) hanya untuk kasir yang punya izin — §28. */
+const canApplyDiscount = computed(() => auth.hasPermission('discount.apply'))
 
 // -------------------- state --------------------
 const products = ref<CatalogProduct[]>([])
@@ -76,6 +83,17 @@ const form = reactive({
 const quote = ref<CatalogQuote | null>(null)
 const quoteLoading = ref(false)
 const quoteError = ref<string | null>(null)
+
+// -------------------- diskon (§28) --------------------
+type DiscountMode = 'none' | 'master' | 'manual'
+const discountMode = ref<DiscountMode>('none')
+const selectedDiscountId = ref('')
+const manualDiscountAmount = ref<number>(0)
+const discountNote = ref('')
+
+const applicableDiscounts = ref<ApplicableDiscount[]>([])
+const discountsLoading = ref(false)
+const discountsError = ref<string | null>(null)
 
 const submitting = ref(false)
 const submitError = ref<string | null>(null)
@@ -180,7 +198,54 @@ const isKirim = computed(() => form.metodeAmbil === 'kirim')
 
 const subtotal = computed(() => (quote.value ? quote.value.total_price * form.quantity : 0))
 const shippingCost = computed(() => (isKirim.value ? form.shippingCost : 0))
-const grandTotal = computed(() => subtotal.value + shippingCost.value)
+
+const selectedDiscount = computed(() =>
+  applicableDiscounts.value.find((d) => d.id === selectedDiscountId.value) ?? null,
+)
+const discountAmount = computed(() => {
+  if (!canApplyDiscount.value) return 0
+  if (discountMode.value === 'master') return selectedDiscount.value?.preview_amount ?? 0
+  if (discountMode.value === 'manual') return Math.min(manualDiscountAmount.value || 0, subtotal.value)
+  return 0
+})
+const discountLabelPreview = computed(() => {
+  if (discountMode.value === 'master') return selectedDiscount.value?.name ?? ''
+  if (discountMode.value === 'manual') return discountNote.value.trim()
+  return ''
+})
+
+const grandTotal = computed(() => Math.max(0, subtotal.value - discountAmount.value) + shippingCost.value)
+
+// Ambil diskon yang berlaku setiap subtotal berubah (debounced) — hanya kalau
+// kasir punya izin & subtotal sudah > 0. Reset pilihan diskon yang sedang
+// aktif kalau subtotal berubah signifikan (produk/ukuran diganti) supaya
+// kasir tidak diam-diam memakai preview_amount basi dari subtotal sebelumnya.
+let discountTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleDiscountFetch() {
+  if (discountTimer) clearTimeout(discountTimer)
+  discountTimer = setTimeout(fetchApplicableDiscounts, 400)
+}
+async function fetchApplicableDiscounts() {
+  if (!canApplyDiscount.value || subtotal.value <= 0) {
+    applicableDiscounts.value = []
+    return
+  }
+  discountsLoading.value = true
+  discountsError.value = null
+  try {
+    applicableDiscounts.value = await discountSvc.applicable({ channel: 'pos', subtotal: subtotal.value })
+    if (selectedDiscountId.value && !applicableDiscounts.value.some((d) => d.id === selectedDiscountId.value)) {
+      selectedDiscountId.value = ''
+      if (discountMode.value === 'master') discountMode.value = 'none'
+    }
+  } catch (e: unknown) {
+    discountsError.value = e instanceof ApiError ? e.message : 'Gagal memuat diskon yang berlaku'
+    applicableDiscounts.value = []
+  } finally {
+    discountsLoading.value = false
+  }
+}
+watch(subtotal, scheduleDiscountFetch)
 
 const canSubmit = computed(() => {
   if (submitting.value) return false
@@ -195,6 +260,11 @@ const canSubmit = computed(() => {
     if (form.shippingCost <= 0) return false
   }
   if (form.designSource === 'request' && !form.designBrief.trim()) return false
+  if (discountMode.value === 'master' && !selectedDiscountId.value) return false
+  if (discountMode.value === 'manual') {
+    if (manualDiscountAmount.value <= 0) return false
+    if (!discountNote.value.trim()) return false
+  }
   return true
 })
 
@@ -246,6 +316,9 @@ async function onSubmit() {
       design_approval_mode: form.designApprovalMode,
       design_brief: form.designBrief.trim() || undefined,
       notes: form.notes.trim() || undefined,
+      discount_id: discountMode.value === 'master' ? selectedDiscountId.value : undefined,
+      manual_discount_amount: discountMode.value === 'manual' ? discountAmount.value : undefined,
+      discount_note: discountMode.value === 'manual' ? discountNote.value.trim() : undefined,
     })
     successResult.value = res
   } catch (e: unknown) {
@@ -276,6 +349,12 @@ function resetForm() {
   form.notes = ''
   productDetail.value = null
   quote.value = null
+  discountMode.value = 'none'
+  selectedDiscountId.value = ''
+  manualDiscountAmount.value = 0
+  discountNote.value = ''
+  applicableDiscounts.value = []
+  discountsError.value = null
   submitError.value = null
 }
 
@@ -335,6 +414,8 @@ function printStruk() {
         :unit-price="successResult.unit_price"
         :subtotal="successResult.subtotal"
         :shipping-cost="successResult.shipping_cost"
+        :discount-amount="successResult.discount_amount"
+        :discount-label="successResult.discount_label"
         :total="successResult.total"
         :metode-ambil="successResult.metode_ambil"
         :metode-bayar="successResult.metode_bayar"
@@ -745,6 +826,105 @@ function printStruk() {
           </div>
         </fieldset>
 
+        <!-- Diskon (§28) -->
+        <fieldset v-if="canApplyDiscount" class="rounded-lg border border-hairline bg-canvas p-6">
+          <legend class="flex items-center gap-2 px-2 -ml-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
+            <TicketPercent class="h-3.5 w-3.5" :stroke-width="1.75" />
+            Diskon (opsional)
+          </legend>
+
+          <div class="grid gap-2 sm:grid-cols-3">
+            <label
+              :class="[
+                'flex cursor-pointer items-center gap-2 rounded-md border p-3 text-sm transition-colors',
+                discountMode === 'none' ? 'border-brand-500 bg-brand-50/50 text-ink-950' : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+              ]"
+            >
+              <input v-model="discountMode" type="radio" value="none" class="accent-brand-500">
+              <span class="font-semibold">Tanpa diskon</span>
+            </label>
+            <label
+              :class="[
+                'flex cursor-pointer items-center gap-2 rounded-md border p-3 text-sm transition-colors',
+                discountMode === 'master' ? 'border-brand-500 bg-brand-50/50 text-ink-950' : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                applicableDiscounts.length === 0 && 'opacity-50',
+              ]"
+            >
+              <input v-model="discountMode" type="radio" value="master" class="accent-brand-500" :disabled="applicableDiscounts.length === 0">
+              <span class="font-semibold">Pilih promo</span>
+            </label>
+            <label
+              :class="[
+                'flex cursor-pointer items-center gap-2 rounded-md border p-3 text-sm transition-colors',
+                discountMode === 'manual' ? 'border-brand-500 bg-brand-50/50 text-ink-950' : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+              ]"
+            >
+              <input v-model="discountMode" type="radio" value="manual" class="accent-brand-500">
+              <span class="font-semibold">Diskon manual</span>
+            </label>
+          </div>
+
+          <p v-if="discountsLoading" class="mt-3 flex items-center gap-2 text-xs text-ink-500">
+            <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+            Memeriksa promo yang berlaku…
+          </p>
+          <p v-else-if="discountsError" class="mt-3 text-xs text-brand-700">{{ discountsError }}</p>
+          <p v-else-if="subtotal > 0 && applicableDiscounts.length === 0" class="mt-3 text-xs text-ink-500">
+            Tidak ada promo yang berlaku untuk subtotal ini.
+          </p>
+
+          <div v-if="discountMode === 'master'" class="mt-3 space-y-2">
+            <label
+              v-for="d in applicableDiscounts"
+              :key="d.id"
+              :class="[
+                'flex cursor-pointer items-start justify-between gap-3 rounded-md border p-3 text-sm transition-colors',
+                selectedDiscountId === d.id ? 'border-brand-500 bg-brand-50/50 text-ink-950' : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+              ]"
+            >
+              <span class="flex items-start gap-2">
+                <input v-model="selectedDiscountId" type="radio" :value="d.id" class="mt-0.5 accent-brand-500">
+                <span>
+                  <span class="block font-semibold">{{ d.name }}</span>
+                  <span class="mt-0.5 block font-mono text-xs text-ink-500">{{ d.code }}</span>
+                </span>
+              </span>
+              <span class="shrink-0 font-medium text-brand-600">-{{ fmtIDR(d.preview_amount) }}</span>
+            </label>
+          </div>
+
+          <div v-if="discountMode === 'manual'" class="mt-3 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label for="pos-discount-amount" class="block text-sm font-medium text-ink-900">
+                Nominal diskon (Rp) <span class="text-brand-500">*</span>
+              </label>
+              <input
+                id="pos-discount-amount"
+                v-model.number="manualDiscountAmount"
+                type="number"
+                min="1"
+                :max="subtotal"
+                required
+                placeholder="10000"
+                class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+              >
+            </div>
+            <div>
+              <label for="pos-discount-note" class="block text-sm font-medium text-ink-900">
+                Alasan <span class="text-brand-500">*</span>
+              </label>
+              <input
+                id="pos-discount-note"
+                v-model="discountNote"
+                type="text"
+                required
+                placeholder="Contoh: kompensasi keterlambatan"
+                class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+              >
+            </div>
+          </div>
+        </fieldset>
+
         <!-- Notes -->
         <fieldset class="rounded-lg border border-hairline bg-canvas p-6">
           <legend class="flex items-center gap-2 px-2 -ml-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
@@ -814,6 +994,13 @@ function printStruk() {
             <div class="flex justify-between">
               <dt class="text-ink-500">Subtotal</dt>
               <dd class="text-ink-900">{{ fmtIDR(subtotal) }}</dd>
+            </div>
+            <div v-if="discountAmount > 0" class="flex justify-between">
+              <dt class="text-ink-500">
+                Diskon
+                <span v-if="discountLabelPreview" class="block max-w-[10rem] truncate text-xs text-ink-400">{{ discountLabelPreview }}</span>
+              </dt>
+              <dd class="font-medium text-brand-600">-{{ fmtIDR(discountAmount) }}</dd>
             </div>
             <div v-if="isKirim" class="flex justify-between">
               <dt class="text-ink-500">Ongkir</dt>

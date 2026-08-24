@@ -48,6 +48,11 @@ export interface Order {
   total: number
   notes?: string
   created_at: string
+  /** Diskon terpakai (CLAUDE.md §28) — snapshot pada saat order dibuat, tetap tampil walau master diskon sudah dihapus. */
+  discount_amount?: number | null
+  discount_name_snapshot?: string | null
+  discount_code_snapshot?: string | null
+  discount_note?: string | null
 }
 
 export interface OrderListResponse {

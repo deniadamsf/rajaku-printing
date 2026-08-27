@@ -55,6 +55,31 @@ func TestNormalize_Errors(t *testing.T) {
 	}
 }
 
+func TestNormalizeForSearch(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"partial leading zero, too short for Normalize", "0812345", "62812345"},
+		{"full leading zero", "081234567890", "6281234567890"},
+		{"already canonical", "6281234567890", "6281234567890"},
+		{"plus prefix", "+6281234567890", "6281234567890"},
+		{"with separators", "0812-3456-7890", "6281234567890"},
+		{"name query has separators stripped, no prefix rewrite", "Budi Santoso", "BudiSantoso"},
+		{"empty stays empty", "", ""},
+		{"dash-separated number with no recognized prefix", "812-3456-7890", "81234567890"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NormalizeForSearch(tc.in)
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMask(t *testing.T) {
 	cases := []struct {
 		name string

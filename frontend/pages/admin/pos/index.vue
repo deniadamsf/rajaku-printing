@@ -27,7 +27,9 @@ import {
   CheckCircle2,
   Loader2,
   TicketPercent,
+  Search,
 } from '@lucide/vue'
+import { onClickOutside } from '@vueuse/core'
 import type { CatalogProduct, CatalogProductDetail, CatalogQuote } from '~/types/catalog'
 import type {
   PosCreateOrderResult,
@@ -36,6 +38,7 @@ import type {
   PosMetodeAmbil,
   PosMetodeBayar,
 } from '~/types/pos'
+import type { PosCustomerSearchResult } from '~/composables/usePos'
 import type { ApplicableDiscount } from '~/types/discount'
 import { ApiError } from '~/composables/useApi'
 
@@ -83,6 +86,69 @@ const form = reactive({
 const quote = ref<CatalogQuote | null>(null)
 const quoteLoading = ref(false)
 const quoteError = ref<string | null>(null)
+
+// -------------------- pencarian pelanggan (§11) --------------------
+// WA jadi matching key lintas channel — kasir cari pelanggan yang sudah
+// pernah order (online/walk-in) supaya tidak mengetik ulang & berisiko
+// membuat identitas mendekati-duplikat. Tidak ada state "customer id
+// terpilih" yang disimpan — cukup autofill nama+WA, backend tetap
+// resolve/create customer berdasarkan nomor WA saat submit.
+const customerSearchRoot = ref<HTMLElement | null>(null)
+const customerSearchQuery = ref('')
+const customerSearchResults = ref<PosCustomerSearchResult[]>([])
+const customerSearchLoading = ref(false)
+const customerSearchError = ref<string | null>(null)
+const customerSearchOpen = ref(false)
+
+let customerSearchTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleCustomerSearch() {
+  if (customerSearchTimer) clearTimeout(customerSearchTimer)
+  const q = customerSearchQuery.value.trim()
+  if (q.length < 2) {
+    customerSearchResults.value = []
+    customerSearchError.value = null
+    customerSearchOpen.value = false
+    return
+  }
+  customerSearchTimer = setTimeout(runCustomerSearch, 400)
+}
+
+// Penjaga urutan request: pencarian di-debounce tapi tidak dijamin
+// resolve berurutan — tanpa ini, request lama yang lambat bisa menimpa
+// hasil request baru yang lebih relevan dengan isi kotak pencarian saat ini.
+let customerSearchSeq = 0
+
+async function runCustomerSearch() {
+  const q = customerSearchQuery.value.trim()
+  if (q.length < 2) return
+  const seq = ++customerSearchSeq
+  customerSearchLoading.value = true
+  customerSearchError.value = null
+  try {
+    const results = await pos.searchCustomers(q)
+    if (seq !== customerSearchSeq) return
+    customerSearchResults.value = results
+    customerSearchOpen.value = true
+  } catch (e: unknown) {
+    if (seq !== customerSearchSeq) return
+    customerSearchResults.value = []
+    customerSearchError.value = e instanceof ApiError ? e.message : 'Gagal mencari pelanggan'
+  } finally {
+    if (seq === customerSearchSeq) customerSearchLoading.value = false
+  }
+}
+
+function selectCustomer(c: PosCustomerSearchResult) {
+  form.customerName = c.name
+  form.customerPhone = c.phone
+  customerSearchQuery.value = ''
+  customerSearchResults.value = []
+  customerSearchOpen.value = false
+}
+
+onClickOutside(customerSearchRoot, () => {
+  customerSearchOpen.value = false
+})
 
 // -------------------- diskon (§28) --------------------
 type DiscountMode = 'none' | 'master' | 'manual'
@@ -323,7 +389,7 @@ async function onSubmit() {
       shipping_cost: isKirim.value ? form.shippingCost : undefined,
       metode_bayar: form.metodeBayar,
       design_source: form.designSource,
-      design_approval_mode: form.designApprovalMode,
+      design_approval_mode: form.designSource === 'request' ? form.designApprovalMode : undefined,
       design_brief: form.designBrief.trim() || undefined,
       notes: form.notes.trim() || undefined,
       discount_id: discountMode.value === 'master' ? selectedDiscountId.value : undefined,
@@ -530,6 +596,59 @@ async function printStruk() {
             <User class="h-3.5 w-3.5" :stroke-width="1.75" />
             Pelanggan
           </legend>
+
+          <div ref="customerSearchRoot" class="relative mb-4">
+            <label for="pos-customer-search" class="block text-sm font-medium text-ink-900">
+              Cari pelanggan (opsional)
+            </label>
+            <div class="relative mt-1">
+              <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" :stroke-width="1.75" />
+              <input
+                id="pos-customer-search"
+                v-model="customerSearchQuery"
+                type="text"
+                autocomplete="off"
+                placeholder="Nama atau nomor WA…"
+                class="block w-full rounded-md border border-hairline bg-canvas py-2 pl-9 pr-9 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                @input="scheduleCustomerSearch"
+                @focus="customerSearchQuery.trim().length >= 2 && (customerSearchOpen = true)"
+              >
+              <Loader2
+                v-if="customerSearchLoading"
+                class="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-ink-400"
+                :stroke-width="1.75"
+              />
+            </div>
+            <p class="mt-1 text-xs text-ink-500">
+              Ketik nama atau nomor WA pelanggan yang sudah pernah order. Kosongkan untuk membuat pelanggan baru.
+            </p>
+            <p v-if="customerSearchError" class="mt-1 text-xs text-brand-700">{{ customerSearchError }}</p>
+
+            <div
+              v-if="customerSearchOpen && customerSearchQuery.trim().length >= 2 && !customerSearchLoading && customerSearchResults.length > 0"
+              class="absolute z-10 mt-1 w-full rounded-md border border-hairline bg-canvas shadow-lg ring-1 ring-black/5"
+            >
+              <ul class="max-h-56 overflow-y-auto py-1">
+                <li v-for="c in customerSearchResults" :key="c.id">
+                  <button
+                    type="button"
+                    class="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left cursor-pointer hover:bg-canvas-alt transition-colors"
+                    @click="selectCustomer(c)"
+                  >
+                    <span class="text-sm font-medium text-ink-900">{{ c.name }}</span>
+                    <span class="text-xs font-mono text-ink-500">{{ c.phone }}</span>
+                  </button>
+                </li>
+              </ul>
+            </div>
+            <p
+              v-else-if="customerSearchOpen && customerSearchQuery.trim().length >= 2 && !customerSearchLoading && customerSearchResults.length === 0"
+              class="mt-1 text-xs text-ink-500"
+            >
+              Tidak ditemukan — akan dibuat pelanggan baru saat disimpan.
+            </p>
+          </div>
+
           <div class="grid gap-4 sm:grid-cols-2">
             <div>
               <label for="pos-name" class="block text-sm font-medium text-ink-900">
@@ -799,8 +918,11 @@ async function printStruk() {
               </div>
             </div>
 
-            <div>
+            <div v-if="form.designSource === 'request'">
               <p class="mb-2 text-sm font-medium text-ink-900">Mode approval</p>
+              <p class="-mt-1 mb-2 text-xs text-ink-500">
+                Hanya berlaku untuk "Minta desain" — desain siap cetak langsung lanjut cetak tanpa approval (§11).
+              </p>
               <div class="grid gap-2 sm:grid-cols-2">
                 <label
                   :class="[
@@ -1036,6 +1158,19 @@ async function printStruk() {
               <dt class="text-ink-500">Luas / pcs</dt>
               <dd class="text-ink-900 font-mono text-xs">{{ quote.area_m2.toFixed(2) }} m²</dd>
             </div>
+            <div
+              v-if="quote?.chargeable_m2 != null && quote?.area_m2 != null && quote.chargeable_m2 > quote.area_m2"
+              class="flex justify-between"
+            >
+              <dt class="text-ink-500">Luas dihitung (min. order)</dt>
+              <dd class="text-ink-900 font-mono text-xs">{{ quote.chargeable_m2.toFixed(2) }} m²</dd>
+            </div>
+            <p
+              v-if="quote?.chargeable_m2 != null && quote?.area_m2 != null && quote.chargeable_m2 > quote.area_m2"
+              class="text-xs text-ink-500 leading-relaxed"
+            >
+              Bahan ini punya minimum order {{ quote.chargeable_m2.toFixed(2) }} m² — harga pakai luas minimum, bukan luas aktual.
+            </p>
             <div v-if="quote?.package_label" class="flex justify-between">
               <dt class="text-ink-500">Paket</dt>
               <dd class="text-ink-900">{{ quote.package_label }}</dd>
@@ -1082,7 +1217,7 @@ async function printStruk() {
             {{ submitting ? 'Memproses…' : 'Buat pesanan' }}
           </button>
 
-          <p class="mt-3 text-[11px] text-ink-500 leading-relaxed">
+          <p class="mt-3 text-xs text-ink-500 leading-relaxed">
             Klik <strong class="text-ink-700">Buat pesanan</strong> untuk simpan order & cetak struk.
             Pelanggan dapat notifikasi WA otomatis dengan link tracking.
           </p>

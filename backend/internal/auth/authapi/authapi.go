@@ -90,4 +90,18 @@ type CustomerService interface {
 	// key. Dipakai modul notification untuk resolve nomor WA penerima dari
 	// order.customer_id. Return ErrCustomerNotFound kalau tidak ada.
 	FindByID(ctx context.Context, id uuid.UUID) (*Identity, error)
+
+	// SearchCustomers returns customers (user_type=customer, is_active=true,
+	// phone IS NOT NULL) whose name or phone contains `query` (case-insensitive
+	// substring), ordered by name. `query` shorter than 2 characters (after
+	// trimming whitespace) returns an EMPTY slice — not an error, and NOT a
+	// listing of customers; this is a search endpoint, not a list endpoint.
+	// Phone matching goes through a lenient 0/+62→62 normalization so a kasir
+	// typing the local format ("0812...") still matches rows stored canonically
+	// ("62812...", §13); name matching uses the raw query untouched. `limit` is
+	// clamped by the repository to the 1-20 range (a caller-supplied value <= 0
+	// defaults to 10). Used by POS (§11) so a kasir can find a customer who
+	// already has an identity — online or walk-in — instead of re-entering
+	// their data and creating a duplicate.
+	SearchCustomers(ctx context.Context, query string, limit int) ([]Identity, error)
 }

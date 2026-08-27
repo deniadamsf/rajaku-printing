@@ -106,6 +106,13 @@ type KasirStats struct {
 	Revenue int64     `json:"revenue"`
 }
 
+// CustomerSearchResult — satu baris hasil pencarian pelanggan existing (§11).
+type CustomerSearchResult struct {
+	ID    uuid.UUID `json:"id"`
+	Name  string    `json:"name"`
+	Phone string    `json:"phone"`
+}
+
 // ReceiptConfig — konfigurasi lebar kertas struk yang boleh dibaca staff
 // mana pun (bukan cuma kasir) untuk keperluan cetak ulang struk dari halaman
 // detail order. WidthMM adalah nilai aktif (hasil resolveReceiptWidthMM);

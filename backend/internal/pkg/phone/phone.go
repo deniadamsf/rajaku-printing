@@ -91,6 +91,34 @@ func Mask(p62 string) string {
 	return head + "****" + tail
 }
 
+// NormalizeForSearch applies the same 0/+62→62 prefix rewrite as Normalize,
+// but WITHOUT digit/length validation — meant for partial-match search
+// queries (mis. POS customer search, §11) where the kasir may still be
+// mid-typing a number ("0812" while typing, not yet a full 10-15 digit
+// number). Separators (whitespace/dash/dot/parens — see stripSeparators) are
+// ALWAYS stripped, even when the input doesn't start with 0/62/+62 — e.g. a
+// number pasted from WhatsApp as "812-3456-7890" (no leading 0/62/+, a common
+// way numbers get shared) must still come out digits-only so it can match the
+// canonically-stored phone column. This is safe for non-phone-shaped queries
+// too: the caller (user_repository.go's SearchCustomers) ONLY ever uses this
+// function's output to build the phone-matching LIKE pattern — a separate,
+// untouched copy of the raw query is used for name matching — so whatever
+// this returns for e.g. a customer's name never affects search correctness.
+func NormalizeForSearch(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	cleaned := stripSeparators(trimmed)
+	switch {
+	case strings.HasPrefix(cleaned, "+62"):
+		return "62" + cleaned[3:]
+	case strings.HasPrefix(cleaned, "62"):
+		return cleaned
+	case strings.HasPrefix(cleaned, "0"):
+		return "62" + cleaned[1:]
+	default:
+		return cleaned
+	}
+}
+
 func stripSeparators(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

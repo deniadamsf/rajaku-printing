@@ -4,6 +4,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -176,6 +177,21 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 func (h *Handler) ReceiptConfig(c *gin.Context) {
 	cfg := h.svc.ReceiptConfig(c.Request.Context())
 	httpx.OK(c, cfg)
+}
+
+// GET /admin/pos/customers/search?q=... — cari pelanggan existing by
+// nama/WA, dipakai kasir supaya tidak input ulang data pelanggan yang sudah
+// pernah order (online maupun walk-in) — nomor WA tetap matching key
+// tunggal (§11).
+func (h *Handler) SearchCustomers(c *gin.Context) {
+	q := strings.TrimSpace(c.Query("q"))
+	results, err := h.svc.SearchCustomers(c.Request.Context(), q)
+	if err != nil {
+		log.Ctx(c.Request.Context()).Error().Err(err).Msg("pos handler: search customers gagal")
+		httpx.Error(c, http.StatusInternalServerError, httpx.CodeInternal, "internal server error")
+		return
+	}
+	httpx.OK(c, results)
 }
 
 // GET /admin/pos/reconciliation?date=YYYY-MM-DD — laporan harian.

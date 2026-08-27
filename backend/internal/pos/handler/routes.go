@@ -9,6 +9,7 @@ import (
 // RegisterRoutes wires POS endpoints (semua staff-only).
 //
 //	POST /admin/pos/orders             kasir input walk-in (perm pos.create_order)
+//	GET  /admin/pos/customers/search   cari pelanggan existing by nama/WA (perm pos.create_order)
 //	GET  /admin/pos/reconciliation     laporan harian (perm pos.reconcile)
 //	GET  /admin/pos/receipt-config     lebar kertas struk aktif (semua staff)
 func (h *Handler) RegisterRoutes(v1 *gin.RouterGroup, auth authapi.Service) {
@@ -19,6 +20,8 @@ func (h *Handler) RegisterRoutes(v1 *gin.RouterGroup, auth authapi.Service) {
 	)
 	pos.POST("/orders",
 		authapi.RequirePermission("pos.create_order"), h.CreateOrder)
+	pos.GET("/customers/search",
+		authapi.RequirePermission("pos.create_order"), h.SearchCustomers)
 	pos.GET("/reconciliation",
 		authapi.RequirePermission("pos.reconcile"), h.Reconciliation)
 	// receipt-config sengaja TANPA RequirePermission tambahan (beda dari dua

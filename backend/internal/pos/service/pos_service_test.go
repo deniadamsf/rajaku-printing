@@ -99,6 +99,15 @@ func (f *fakeCustomers) ResolveOrCreateGuest(_ context.Context, ph, name string)
 func (f *fakeCustomers) FindByID(context.Context, uuid.UUID) (*authapi.Identity, error) {
 	return f.identity, f.err
 }
+func (f *fakeCustomers) SearchCustomers(context.Context, string, int) ([]authapi.Identity, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.identity == nil {
+		return []authapi.Identity{}, nil
+	}
+	return []authapi.Identity{*f.identity}, nil
+}
 
 type fakeNotifier struct {
 	calls    int
@@ -609,5 +618,52 @@ func TestCreateOrder_ShippingCostNilForPickup(t *testing.T) {
 	}
 	if *result2.ShippingCost != 0 {
 		t.Errorf("shipping_cost: want 0 got %d", *result2.ShippingCost)
+	}
+}
+
+func TestSearchCustomers_HappyPath_MapsIdentitiesToResults(t *testing.T) {
+	custID := uuid.New()
+	custs := &fakeCustomers{identity: &authapi.Identity{UserID: custID, Name: "Budi", Phone: "6281234567890"}}
+	svc := newSvc(&fakeOrderCmd{}, custs, nil, nil)
+
+	results, err := svc.SearchCustomers(context.Background(), "budi")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	if results[0].ID != custID || results[0].Name != "Budi" || results[0].Phone != "6281234567890" {
+		t.Errorf("result not mapped correctly: %+v", results[0])
+	}
+}
+
+func TestSearchCustomers_NoMatch_ReturnsEmptyNotNil(t *testing.T) {
+	custs := &fakeCustomers{identity: nil}
+	svc := newSvc(&fakeOrderCmd{}, custs, nil, nil)
+
+	results, err := svc.SearchCustomers(context.Background(), "tidak ada")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if results == nil {
+		t.Error("expected non-nil empty slice, got nil")
+	}
+	if len(results) != 0 {
+		t.Errorf("want 0 results, got %d", len(results))
+	}
+}
+
+func TestSearchCustomers_RepositoryError_WrappedAndPropagated(t *testing.T) {
+	wantErr := errors.New("db unavailable")
+	custs := &fakeCustomers{err: wantErr}
+	svc := newSvc(&fakeOrderCmd{}, custs, nil, nil)
+
+	_, err := svc.SearchCustomers(context.Background(), "budi")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("expected wrapped %v, got %v", wantErr, err)
 	}
 }

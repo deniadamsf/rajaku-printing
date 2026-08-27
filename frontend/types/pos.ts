@@ -20,7 +20,8 @@ export interface PosCreateOrderInput {
   shipping_cost?: number
   metode_bayar: PosMetodeBayar
   design_source: PosDesignSource
-  design_approval_mode: PosDesignApprovalMode
+  /** Cuma relevan kalau design_source='request' — Skenario A ("bawa desain siap cetak") tidak pernah masuk loop approval (§11). */
+  design_approval_mode?: PosDesignApprovalMode
   design_brief?: string
   notes?: string
   /** Diskon master (CLAUDE.md §28) yang dipilih kasir — mutually exclusive dengan `manual_discount_amount`. */

@@ -12,6 +12,17 @@ export interface PosReconciliationReport {
   by_kasir: Array<{ kasir_id: string; count: number; revenue: number }>
 }
 
+/**
+ * Hasil pencarian pelanggan lintas channel (§11) — WA jadi matching key,
+ * jadi pelanggan yang sama muncul satu kali walau pernah order online
+ * maupun walk-in sebelumnya.
+ */
+export interface PosCustomerSearchResult {
+  id: string
+  name: string
+  phone: string
+}
+
 export function usePos() {
   const api = useApi()
 
@@ -26,6 +37,17 @@ export function usePos() {
   }
 
   /**
+   * Cari pelanggan yang sudah pernah order (online atau walk-in) berdasarkan
+   * nama/no. WA, supaya kasir bisa autofill form alih-alih mengetik ulang dan
+   * berisiko membuat identitas mendekati-duplikat (§11 — WA = matching key).
+   */
+  function searchCustomers(q: string): Promise<PosCustomerSearchResult[]> {
+    return api.get<PosCustomerSearchResult[]>('/admin/pos/customers/search', {
+      query: { q },
+    })
+  }
+
+  /**
    * Lebar kertas struk aktif — dipakai fitur "cetak ulang struk" di halaman
    * Detail Order (lintas role, bukan cuma kasir; lihat komentar route
    * backend `pos/handler/routes.go`). Caller WAJIB menangani rejection
@@ -36,5 +58,5 @@ export function usePos() {
     return api.get<PosReceiptConfig>('/admin/pos/receipt-config')
   }
 
-  return { createOrder, reconciliation, receiptConfig }
+  return { createOrder, reconciliation, receiptConfig, searchCustomers }
 }

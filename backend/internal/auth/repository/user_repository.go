@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/rajaku-printing/backend/internal/auth/model"
+	"github.com/rajaku-printing/backend/internal/pkg/phone"
 )
 
 // gormForUpdate — row-level lock clause (`SELECT ... FOR UPDATE`), same
@@ -261,6 +263,62 @@ func (r *UserRepository) ExistsByPhone(ctx context.Context, phone string) (bool,
 	return n > 0, nil
 }
 
+// escapeLike escapes SQL LIKE/ILIKE metacharacters (`\`, `%`, `_`) in a
+// user-supplied substring so it can only ever match itself literally — e.g.
+// q="%" must not widen into "match every row" and q="08_2" must not treat
+// `_` as "any character". Pair with `ESCAPE '\'` in the query.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
+// SearchCustomers returns up to `limit` active customers (user_type=customer,
+// is_active=true, phone bukan NULL) whose name or phone contains `q`
+// (case-insensitive substring), ordered by name. `q` kosong/blank sengaja
+// mengembalikan slice kosong (bukan error, bukan daftar semua pelanggan) —
+// endpoint pencarian tidak boleh menjawab "kosongkan saja" dengan sebuah
+// listing; panjang minimum karakter yang lebih ketat dicek lagi di service
+// layer (customer_service.go).
+//
+// Filter is_active=true mengecualikan baris guest yang sudah ditombstone
+// oleh PhoneClaimService (phone_claim_service.go) — nomor WA-nya sudah
+// dilepas jadi NULL tapi `name` masih ada, jadi tanpa filter ini kasir bisa
+// memilih entri yang field WA-nya diam-diam kosong. `phone IS NOT NULL`
+// mengecualikan customer terdaftar via Google yang tidak pernah mengisi
+// nomor WA (§13) — POS wajib punya nomor WA untuk submit order, jadi
+// identitas tanpa nomor tidak pernah berguna dipilih di sini.
+//
+// Pencarian nomor WA dicocokkan lewat phone.NormalizeForSearch supaya kasir
+// yang mengetik format lokal ("0812...") tetap ketemu baris yang tersimpan
+// kanonik ("62812...", §13) — tanpa ini pencarian nomor WA (justru alasan
+// utama fitur ini ada) tidak pernah match apa pun.
+//
+// No preload — customers tidak butuh roles di konteks pencarian ini.
+func (r *UserRepository) SearchCustomers(ctx context.Context, q string, limit int) ([]model.User, error) {
+	if limit <= 0 {
+		limit = 10
+	} else if limit > 20 {
+		limit = 20
+	}
+	trimmed := strings.TrimSpace(q)
+	if trimmed == "" {
+		return nil, nil
+	}
+	nameLike := "%" + escapeLike(trimmed) + "%"
+	phoneLike := "%" + escapeLike(phone.NormalizeForSearch(trimmed)) + "%"
+
+	var items []model.User
+	if err := r.db.WithContext(ctx).Model(&model.User{}).
+		Where("user_type = ? AND is_active = ? AND phone IS NOT NULL", model.UserTypeCustomer, true).
+		Where("(name ILIKE ? ESCAPE '\\' OR phone ILIKE ? ESCAPE '\\')", nameLike, phoneLike).
+		Order("name ASC").
+		Limit(limit).
+		Find(&items).Error; err != nil {
+		return nil, fmt.Errorf("search customers: %w", err)
+	}
+	return items, nil
+}
+
 // ---- Admin-facing (§10) ----
 
 // ListStaffFilter — pagination + basic filter untuk daftar staff.
@@ -290,8 +348,8 @@ func (r *UserRepository) ListStaff(ctx context.Context, f ListStaffFilter) (*Lis
 	q := r.db.WithContext(ctx).Model(&model.User{}).
 		Where("user_type = ?", model.UserTypeStaff)
 	if f.Q != "" {
-		like := "%" + f.Q + "%"
-		q = q.Where("name ILIKE ? OR email ILIKE ? OR phone ILIKE ?", like, like, like)
+		like := "%" + escapeLike(f.Q) + "%"
+		q = q.Where("(name ILIKE ? ESCAPE '\\' OR email ILIKE ? ESCAPE '\\' OR phone ILIKE ? ESCAPE '\\')", like, like, like)
 	}
 	if f.IsActive != nil {
 		q = q.Where("is_active = ?", *f.IsActive)

@@ -303,6 +303,12 @@ func (f *fakeCustomers) FindByID(_ context.Context, _ uuid.UUID) (*authapi.Ident
 	return f.identity, nil
 }
 
+// SearchCustomers — dummy impl agar fake satisfy authapi.CustomerService.
+// Order-side tests tidak butuh perilaku ini.
+func (f *fakeCustomers) SearchCustomers(_ context.Context, _ string, _ int) ([]authapi.Identity, error) {
+	return nil, f.err
+}
+
 // ---------- helpers ----------
 
 func newQuote(productID, materialID uuid.UUID) *catalogapi.QuoteResult {

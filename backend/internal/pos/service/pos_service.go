@@ -34,6 +34,10 @@ import (
 // 000022 — roll thermal paling umum untuk kasir kecil.
 const defaultReceiptWidthMM = settingsapi.DefaultPOSReceiptWidthMM
 
+// customerSearchLimit — jumlah hasil maksimum GET /admin/pos/customers/search
+// (§11). Cukup untuk dropdown kasir tanpa perlu pagination.
+const customerSearchLimit = 10
+
 type Config struct {
 	// BaseURL untuk build tracking URL yg dikembalikan ke kasir.
 	BaseURL string
@@ -226,6 +230,20 @@ func (s *Service) ReceiptConfig(ctx context.Context) ReceiptConfig {
 		WidthMM:         s.resolveReceiptWidthMM(ctx),
 		AllowedWidthsMM: allowed,
 	}
+}
+
+// SearchCustomers — cari pelanggan existing by nama/WA (§11), dipakai layar
+// kasir supaya tidak input ulang data pelanggan yang sudah pernah order.
+func (s *Service) SearchCustomers(ctx context.Context, q string) ([]CustomerSearchResult, error) {
+	identities, err := s.customers.SearchCustomers(ctx, q, customerSearchLimit)
+	if err != nil {
+		return nil, fmt.Errorf("search customers: %w", err)
+	}
+	out := make([]CustomerSearchResult, 0, len(identities))
+	for _, id := range identities {
+		out = append(out, CustomerSearchResult{ID: id.UserID, Name: id.Name, Phone: id.Phone})
+	}
+	return out, nil
 }
 
 // ---- helpers ----

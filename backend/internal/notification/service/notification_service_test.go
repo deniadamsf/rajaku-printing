@@ -151,6 +151,9 @@ func (f *fakeCustomers) ResolveOrCreateGuest(context.Context, string, string) (*
 func (f *fakeCustomers) FindByID(context.Context, uuid.UUID) (*authapi.Identity, error) {
 	return f.identity, f.err
 }
+func (f *fakeCustomers) SearchCustomers(context.Context, string, int) ([]authapi.Identity, error) {
+	return nil, f.err
+}
 
 // ---------- tests ----------
 

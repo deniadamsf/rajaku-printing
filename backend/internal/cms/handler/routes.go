@@ -24,6 +24,8 @@ import (
 //	POST   /admin/articles/:id/archive  article.publish
 //	DELETE /admin/articles/:id          article.publish  (destructive → guarded)
 //	POST   /admin/articles/images       article.create   (upload gambar → webp)
+//	GET    /admin/articles/images/:id   article.view     (metadata gambar, JSON)
+//	PATCH  /admin/articles/images/:id   article.create   (update alt text)
 func (h *Handler) RegisterRoutes(v1, public *gin.RouterGroup, auth authapi.Service) {
 	// Public
 	public.GET("/articles", h.ListPublic)
@@ -40,6 +42,10 @@ func (h *Handler) RegisterRoutes(v1, public *gin.RouterGroup, auth authapi.Servi
 			authapi.RequirePermission("article.create"), h.CreateArticle)
 		admin.POST("/images",
 			authapi.RequirePermission("article.create"), h.UploadImage)
+		admin.GET("/images/:id",
+			authapi.RequirePermission("article.view"), h.GetImageMeta)
+		admin.PATCH("/images/:id",
+			authapi.RequirePermission("article.create"), h.UpdateImageAltText)
 		admin.GET("/:id",
 			authapi.RequirePermission("article.view"), h.GetAdmin)
 		admin.PUT("/:id",

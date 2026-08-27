@@ -37,7 +37,11 @@ func mapDomainErr(c *gin.Context, err error) {
 		errors.Is(err, cmsapi.ErrImageEmpty),
 		errors.Is(err, cmsapi.ErrImageTooLarge),
 		errors.Is(err, cmsapi.ErrImageInvalidType),
-		errors.Is(err, cmsapi.ErrImageDecodeFailed):
+		errors.Is(err, cmsapi.ErrImageDecodeFailed),
+		errors.Is(err, cmsapi.ErrInvalidSeoScore),
+		errors.Is(err, cmsapi.ErrFocusKeywordTooLong),
+		errors.Is(err, cmsapi.ErrSecondaryKeywordsTooLong),
+		errors.Is(err, cmsapi.ErrAltTextTooLong):
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, err.Error())
 	default:
 		log.Ctx(c.Request.Context()).Error().Err(err).Msg("cms handler: unmapped error")
@@ -124,6 +128,10 @@ type createArticleBody struct {
 	MetaTitle       string     `json:"meta_title"`
 	MetaDescription string     `json:"meta_description"`
 	CoverImageID    *uuid.UUID `json:"cover_image_id"`
+
+	FocusKeyword      string `json:"focus_keyword"`
+	SecondaryKeywords string `json:"secondary_keywords"`
+	SeoScore          *int   `json:"seo_score"`
 }
 
 // POST /admin/articles
@@ -139,14 +147,17 @@ func (h *Handler) CreateArticle(c *gin.Context) {
 		return
 	}
 	a, err := h.svc.CreateArticle(c.Request.Context(), service.CreateArticleInput{
-		AuthorID:        id.UserID,
-		Title:           body.Title,
-		Slug:            body.Slug,
-		Excerpt:         body.Excerpt,
-		ContentMD:       body.ContentMD,
-		MetaTitle:       body.MetaTitle,
-		MetaDescription: body.MetaDescription,
-		CoverImageID:    body.CoverImageID,
+		AuthorID:          id.UserID,
+		Title:             body.Title,
+		Slug:              body.Slug,
+		Excerpt:           body.Excerpt,
+		ContentMD:         body.ContentMD,
+		MetaTitle:         body.MetaTitle,
+		MetaDescription:   body.MetaDescription,
+		CoverImageID:      body.CoverImageID,
+		FocusKeyword:      body.FocusKeyword,
+		SecondaryKeywords: body.SecondaryKeywords,
+		SeoScore:          body.SeoScore,
 	})
 	if err != nil {
 		mapDomainErr(c, err)
@@ -165,6 +176,10 @@ type updateArticleBody struct {
 	// CoverImageID: pass uuid.Nil string ("00000000-...") untuk clear;
 	// nil = tidak diubah.
 	CoverImageID *uuid.UUID `json:"cover_image_id"`
+
+	FocusKeyword      *string `json:"focus_keyword"`
+	SecondaryKeywords *string `json:"secondary_keywords"`
+	SeoScore          *int    `json:"seo_score"`
 }
 
 // PUT /admin/articles/:id
@@ -179,14 +194,17 @@ func (h *Handler) UpdateArticle(c *gin.Context) {
 		return
 	}
 	a, err := h.svc.UpdateArticle(c.Request.Context(), service.UpdateArticleInput{
-		ID:              articleID,
-		Title:           body.Title,
-		Slug:            body.Slug,
-		Excerpt:         body.Excerpt,
-		ContentMD:       body.ContentMD,
-		MetaTitle:       body.MetaTitle,
-		MetaDescription: body.MetaDescription,
-		CoverImageID:    body.CoverImageID,
+		ID:                articleID,
+		Title:             body.Title,
+		Slug:              body.Slug,
+		Excerpt:           body.Excerpt,
+		ContentMD:         body.ContentMD,
+		MetaTitle:         body.MetaTitle,
+		MetaDescription:   body.MetaDescription,
+		CoverImageID:      body.CoverImageID,
+		FocusKeyword:      body.FocusKeyword,
+		SecondaryKeywords: body.SecondaryKeywords,
+		SeoScore:          body.SeoScore,
 	})
 	if err != nil {
 		mapDomainErr(c, err)
@@ -284,6 +302,43 @@ func (h *Handler) UploadImage(c *gin.Context) {
 		return
 	}
 	httpx.Created(c, img)
+}
+
+type updateImageAltTextBody struct {
+	AltText string `json:"alt_text"`
+}
+
+// PATCH /admin/articles/images/:id — update alt text (panel SEO editor).
+func (h *Handler) UpdateImageAltText(c *gin.Context) {
+	id, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+	var body updateImageAltTextBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "invalid json body")
+		return
+	}
+	img, err := h.svc.UpdateImageAltText(c.Request.Context(), id, body.AltText)
+	if err != nil {
+		mapDomainErr(c, err)
+		return
+	}
+	httpx.OK(c, img)
+}
+
+// GET /admin/articles/images/:id — metadata gambar (JSON, bukan file stream).
+func (h *Handler) GetImageMeta(c *gin.Context) {
+	id, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+	img, err := h.svc.GetImageMeta(c.Request.Context(), id)
+	if err != nil {
+		mapDomainErr(c, err)
+		return
+	}
+	httpx.OK(c, img)
 }
 
 // -------- helpers --------

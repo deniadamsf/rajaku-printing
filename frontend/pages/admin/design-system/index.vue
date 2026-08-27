@@ -104,6 +104,14 @@ const demoProducts = [
   { id: 'prod-4', name: 'Roll Banner (lama)', category: 'Indoor', is_active: false },
 ]
 
+// --- Editor artikel: toolbar markdown + panel SEO (dipakai /admin/artikel) ---
+const dsMarkdown = ref('## Kenapa memilih banner outdoor tahan air\n\nBanner outdoor tahan air cocok untuk...')
+const dsFocusKeyword = ref('banner outdoor tahan air')
+const dsSecondaryKeywords = ref('spanduk outdoor, banner flexi')
+const dsMetaTitle = ref('')
+const dsMetaDescription = ref('')
+const dsSeoScore = ref(0)
+
 // --- Interactive badge sample ---
 const badgeStates = [
   { label: 'draft', tone: 'amber' },
@@ -942,6 +950,38 @@ function onDemoOtpInput(e: Event) {
       <p class="mt-3 text-xs text-ink-500">
         Contoh hidupnya ada di puncak halaman publik — garis tipis di atas navbar yang memanjang saat halaman digulir.
       </p>
+    </section>
+
+    <!-- ================================= Editor artikel ================================= -->
+    <section id="article-editor" class="mb-16 scroll-mt-20">
+      <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Editor artikel — toolbar markdown &amp; panel SEO</h2>
+      <p class="mt-2 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        Dipakai di <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/artikel/[id]</code> dan
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/artikel/new</code>. Toolbar
+        (<code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">AdminMarkdownToolbar</code>) memanipulasi
+        teks lewat seleksi textarea langsung — heading/bold/italic/list/quote/link/gambar. Panel SEO
+        (<code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">AdminSeoPanel</code>) menghitung skor 0-100
+        dari 12 pengecekan gaya Rank Math, murni client-side lewat
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">useSeoAnalysis()</code>.
+      </p>
+
+      <div class="mt-6 grid gap-6 lg:grid-cols-3">
+        <div class="lg:col-span-2">
+          <label class="text-sm font-medium text-ink-900">Konten (Markdown)</label>
+          <AdminMarkdownToolbar v-model="dsMarkdown" :rows="8" />
+        </div>
+        <AdminSeoPanel
+          v-model:focus-keyword="dsFocusKeyword"
+          v-model:secondary-keywords="dsSecondaryKeywords"
+          v-model:meta-title="dsMetaTitle"
+          v-model:meta-description="dsMetaDescription"
+          title="Panduan Memilih Banner Outdoor"
+          slug="panduan-memilih-banner-outdoor"
+          :content-md="dsMarkdown"
+          cover-alt-text="Contoh banner outdoor terpasang di toko"
+          @update:score="dsSeoScore = $event"
+        />
+      </div>
     </section>
 
     <div class="rounded-lg border border-gold-200 bg-gold-50 p-4 text-xs text-gold-900 leading-relaxed">

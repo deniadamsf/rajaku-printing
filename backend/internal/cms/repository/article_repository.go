@@ -49,6 +49,11 @@ type UpdateArticleParams struct {
 	CoverImageID    *uuid.UUID // nil = tidak diubah; *uuid.Nil = clear (unset)
 	MetaTitle       *string
 	MetaDescription *string
+
+	// SEO panel — nil = tidak diubah.
+	FocusKeyword      *string
+	SecondaryKeywords *string
+	SeoScore          *int
 }
 
 // UpdateArticle applies patch fields. Slug conflict → ErrSlugTaken.
@@ -78,6 +83,15 @@ func (r *Repository) UpdateArticle(ctx context.Context, p UpdateArticleParams) e
 	}
 	if p.MetaDescription != nil {
 		updates["meta_description"] = strPtrOrNil(*p.MetaDescription)
+	}
+	if p.FocusKeyword != nil {
+		updates["focus_keyword"] = strPtrOrNil(*p.FocusKeyword)
+	}
+	if p.SecondaryKeywords != nil {
+		updates["secondary_keywords"] = strPtrOrNil(*p.SecondaryKeywords)
+	}
+	if p.SeoScore != nil {
+		updates["seo_score"] = *p.SeoScore
 	}
 	res := r.db.WithContext(ctx).
 		Model(&model.Article{}).
@@ -230,6 +244,21 @@ func (r *Repository) AttachImageToArticle(ctx context.Context, imageID, articleI
 		Update("article_id", articleID)
 	if res.Error != nil {
 		return fmt.Errorf("attach image to article: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateImageAltText patches alt_text pada satu row article_images.
+func (r *Repository) UpdateImageAltText(ctx context.Context, id uuid.UUID, altText string) error {
+	res := r.db.WithContext(ctx).
+		Model(&model.ArticleImage{}).
+		Where("id = ?", id).
+		Update("alt_text", strPtrOrNil(altText))
+	if res.Error != nil {
+		return fmt.Errorf("update image alt_text: %w", res.Error)
 	}
 	if res.RowsAffected == 0 {
 		return ErrNotFound

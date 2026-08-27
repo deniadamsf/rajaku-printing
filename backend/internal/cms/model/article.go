@@ -28,6 +28,12 @@ type Article struct {
 	MetaTitle       *string `gorm:"size:200" json:"meta_title,omitempty"`
 	MetaDescription *string `gorm:"size:320" json:"meta_description,omitempty"`
 
+	// SEO panel ala Rank Math (§ CMS editor upgrade). SeoScore dihitung
+	// client-side (TypeScript), backend hanya menyimpan & memvalidasi 0-100.
+	FocusKeyword      *string `gorm:"size:100" json:"focus_keyword,omitempty"`
+	SecondaryKeywords *string `gorm:"size:300" json:"secondary_keywords,omitempty"`
+	SeoScore          *int16  `gorm:"column:seo_score" json:"seo_score,omitempty"`
+
 	Status      Status     `gorm:"size:20;not null;default:draft" json:"status"`
 	PublishedAt *time.Time `                                       json:"published_at,omitempty"`
 

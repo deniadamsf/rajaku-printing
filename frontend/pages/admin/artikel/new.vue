@@ -17,6 +17,9 @@ const form = reactive({
   content_md: '',
   meta_title: '',
   meta_description: '',
+  focus_keyword: '',
+  secondary_keywords: '',
+  seo_score: null as number | null,
 })
 
 const submitting = ref(false)
@@ -44,6 +47,9 @@ async function onSubmit() {
       content_md: form.content_md,
       meta_title: form.meta_title || undefined,
       meta_description: form.meta_description || undefined,
+      focus_keyword: form.focus_keyword || undefined,
+      secondary_keywords: form.secondary_keywords || undefined,
+      seo_score: form.seo_score,
     })
     await navigateTo(`/admin/artikel/${created.id}`)
   } catch (e: unknown) {
@@ -107,37 +113,20 @@ async function onSubmit() {
           Konten (Markdown)
           <span class="text-brand-500">*</span>
         </label>
-        <textarea
-          v-model="form.content_md"
-          rows="10"
-          required
-          class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm font-mono placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-          placeholder="# Judul&#10;&#10;Body markdown…"
-        />
+        <AdminMarkdownToolbar v-model="form.content_md" :rows="10" />
       </div>
 
-      <details class="rounded-lg border border-hairline bg-canvas p-4">
-        <summary class="cursor-pointer text-sm font-medium text-ink-900">SEO override (opsional)</summary>
-        <div class="mt-4 space-y-4">
-          <BaseInput
-            id="meta_title"
-            v-model="form.meta_title"
-            label="Meta title (override <title>)"
-            placeholder="Default: judul artikel"
-          />
-          <div>
-            <label class="text-sm font-medium text-ink-900">Meta description</label>
-            <textarea
-              v-model="form.meta_description"
-              rows="2"
-              maxlength="320"
-              class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-              placeholder="Default: excerpt"
-            />
-            <p class="mt-1 text-xs text-ink-500">{{ form.meta_description.length }} / 320 karakter</p>
-          </div>
-        </div>
-      </details>
+      <AdminSeoPanel
+        v-model:focus-keyword="form.focus_keyword"
+        v-model:secondary-keywords="form.secondary_keywords"
+        v-model:meta-title="form.meta_title"
+        v-model:meta-description="form.meta_description"
+        :title="form.title"
+        :slug="form.slug"
+        :content-md="form.content_md"
+        cover-alt-text=""
+        @update:score="form.seo_score = $event"
+      />
 
       <div class="flex items-center gap-3 pt-2">
         <button

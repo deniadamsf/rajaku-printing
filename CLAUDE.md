@@ -925,8 +925,11 @@ Cara mengembalikan BOM ada di `services/print-agent/README.md`.
 ### 29.4. Batas yang diketahui
 
 - Hanya Windows (System.Drawing + port COM lewat `CreateFile`).
-- Harus dipasang di **setiap** komputer kasir; belum ada pemasangan otomatis
-  saat boot. Panduan pemasangan printer + driver ada di README servisnya.
+- Harus dipasang di **setiap** komputer kasir. Sejak `pasang-otomatis.ps1`
+  (27 Agustus 2026), pendaftaran cukup sekali per komputer — agen otomatis
+  jalan tersembunyi saat login & pulih sendiri kalau crash (Scheduled Task,
+  trigger AtLogOn + pengecekan tiap 1 menit), tidak perlu dijalankan manual
+  tiap hari lagi. Panduan pemasangan printer + driver ada di README servisnya.
 - Tanpa autentikasi — aman karena hanya mendengarkan `127.0.0.1`, tapi siapa
   pun yang bisa menjalankan kode di mesin itu bisa mencetak.
 - Terikat ke satu printer per agen (satu `-ComPort`).

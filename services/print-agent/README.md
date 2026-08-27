@@ -29,9 +29,23 @@ batang uji lewat `ESC *` keluar utuh, lewat `GS v 0` keluar cacat.
 
 ## Menjalankan
 
+Manual (jendela harus dibiarkan terbuka — menutupnya = cetak balik ke jalur
+driver lama yang rusak):
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File print-agent.ps1
 ```
+
+Otomatis saat komputer nyala/login, tersembunyi, auto-pulih kalau crash —
+sekali daftar per komputer kasir, lalu tidak perlu dijalankan manual lagi:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File pasang-otomatis.ps1
+```
+
+Jalankan sebagai Administrator (mendaftarkan Scheduled Task butuh hak admin;
+agennya sendiri tetap jalan sebagai user biasa setelahnya). Lihat komentar di
+`pasang-otomatis.ps1` untuk cara membatalkan & lokasi file log.
 
 Parameter (semua opsional):
 
@@ -117,8 +131,9 @@ baris stderr program native jadi ErrorRecord yang mematikan skrip.
 ## Batasan yang diketahui
 
 - Hanya Windows (System.Drawing + port COM lewat `CreateFile`).
-- Harus jalan di setiap komputer kasir yang mencetak; belum ada pemasangan
-  otomatis saat boot.
+- Harus dipasang & didaftarkan (`pasang-otomatis.ps1`) satu kali di **setiap**
+  komputer kasir yang mencetak — pendaftarannya tidak menyebar sendiri ke
+  komputer lain.
 - Belum ada autentikasi. Aman karena hanya mendengarkan di `127.0.0.1`, tapi
   siapa pun yang bisa menjalankan kode di mesin itu bisa mencetak.
 - Kabel USB EP8081 hanya mengisi daya; sambungan data selalu Bluetooth.

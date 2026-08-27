@@ -38,6 +38,15 @@ Modul terpisah (masing-masing punya service/route sendiri, komunikasi via intern
 
 > Rekap order (§28.5) **tidak** jadi modul sendiri — ia laporan baca-saja di atas tabel `orders`, jadi tinggal di modul `order` (`repository.Recap` → `service.RecapOrders` → `GET /admin/orders/recap`). Bikin modul `report` terpisah malah memaksa cross-module read ke internal `order`, yang dilarang §22.
 
+**Servis di luar monolit** (bukan modul Go, punya proses sendiri):
+
+| Servis | Bahasa | Jalan di mana | Guna |
+|---|---|---|---|
+| `services/notification-worker` | Node.js | Server | Kirim WA via Baileys (§13) |
+| `services/print-agent` | PowerShell | **Komputer kasir** | Cetak struk thermal via ESC/POS (§29) |
+
+`print-agent` berbeda dari yang lain: ia **tidak jalan di server**, melainkan di tiap mesin kasir, karena browser tidak bisa menulis ke port COM dan printernya tersambung ke mesin itu. Backend Go tidak pernah memanggilnya — yang memanggil adalah halaman POS di browser, lewat `http://127.0.0.1:9110`.
+
 ## 4. Order State Machine
 ```
 order_masuk
@@ -125,7 +134,7 @@ Flow dijalankan murni dari layar perangkat kasir (staff), didesain supaya pelang
 - Laporan rekonsiliasi harian: total order per kasir, breakdown metode bayar.
 
 ## 12. Nota & Invoice
-- **Thermal printer** (58mm/80mm): mulai dari `window.print()` + CSS `@media print` layout struk (MVP). ESC/POS native (`node-thermal-printer` atau raw command dari Go) — **tahap 2** kalau volume transaksi tinggi.
+- **Thermal printer** (58mm/80mm): `window.print()` + CSS `@media print` **tidak lagi jadi jalur cetak utama** untuk struk — lihat **§29**. Ia tetap ada sebagai jalur untuk printer non-thermal (cetak ke PDF/laser) dan sebagai cadangan saat Print Agent mati. Struk ke printer thermal dikirim sebagai ESC/POS `ESC *` lewat `services/print-agent`.
 - **Invoice online**: generate PDF dari data order, bisa didownload dari halaman lacak resi, dan/atau dikirim via WA.
 - Satu struktur data invoice → dua template render (struk ringkas vs PDF A4 lengkap).
 - **Auto-send**: invoice PDF otomatis dikirim ke WA pelanggan (link download, bukan attachment langsung — lebih ringan & reliable via Baileys) setiap kali invoice ter-generate/update. Butuh nomor format `62xxx` (lihat section 13) supaya link `wa.me` valid.
@@ -270,6 +279,8 @@ Selain skill yang sudah kamu punya (`ui-ux-pro-max`, sudah disesuaikan ke Vue), 
 ## 24. Status Keputusan
 Tidak ada lagi item TBD terbuka. Seluruh keputusan arsitektur & fitur (section 1-23) sudah final per tanggal dokumen ini disepakati. Spec ini siap dijadikan acuan penuh untuk mulai development.
 
+> **Addendum (2026-08-27):** Section 29 (Cetak Struk Thermal) ditambahkan, dan §12 direvisi. `window.print()` **bukan lagi** jalur cetak struk ke printer thermal — keputusan ini berbasis bukti byte-level, bukan preferensi. Baca §29 sebelum menyentuh apa pun yang berhubungan dengan cetak struk.
+>
 > **Addendum (2026-08-24):** Section 28 (Modul Diskon & Rekap Order) ditambahkan. Aturan snapshot di §28.2 **binding** — setiap perhitungan uang yang menyentuh diskon wajib membaca kolom snapshot di `orders`, bukan JOIN ke tabel `discounts`.
 >
 > **Addendum (2026-08-12):** Section 26 (Design Language) ditambahkan setelah spec awal. Semua UI baru **wajib** patuh; UI yang sudah terlanjur dibuat pakai palet Tailwind default (rose/slate + emoji) di-mark sebagai drift dan refactor bertahap.
@@ -814,3 +825,113 @@ tidaknya sebuah diskon dipakai**, bukan cara pencatatannya — jadi jaminan
 
 Cakupan per **bahan** (`material_id`) sengaja belum dibuat — kalau nanti
 dibutuhkan, polanya sama persis (`discount_materials` + satu sentinel lagi).
+
+## 29. Cetak Struk Thermal — Print Agent (27 Agustus 2026)
+
+Menggantikan asumsi awal di §12 bahwa struk cukup dicetak dengan
+`window.print()` + CSS `@media print`. Asumsi itu **salah untuk printer
+thermal yang dipakai toko**, dan kesalahannya bukan di CSS.
+
+### 29.1. Kenapa `window.print()` tidak bisa dipakai
+
+Printer nota: **EPPOS EP8081**, portable 80mm, nama Bluetooth `RPP02`,
+tersambung lewat serial Bluetooth (`COM3`). Port USB-nya **hanya mengisi
+daya** — ia tidak pernah muncul sebagai perangkat printer USB.
+
+Dengan mencetak ke port berkas lalu membedah byte yang dihasilkan driver
+Windows (POS-80 11.3.0.1), ketahuan polanya:
+
+```
+56x  GS v 0 raster 72 byte x 24 BARIS     <- blok data setinggi 24 baris
+56x  ESC J maju 21 TITIK                  <- kertas hanya maju 21 titik
+```
+
+Driver mencetak blok setinggi 24 baris lalu memajukan kertas 21 titik.
+Selisih 3 titik per blok, menumpuk 56 kali dalam satu struk. Blok raster
+saling tindih, printer kehilangan sinkronisasi, dan sisa data tercetak
+sebagai karakter acak (`þ Å ù °`). Angka 21 bukan kebetulan:
+24 × (180/203) ≈ 21 — driver menghitung jarak maju pada 180 dpi sementara
+data rasternya 203 dpi.
+
+Karena browser menyerahkan seluruh cetakan ke driver ini, **tidak ada CSS
+atau `@page` yang bisa memperbaikinya**. Uji terpisah mengonfirmasi: batang
+uji lewat `ESC *` keluar utuh, lewat `GS v 0` keluar cacat.
+
+Jangan mengulang jalan buntu yang sudah dicoba dan terbukti tidak menolong:
+mematikan `ESC p` (laci kasir) & `ESC B` (buzzer), memperlambat laju kirim,
+dan mengubah setelan kertas di driver. Ketiganya bukan penyebabnya.
+
+### 29.2. Jalur yang dipakai
+
+`services/print-agent/print-agent.ps1` — proses kecil yang jalan di **komputer
+kasir**, bukan di server. PowerShell murni: `System.Drawing` untuk raster,
+`CreateFile`/`WriteFile` untuk port COM, Chrome/Edge headless untuk render.
+Tidak ada `npm install`.
+
+```
+Halaman POS (browser)
+   └─ POST http://127.0.0.1:9110/print  { html, width_mm }
+        └─ print-agent
+             ├─ tanam setiap <img> jadi data URI
+             ├─ render via Chrome headless -> PNG
+             ├─ pangkas ruang putih bawah
+             └─ ESC * mode 33 + ESC 3 24 -> tulis ke COM
+```
+
+Kunci perbaikannya: `ESC 3 24` menyetel spasi baris **persis sama** dengan
+tinggi data tiap strip (24 titik), jadi tidak pernah melenceng seperti
+`ESC J 21` milik driver.
+
+Frontend memanggilnya lewat composable `useThermalPrint()`. Alamat agen
+dibaca dari `runtimeConfig.public.printAgentUrl` (§2 — dilarang hardcode).
+
+**`window.print()` TIDAK dihapus.** Ia tetap jalur untuk printer non-thermal
+dan cadangan saat agen mati. Perilaku wajib di kedua halaman cetak
+(`/admin/pos` dan `/admin/order/[resi]`): cek agen dulu → kalau hidup pakai
+agen → kalau mati atau gagal, jatuh balik ke `window.print()` **disertai
+peringatan terlihat** bahwa hasil cetak thermal bisa rusak. Jatuh balik
+diam-diam dilarang (§22).
+
+### 29.3. Aturan yang tidak boleh dilanggar
+
+**Gambar struk tidak disimpan.** Dibuat saat diminta, dikirim, lalu dibuang.
+Tidak masuk database, tidak menetap di disk — keputusan pemilik proyek untuk
+menghemat kapasitas VPS (sejalan §19).
+
+**Lebar viewport render dalam piksel CSS, bukan titik printer.** Struk
+lebarnya `80mm` = 302 px CSS; kertas 80mm = 576 titik cetak. Menyamakan
+keduanya membuat struk hanya mengisi separuh kiri kertas. Render di 302 px
+lalu perbesar `576/302 = 1.9x`.
+
+**Ambang hitam-putih wajib dua nilai**, bukan satu: teks ~175 (agar tebal &
+terbaca), logo ~100 (agar garis putih halus di dalamnya tidak tertelan jadi
+blok hitam). Satu nilai tidak bisa melayani keduanya.
+
+**Gambar ditanam sebagai data URI sebelum render.** Dengan `--screenshot`,
+Chrome memotret sebelum `<img>` selesai diunduh, sehingga logo keluar sebagai
+ikon rusak. Memperpanjang waktu tunggu hanya memindahkan taruhan; menanam
+gambarnya menghapus balapan waktu itu.
+
+**Lebar kertas tidak boleh ditebak.** `pos.receipt_width_mm` dibaca dari
+setting; kalau gagal dibaca, **tolak mencetak** dan tampilkan kesalahannya —
+jangan diam-diam memakai 58. Kertas thermal yang sudah tercetak tidak bisa
+ditarik kembali.
+
+**Berkas `.ps1` wajib UTF-8 dengan BOM.** PowerShell 5.1 membaca `.ps1` tanpa
+BOM sebagai ANSI; em-dash `—` jadi `â€”`, dan byte `0x94` adalah kutip-tutup
+pintar yang menutup string lebih awal sehingga seluruh skrip gagal di-parse.
+Cara mengembalikan BOM ada di `services/print-agent/README.md`.
+
+### 29.4. Batas yang diketahui
+
+- Hanya Windows (System.Drawing + port COM lewat `CreateFile`).
+- Harus dipasang di **setiap** komputer kasir; belum ada pemasangan otomatis
+  saat boot. Panduan pemasangan printer + driver ada di README servisnya.
+- Tanpa autentikasi — aman karena hanya mendengarkan `127.0.0.1`, tapi siapa
+  pun yang bisa menjalankan kode di mesin itu bisa mencetak.
+- Terikat ke satu printer per agen (satu `-ComPort`).
+
+Kalau suatu saat toko memakai printer thermal yang `GS v 0`-nya benar
+(mis. printer meja Rongta/Xprinter), jalur `window.print()` cukup untuk
+printer itu dan agen tidak diperlukan — batasan di §29.1 spesifik ke firmware
+RPP02, bukan ke semua printer thermal.

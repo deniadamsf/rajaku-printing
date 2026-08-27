@@ -747,6 +747,19 @@ function resetForm() {
                 <dt class="text-ink-500">Luas / pcs</dt>
                 <dd class="text-ink-900 font-mono text-xs">{{ quote.area_m2.toFixed(2) }} m²</dd>
               </div>
+              <div
+                v-if="quote?.chargeable_m2 != null && quote?.area_m2 != null && quote.chargeable_m2 > quote.area_m2"
+                class="flex justify-between"
+              >
+                <dt class="text-ink-500">Luas dihitung (min. order)</dt>
+                <dd class="text-ink-900 font-mono text-xs">{{ quote.chargeable_m2.toFixed(2) }} m²</dd>
+              </div>
+              <p
+                v-if="quote?.chargeable_m2 != null && quote?.area_m2 != null && quote.chargeable_m2 > quote.area_m2"
+                class="text-xs text-ink-500 leading-relaxed"
+              >
+                Bahan ini punya minimum order {{ quote.chargeable_m2.toFixed(2) }} m² — harga dihitung dari luas minimum, bukan luas aktual pesanan.
+              </p>
               <div class="flex justify-between border-t border-hairline pt-2 mt-1">
                 <dt class="text-ink-500">Harga / pcs</dt>
                 <dd class="text-ink-900">
@@ -782,7 +795,7 @@ function resetForm() {
               {{ submitting ? 'Mengirim…' : 'Kirim pesanan' }}
             </button>
 
-            <p class="mt-3 text-[11px] text-ink-500 leading-relaxed">
+            <p class="mt-3 text-xs text-ink-500 leading-relaxed">
               Dengan mengirim, Anda setuju admin menghubungi via WhatsApp untuk konfirmasi & pembayaran.
             </p>
           </div>

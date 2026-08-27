@@ -193,17 +193,40 @@ onMounted(async () => {
 // -------------------- cetak ulang struk (§12) --------------------
 /**
  * Lebar kertas struk aktif, dipakai `ReceiptStruk` untuk `@page` dinamis.
- * Fallback 58mm kalau endpoint config gagal/belum tersedia — kegagalan di
- * sini TIDAK BOLEH menggagalkan render halaman detail order, cuma fitur
- * cetak ulang yang terdampak (tetap jalan, cuma pakai default).
+ *
+ * `null` = BELUM DIKETAHUI, sengaja BUKAN default diam-diam ke 58mm. Kalau
+ * request config ini gagal dan kita tebak 58mm, staff bisa mencetak struk di
+ * lebar kertas yang SALAH tanpa peringatan apa pun — dan kertas thermal yang
+ * sudah tercetak tidak bisa ditarik kembali (§22 CLAUDE.md: dilarang gagal
+ * diam-diam). Jangan "sederhanakan" ini balik jadi `ref<58 | 80>(58)` —
+ * itu justru bug yang sedang diperbaiki. Selama nilainya `null`, tombol
+ * "Cetak struk" DIHARUSKAN disabled (lihat template) dan `printStruk()`
+ * punya jaring pengaman `return` kalau tetap terpicu.
  */
-const receiptWidthMm = ref<58 | 80>(58)
+const receiptWidthMm = ref<58 | 80 | null>(null)
+// true kalau request (+ satu kali retry) gagal — dipakai menampilkan pesan
+// & tombol "Coba lagi" di dekat tombol cetak, bukan cuma console.error yang
+// tak pernah dibaca kasir.
+const receiptConfigFailed = ref(false)
+
 async function loadReceiptConfig() {
+  receiptConfigFailed.value = false
+  try {
+    const cfg = await pos.receiptConfig()
+    receiptWidthMm.value = cfg.width_mm === 80 ? 80 : 58
+    return
+  } catch (e) {
+    console.error('Gagal memuat receipt-config, mencoba ulang sekali…', e)
+  }
+  // Kegagalan jaringan sesaat tidak perlu langsung memblokir kasir — coba
+  // sekali lagi setelah jeda singkat sebelum benar-benar menyerah.
+  await new Promise((resolve) => setTimeout(resolve, 800))
   try {
     const cfg = await pos.receiptConfig()
     receiptWidthMm.value = cfg.width_mm === 80 ? 80 : 58
   } catch (e) {
-    console.error('Gagal memuat receipt-config, pakai default 58mm', e)
+    console.error('Gagal memuat receipt-config setelah retry — cetak struk dinonaktifkan', e)
+    receiptConfigFailed.value = true
   }
 }
 
@@ -267,11 +290,18 @@ const receiptRef = ref<{ printNow: () => Promise<void> } | null>(null)
 
 /**
  * Urutan wajib: mount komponen dulu (`receiptMounted = true`), tunggu DOM
- * ter-patch (`nextTick()`) supaya `receiptRef` sudah terisi, BARU panggil
- * `printNow()` lewat ref itu. `printNow()` sendiri yang menangani sisa
- * detail teknis pencetakan (teleport ke `<body>`, timing `window.print()`,
- * lihat `ReceiptStruk.vue`) — halaman ini tidak perlu tahu-menahu lagi soal
- * itu, cukup pastikan komponennya sudah ter-mount sebelum minta cetak.
+ * ter-patch (`nextTick()`) supaya `receiptRef`/`#struk` sudah terisi, BARU
+ * coba cetak. Dua jalur cetak (§ useThermalPrint.ts):
+ *
+ *   1. Print Agent lokal (`services/print-agent`) — jalur UTAMA untuk printer
+ *      thermal EPPOS EP8081/RPP02. `window.print()` TERBUKTI merusak struk di
+ *      printer itu (lihat README print-agent), jadi kalau agennya hidup, ini
+ *      yang dipakai.
+ *   2. `window.print()` lewat `ReceiptStruk.printNow()` — jalur CADANGAN,
+ *      dipakai kalau agen mati atau gagal mencetak. `printNow()` menangani
+ *      detail teknis pencetakan (teleport ke `<body>`, timing `window.print()`,
+ *      lihat `ReceiptStruk.vue`) — halaman ini tidak perlu tahu-menahu lagi
+ *      soal itu.
  *
  * Dulu di sini ada loop verifikasi manual (`waitForReceiptReady`, dua rAF +
  * polling `document.getElementById('struk')`) karena isolasi cetak lama
@@ -281,15 +311,38 @@ const receiptRef = ref<{ printNow: () => Promise<void> } | null>(null)
  * (teleport + `nextTick()` sebelum `window.print()`), jadi cukup `nextTick()`
  * biasa di sini untuk menunggu komponennya mount.
  */
+const thermalPrint = useThermalPrint()
+
 async function printStruk() {
+  // Jaring pengaman kalau tombol tetap terpicu (mis. race kondisi disabled
+  // belum ter-render): lebar kertas belum diketahui = jangan cetak sama
+  // sekali, daripada menebak dan salah ukuran (lihat komentar `receiptWidthMm`).
+  if (receiptWidthMm.value === null) return
+  const widthMm = receiptWidthMm.value
   receiptMounted.value = true
   await nextTick()
   try {
+    if (await thermalPrint.isAgentAvailable()) {
+      try {
+        await thermalPrint.printViaAgent(widthMm)
+        showSuccess('Struk terkirim ke printer.')
+        return
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'Gagal mencetak lewat Print Agent.'
+        errorMsg.value = `Print Agent aktif tapi gagal mencetak (${msg}). Dialihkan ke cetak biasa — hasil bisa rusak di printer thermal.`
+        await receiptRef.value?.printNow()
+        return
+      }
+    }
+    errorMsg.value =
+      'Print Agent cetak thermal tidak aktif di komputer ini. Dialihkan ke cetak biasa — hasil cetak BISA RUSAK pada printer thermal EPPOS. Jalankan print-agent.ps1 lalu coba lagi.'
     await receiptRef.value?.printNow()
   } finally {
     // window.print() memblokir sampai dialog ditutup di sebagian besar
     // browser, tapi tidak dijamin — `finally` + afterprint dua-duanya
-    // dipasang supaya struk tidak pernah tertinggal ter-mount.
+    // dipasang supaya struk tidak pernah tertinggal ter-mount. Ini juga
+    // menutup jalur Print Agent (return awal di atas tetap melewati blok
+    // finally ini), jadi struk selalu di-unmount lagi setelah selesai.
     receiptMounted.value = false
   }
 }
@@ -681,7 +734,9 @@ function waLink(phone: string): string {
         <button
           v-if="order"
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+          :disabled="receiptWidthMm === null"
+          :title="receiptWidthMm === null ? 'Lebar kertas struk belum diketahui — cetak dinonaktifkan agar tidak salah ukuran.' : undefined"
+          class="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-canvas disabled:hover:border-hairline"
           @click="printStruk"
         >
           <Printer class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -745,6 +800,21 @@ function waLink(phone: string): string {
     >
       <AlertTriangle class="h-3.5 w-3.5 flex-none mt-0.5 text-ink-400" :stroke-width="1.75" />
       {{ deleteDisabledReason }}
+    </p>
+
+    <p
+      v-if="order && receiptConfigFailed"
+      class="mb-4 flex items-center gap-2 rounded-md border border-hairline bg-canvas-alt/60 px-3 py-2 text-xs text-ink-500 leading-relaxed"
+    >
+      <AlertTriangle class="h-3.5 w-3.5 flex-none text-ink-400" :stroke-width="1.75" />
+      Lebar kertas struk gagal dimuat. Cetak struk dinonaktifkan agar tidak salah ukuran.
+      <button
+        type="button"
+        class="font-medium text-brand-600 hover:text-brand-700 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+        @click="loadReceiptConfig"
+      >
+        Coba lagi
+      </button>
     </p>
 
     <AlertMessage v-if="errorMsg" variant="error" :message="errorMsg" class="mb-4" />
@@ -1215,7 +1285,16 @@ function waLink(phone: string): string {
          sudah sepenuhnya ditangani ReceiptStruk sendiri (`display: none`
          pada saudara `#struk-print-root` di `<body>`), jadi kelas ini cuma
          jaring pengaman kalau suatu saat komponennya sempat dirender di sini
-         sebelum teleport aktif. -->
+         sebelum teleport aktif.
+
+         Soal `:width-mm="receiptWidthMm ?? 58"` di bawah: `receiptMounted`
+         hanya pernah di-set `true` oleh `printStruk()`, dan `printStruk()`
+         `return` lebih dulu kalau `receiptWidthMm` masih `null` — jadi blok
+         ini tidak akan pernah benar-benar ter-render selagi lebar kertas
+         belum diketahui. `?? 58` di sini murni supaya `vue-tsc` puas (prop
+         `AdminReceiptStruk` bertipe `58 | 80`, bukan `58 | 80 | null`),
+         BUKAN jalur tebak-lebar yang sesungguhnya dipakai — itu sudah
+         diblok di level pemicu (tombol disabled + guard di `printStruk`). -->
     <div v-if="order && receiptMounted" class="hidden print:block">
       <AdminReceiptStruk
         ref="receiptRef"
@@ -1238,7 +1317,7 @@ function waLink(phone: string): string {
         :metode-bayar="order.metode_bayar ?? '-'"
         :tracking-url="trackingUrl"
         :is-paid="orderIsPaid"
-        :width-mm="receiptWidthMm"
+        :width-mm="receiptWidthMm ?? 58"
       />
     </div>
 

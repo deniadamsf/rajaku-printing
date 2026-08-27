@@ -22,6 +22,7 @@ export type OrderChannel = 'online' | 'pos'
 export type MetodeAmbil = 'pickup' | 'kirim'
 export type MetodeBayar = 'transfer' | 'qris' | 'cash' | 'qris_pos'
 export type DesignSource = 'upload' | 'request'
+export type DesignApprovalMode = 'instant_walkin' | 'async_notify'
 export type PricingType = 'per_m2' | 'paket'
 
 export interface Order {
@@ -44,6 +45,8 @@ export interface Order {
   shipping_recipient_phone?: string
   metode_bayar?: MetodeBayar | string
   design_source: DesignSource | string
+  /** Cuma terisi kalau design_source='request' (§11 Skenario B) — Skenario A tidak pernah punya mode approval. */
+  design_approval_mode?: DesignApprovalMode | string | null
   design_brief?: string
   total: number
   notes?: string

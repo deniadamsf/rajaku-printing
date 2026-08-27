@@ -9,8 +9,11 @@
  *     desain_dikerjakan, menunggu_approval_desain] → form upload draft
  *     (perm design.work). Auto-advance backend ke desain_dikerjakan /
  *     menunggu_approval_desain.
- *   - Walk-in Approve: kalau channel=pos, status=desain_dikerjakan → tombol
- *     shortcut (perm design.approve). Backend enforce channel+mode di service.
+ *   - Walk-in Approve: kalau channel=pos, status=desain_dikerjakan, DAN
+ *     design_approval_mode=instant_walkin → tombol shortcut (perm
+ *     design.approve). Order request yang dipilih "Follow-up via WA" saat
+ *     dibuat TIDAK dapat tombol ini — approve-nya lewat loop
+ *     menunggu_approval_desain standar. Backend enforce ulang di service.
  *   - Skip Upload: kalau channel=pos, design_source=upload, status=dibayar,
  *     dan BELUM ada file customer_upload → tombol "Lewati Upload — Langsung
  *     Cetak" (perm design.approve). Untuk walk-in yang bawa desain siap
@@ -94,7 +97,8 @@ const canWalkinApprove = computed(
   () =>
     canApprove.value &&
     order.value?.channel === 'pos' &&
-    order.value?.status === 'desain_dikerjakan',
+    order.value?.status === 'desain_dikerjakan' &&
+    order.value?.design_approval_mode === 'instant_walkin',
 )
 const canSkipUpload = computed(
   () =>

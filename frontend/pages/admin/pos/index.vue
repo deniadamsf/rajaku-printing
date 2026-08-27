@@ -368,14 +368,55 @@ function resetForm() {
   submitError.value = null
 }
 
-// Template ref ke ReceiptStruk — cetak WAJIB lewat method yang diekspos
-// komponen itu (`printNow()`), bukan `window.print()` langsung dari halaman
-// ini. `printNow()` yang men-teleport struk ke `<body>` sebelum mencetak
-// (lihat kontrak pemakaian di kepala `ReceiptStruk.vue`); memanggil
-// `window.print()` di sini akan mencetak seluruh halaman POS, bukan struk.
+// Template ref ke ReceiptStruk — jalur cadangan (window.print()) WAJIB lewat
+// method yang diekspos komponen itu (`printNow()`), bukan `window.print()`
+// langsung dari halaman ini. `printNow()` yang men-teleport struk ke `<body>`
+// sebelum mencetak (lihat kontrak pemakaian di kepala `ReceiptStruk.vue`);
+// memanggil `window.print()` di sini akan mencetak seluruh halaman POS,
+// bukan struk.
 const receiptRef = ref<{ printNow: () => Promise<void> } | null>(null)
-function printStruk() {
-  receiptRef.value?.printNow()
+
+const thermalPrint = useThermalPrint()
+const printNotice = ref<{ variant: 'success' | 'error'; message: string } | null>(null)
+let printNoticeTimer: ReturnType<typeof setTimeout> | null = null
+function showPrintNotice(variant: 'success' | 'error', message: string) {
+  printNotice.value = { variant, message }
+  if (printNoticeTimer) clearTimeout(printNoticeTimer)
+  // Notifikasi sukses cukup sekilas; peringatan (agen mati/gagal) dibiarkan
+  // lebih lama supaya kasir sempat membaca sebelum lanjut ke order berikutnya.
+  printNoticeTimer = setTimeout(() => (printNotice.value = null), variant === 'success' ? 3000 : 8000)
+}
+
+/**
+ * Struk POS selalu ter-mount (bukan seperti halaman Detail Order yang
+ * mem-mount on-demand), jadi urutannya lebih sederhana: coba Print Agent
+ * lokal dulu (§ useThermalPrint), kalau tidak tersedia atau gagal → jatuh
+ * balik ke `window.print()` lewat `ReceiptStruk.printNow()` seperti semula,
+ * plus peringatan terlihat bahwa hasil cetaknya tidak terjamin di printer
+ * thermal (§ README print-agent — window.print() merusak struk EPPOS).
+ */
+async function printStruk() {
+  const widthMm = successResult.value?.receipt_width_mm === 80 ? 80 : 58
+  if (await thermalPrint.isAgentAvailable()) {
+    try {
+      await thermalPrint.printViaAgent(widthMm)
+      showPrintNotice('success', 'Struk terkirim ke printer.')
+      return
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Gagal mencetak lewat Print Agent.'
+      showPrintNotice(
+        'error',
+        `Print Agent aktif tapi gagal mencetak (${msg}). Dialihkan ke cetak biasa — hasil bisa rusak di printer thermal.`,
+      )
+      await receiptRef.value?.printNow()
+      return
+    }
+  }
+  showPrintNotice(
+    'error',
+    'Print Agent cetak thermal tidak aktif di komputer ini. Dialihkan ke cetak biasa — hasil cetak BISA RUSAK pada printer thermal EPPOS. Jalankan print-agent.ps1 lalu coba lagi.',
+  )
+  await receiptRef.value?.printNow()
 }
 </script>
 
@@ -432,6 +473,13 @@ function printStruk() {
         :tracking-url="successResult.tracking_url"
         :is-paid="true"
         :width-mm="successResult.receipt_width_mm"
+      />
+
+      <AlertMessage
+        v-if="printNotice"
+        :variant="printNotice.variant"
+        :message="printNotice.message"
+        class="print:hidden"
       />
 
       <div class="flex flex-wrap gap-2 print:hidden">

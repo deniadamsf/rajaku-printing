@@ -51,6 +51,12 @@ export default defineNuxtConfig({
     public: {
       apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:8080/api/v1',
       appBaseUrl: process.env.NUXT_PUBLIC_APP_BASE_URL || 'http://localhost:3000',
+      // Print Agent lokal (services/print-agent) — jembatan struk thermal EPPOS
+      // EP8081/RPP02 yang tidak bisa dicetak lewat window.print() (lihat
+      // useThermalPrint.ts). Selalu localhost karena agen jalan di komputer
+      // kasir yang sama dengan browser, tapi tetap lewat runtimeConfig (§2)
+      // supaya port/host bisa diubah tanpa grep-replace kalau perlu.
+      printAgentUrl: process.env.NUXT_PUBLIC_PRINT_AGENT_URL || 'http://127.0.0.1:9110',
     },
   },
 

@@ -10,6 +10,7 @@ interface Props {
   disabled?: boolean
   error?: string
   helper?: string
+  maxLength?: number
 }
 
 withDefaults(defineProps<Props>(), {
@@ -20,6 +21,7 @@ withDefaults(defineProps<Props>(), {
   disabled: false,
   error: '',
   helper: '',
+  maxLength: undefined,
 })
 
 const emit = defineEmits<{
@@ -50,6 +52,7 @@ defineExpose({
       :autocomplete="autocomplete"
       :required="required"
       :disabled="disabled"
+      :maxlength="maxLength"
       :aria-invalid="error ? 'true' : 'false'"
       :aria-describedby="error ? `${id}-error` : helper ? `${id}-helper` : undefined"
       class="mt-1 block w-full rounded-md border bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 transition-colors focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:bg-canvas-alt disabled:text-ink-500"

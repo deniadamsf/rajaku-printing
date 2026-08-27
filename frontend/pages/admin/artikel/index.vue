@@ -68,9 +68,17 @@ const columns: DataTableColumn[] = [
   { key: 'title', label: 'Judul' },
   { key: 'slug', label: 'Slug', class: 'hidden lg:table-cell text-ink-500' },
   { key: 'status', label: 'Status', class: 'w-28' },
+  { key: 'seo_score', label: 'Skor SEO', class: 'w-24 hidden md:table-cell' },
   { key: 'updated_at', label: 'Diupdate', class: 'w-40 hidden md:table-cell' },
   { key: 'actions', label: '', class: 'w-32 text-right' },
 ]
+
+// Badge skor SEO — palet semantic sama seperti `StatusBadge.vue` (emerald/amber/brand).
+function scoreBadgeClass(score: number): string {
+  if (score >= 80) return 'bg-emerald-50 text-emerald-800 ring-emerald-600/20'
+  if (score >= 50) return 'bg-amber-50 text-amber-800 ring-amber-600/20'
+  return 'bg-brand-50 text-brand-700 ring-brand-600/20'
+}
 
 function fmtDate(s: string): string {
   try {
@@ -200,6 +208,14 @@ async function confirmDelete() {
       </template>
       <template #cell-status="{ row }">
         <AdminStatusBadge :status="(row as Article).status" />
+      </template>
+      <template #cell-seo_score="{ row }">
+        <span
+          v-if="(row as Article).seo_score != null"
+          class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset"
+          :class="scoreBadgeClass((row as Article).seo_score!)"
+        >{{ (row as Article).seo_score }}</span>
+        <span v-else class="text-xs text-ink-400">—</span>
       </template>
       <template #cell-updated_at="{ row }">
         <span class="text-xs text-ink-500">{{ fmtDate((row as Article).updated_at) }}</span>

@@ -8,6 +8,8 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,10 +35,11 @@ type fakeStore struct {
 	findBySlugErr    error
 	listErr          error
 
-	createImageErr   error
-	findImageErr     error
-	attachImageErr   error
-	attachImageCalls int
+	createImageErr        error
+	findImageErr          error
+	attachImageErr        error
+	attachImageCalls      int
+	updateImageAltTextErr error
 }
 
 func newFakeStore() *fakeStore {
@@ -79,6 +82,16 @@ func (f *fakeStore) UpdateArticle(_ context.Context, p cmsrepo.UpdateArticlePara
 	}
 	if p.ContentMD != nil {
 		a.ContentMD = *p.ContentMD
+	}
+	if p.FocusKeyword != nil {
+		a.FocusKeyword = p.FocusKeyword
+	}
+	if p.SecondaryKeywords != nil {
+		a.SecondaryKeywords = p.SecondaryKeywords
+	}
+	if p.SeoScore != nil {
+		v := int16(*p.SeoScore)
+		a.SeoScore = &v
 	}
 	return nil
 }
@@ -171,6 +184,21 @@ func (f *fakeStore) AttachImageToArticle(_ context.Context, imageID, articleID u
 		return cmsrepo.ErrNotFound
 	}
 	img.ArticleID = &articleID
+	return nil
+}
+func (f *fakeStore) UpdateImageAltText(_ context.Context, id uuid.UUID, altText string) error {
+	if f.updateImageAltTextErr != nil {
+		return f.updateImageAltTextErr
+	}
+	img, ok := f.images[id]
+	if !ok {
+		return cmsrepo.ErrNotFound
+	}
+	if altText == "" {
+		img.AltText = nil
+	} else {
+		img.AltText = &altText
+	}
 	return nil
 }
 
@@ -293,6 +321,262 @@ func TestCreateArticle_SlugTaken(t *testing.T) {
 	})
 	if !errors.Is(err, cmsapi.ErrSlugTaken) {
 		t.Errorf("expected ErrSlugTaken, got %v", err)
+	}
+}
+
+// ---------- SEO panel ----------
+
+func TestCreateAndUpdateArticle_SeoFieldsRoundTrip(t *testing.T) {
+	svc, _, _ := newSvc()
+	author := uuid.New()
+	score := 75
+
+	a, err := svc.CreateArticle(context.Background(), CreateArticleInput{
+		AuthorID:          author,
+		Title:             "Panduan Lengkap Ukuran Banner Outdoor",
+		ContentMD:         "isi artikel",
+		FocusKeyword:      "banner outdoor",
+		SecondaryKeywords: "banner, spanduk, outdoor",
+		SeoScore:          &score,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if a.FocusKeyword == nil || *a.FocusKeyword != "banner outdoor" {
+		t.Errorf("focus_keyword tidak tersimpan: %+v", a.FocusKeyword)
+	}
+	if a.SecondaryKeywords == nil || *a.SecondaryKeywords != "banner, spanduk, outdoor" {
+		t.Errorf("secondary_keywords tidak tersimpan: %+v", a.SecondaryKeywords)
+	}
+	if a.SeoScore == nil || *a.SeoScore != 75 {
+		t.Errorf("seo_score tidak tersimpan: %+v", a.SeoScore)
+	}
+
+	newKeyword := "spanduk outdoor tahan air"
+	newScore := 90
+	updated, err := svc.UpdateArticle(context.Background(), UpdateArticleInput{
+		ID:           a.ID,
+		FocusKeyword: &newKeyword,
+		SeoScore:     &newScore,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.FocusKeyword == nil || *updated.FocusKeyword != newKeyword {
+		t.Errorf("focus_keyword tidak terupdate: %+v", updated.FocusKeyword)
+	}
+	if updated.SeoScore == nil || *updated.SeoScore != 90 {
+		t.Errorf("seo_score tidak terupdate: %+v", updated.SeoScore)
+	}
+}
+
+func TestCreateArticle_SeoScoreOutOfRange(t *testing.T) {
+	svc, _, _ := newSvc()
+	badScore := 150
+	_, err := svc.CreateArticle(context.Background(), CreateArticleInput{
+		AuthorID:  uuid.New(),
+		Title:     "Judul Valid",
+		ContentMD: "isi",
+		SeoScore:  &badScore,
+	})
+	if !errors.Is(err, cmsapi.ErrInvalidSeoScore) {
+		t.Errorf("expected ErrInvalidSeoScore, got %v", err)
+	}
+}
+
+func TestUpdateArticle_SeoScoreOutOfRange(t *testing.T) {
+	svc, _, _ := newSvc()
+	a, err := svc.CreateArticle(context.Background(), CreateArticleInput{
+		AuthorID:  uuid.New(),
+		Title:     "Judul Valid Lainnya",
+		ContentMD: "isi",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	badScore := -1
+	_, err = svc.UpdateArticle(context.Background(), UpdateArticleInput{
+		ID:       a.ID,
+		SeoScore: &badScore,
+	})
+	if !errors.Is(err, cmsapi.ErrInvalidSeoScore) {
+		t.Errorf("expected ErrInvalidSeoScore, got %v", err)
+	}
+}
+
+func TestCreateArticle_SeoScoreBoundaryAccepted(t *testing.T) {
+	for _, score := range []int{0, 100} {
+		score := score
+		t.Run(strconv.Itoa(score), func(t *testing.T) {
+			svc, _, _ := newSvc()
+			a, err := svc.CreateArticle(context.Background(), CreateArticleInput{
+				AuthorID:  uuid.New(),
+				Title:     "Judul Boundary " + strconv.Itoa(score),
+				ContentMD: "isi",
+				SeoScore:  &score,
+			})
+			if err != nil {
+				t.Fatalf("unexpected err untuk score=%d: %v", score, err)
+			}
+			if a.SeoScore == nil || int(*a.SeoScore) != score {
+				t.Errorf("seo_score tidak tersimpan sesuai batas: %+v", a.SeoScore)
+			}
+		})
+	}
+}
+
+func TestUpdateArticle_SeoScoreBoundaryAccepted(t *testing.T) {
+	for _, score := range []int{0, 100} {
+		score := score
+		t.Run(strconv.Itoa(score), func(t *testing.T) {
+			svc, _, _ := newSvc()
+			a, err := svc.CreateArticle(context.Background(), CreateArticleInput{
+				AuthorID:  uuid.New(),
+				Title:     "Judul Update Boundary " + strconv.Itoa(score),
+				ContentMD: "isi",
+			})
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			updated, err := svc.UpdateArticle(context.Background(), UpdateArticleInput{
+				ID:       a.ID,
+				SeoScore: &score,
+			})
+			if err != nil {
+				t.Fatalf("unexpected err untuk score=%d: %v", score, err)
+			}
+			if updated.SeoScore == nil || int(*updated.SeoScore) != score {
+				t.Errorf("seo_score tidak terupdate sesuai batas: %+v", updated.SeoScore)
+			}
+		})
+	}
+}
+
+// ---------- SEO panel — length validation ----------
+
+func TestCreateArticle_FocusKeywordTooLong(t *testing.T) {
+	svc, _, _ := newSvc()
+	_, err := svc.CreateArticle(context.Background(), CreateArticleInput{
+		AuthorID:     uuid.New(),
+		Title:        "Judul Valid",
+		ContentMD:    "isi",
+		FocusKeyword: strings.Repeat("a", 101),
+	})
+	if !errors.Is(err, cmsapi.ErrFocusKeywordTooLong) {
+		t.Errorf("expected ErrFocusKeywordTooLong, got %v", err)
+	}
+}
+
+func TestCreateArticle_SecondaryKeywordsTooLong(t *testing.T) {
+	svc, _, _ := newSvc()
+	_, err := svc.CreateArticle(context.Background(), CreateArticleInput{
+		AuthorID:          uuid.New(),
+		Title:             "Judul Valid Lain",
+		ContentMD:         "isi",
+		SecondaryKeywords: strings.Repeat("a", 301),
+	})
+	if !errors.Is(err, cmsapi.ErrSecondaryKeywordsTooLong) {
+		t.Errorf("expected ErrSecondaryKeywordsTooLong, got %v", err)
+	}
+}
+
+func TestUpdateArticle_FocusKeywordTooLong(t *testing.T) {
+	svc, _, _ := newSvc()
+	a, err := svc.CreateArticle(context.Background(), CreateArticleInput{
+		AuthorID:  uuid.New(),
+		Title:     "Judul Untuk Update",
+		ContentMD: "isi",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	tooLong := strings.Repeat("b", 101)
+	_, err = svc.UpdateArticle(context.Background(), UpdateArticleInput{
+		ID:           a.ID,
+		FocusKeyword: &tooLong,
+	})
+	if !errors.Is(err, cmsapi.ErrFocusKeywordTooLong) {
+		t.Errorf("expected ErrFocusKeywordTooLong, got %v", err)
+	}
+}
+
+func TestCreateArticle_FocusKeywordTrimmedBeforeLengthCheck(t *testing.T) {
+	svc, _, _ := newSvc()
+	// 100 huruf asli + padding spasi di kedua sisi — harus lolos karena
+	// panjang dihitung SETELAH trim.
+	padded := "  " + strings.Repeat("c", 100) + "  "
+	a, err := svc.CreateArticle(context.Background(), CreateArticleInput{
+		AuthorID:     uuid.New(),
+		Title:        "Judul Trim",
+		ContentMD:    "isi",
+		FocusKeyword: padded,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if a.FocusKeyword == nil || *a.FocusKeyword != strings.Repeat("c", 100) {
+		t.Errorf("focus_keyword tidak ter-trim dengan benar: %+v", a.FocusKeyword)
+	}
+}
+
+// ---------- UpdateImageAltText / GetImageMeta ----------
+
+func TestUpdateImageAltText_HappyPath(t *testing.T) {
+	svc, store, _ := newSvc()
+	imgID := uuid.New()
+	store.images[imgID] = &model.ArticleImage{ID: imgID, MimeType: "image/webp"}
+
+	updated, err := svc.UpdateImageAltText(context.Background(), imgID, "  banner outdoor merah  ")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if updated.AltText == nil || *updated.AltText != "banner outdoor merah" {
+		t.Errorf("alt_text tidak terupdate (trimmed): %+v", updated.AltText)
+	}
+}
+
+func TestUpdateImageAltText_NotFound(t *testing.T) {
+	svc, store, _ := newSvc()
+	imgID := uuid.New()
+	store.updateImageAltTextErr = cmsrepo.ErrNotFound
+
+	_, err := svc.UpdateImageAltText(context.Background(), imgID, "alt")
+	if !errors.Is(err, cmsapi.ErrImageNotFound) {
+		t.Errorf("expected ErrImageNotFound, got %v", err)
+	}
+}
+
+func TestUpdateImageAltText_TooLong(t *testing.T) {
+	svc, store, _ := newSvc()
+	imgID := uuid.New()
+	store.images[imgID] = &model.ArticleImage{ID: imgID, MimeType: "image/webp"}
+
+	_, err := svc.UpdateImageAltText(context.Background(), imgID, strings.Repeat("x", 256))
+	if !errors.Is(err, cmsapi.ErrAltTextTooLong) {
+		t.Errorf("expected ErrAltTextTooLong, got %v", err)
+	}
+}
+
+func TestGetImageMeta_HappyPath(t *testing.T) {
+	svc, store, _ := newSvc()
+	imgID := uuid.New()
+	alt := "logo rajaku"
+	store.images[imgID] = &model.ArticleImage{ID: imgID, MimeType: "image/webp", AltText: &alt}
+
+	img, err := svc.GetImageMeta(context.Background(), imgID)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if img.AltText == nil || *img.AltText != alt {
+		t.Errorf("alt_text tidak sesuai: %+v", img.AltText)
+	}
+}
+
+func TestGetImageMeta_NotFound(t *testing.T) {
+	svc, _, _ := newSvc()
+	_, err := svc.GetImageMeta(context.Background(), uuid.New())
+	if !errors.Is(err, cmsapi.ErrImageNotFound) {
+		t.Errorf("expected ErrImageNotFound, got %v", err)
 	}
 }
 

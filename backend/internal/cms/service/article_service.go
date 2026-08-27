@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -42,6 +43,7 @@ type ArticleStore interface {
 	CreateImage(ctx context.Context, img *model.ArticleImage) error
 	FindImageByID(ctx context.Context, id uuid.UUID) (*model.ArticleImage, error)
 	AttachImageToArticle(ctx context.Context, imageID, articleID uuid.UUID) error
+	UpdateImageAltText(ctx context.Context, id uuid.UUID, altText string) error
 }
 
 type Config struct {
@@ -106,20 +108,33 @@ func (s *Service) CreateArticle(ctx context.Context, in CreateArticleInput) (*mo
 	if !isValidSlug(slug) {
 		return nil, cmsapi.ErrInvalidSlug
 	}
+	seoScore, err := validateSeoScore(in.SeoScore)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateMaxLen(strings.TrimSpace(in.FocusKeyword), maxFocusKeywordLen, cmsapi.ErrFocusKeywordTooLong); err != nil {
+		return nil, err
+	}
+	if err := validateMaxLen(strings.TrimSpace(in.SecondaryKeywords), maxSecondaryKeywordsLen, cmsapi.ErrSecondaryKeywordsTooLong); err != nil {
+		return nil, err
+	}
 
 	article := &model.Article{
-		ID:              uuid.New(),
-		Slug:            slug,
-		Title:           title,
-		ContentMD:       content,
-		Status:          model.StatusDraft,
-		AuthorID:        in.AuthorID,
-		CoverImageID:    in.CoverImageID,
-		MetaTitle:       nilIfEmpty(in.MetaTitle),
-		MetaDescription: nilIfEmpty(in.MetaDescription),
-		Excerpt:         nilIfEmpty(in.Excerpt),
-		CreatedAt:       s.nowFn().UTC(),
-		UpdatedAt:       s.nowFn().UTC(),
+		ID:                uuid.New(),
+		Slug:              slug,
+		Title:             title,
+		ContentMD:         content,
+		Status:            model.StatusDraft,
+		AuthorID:          in.AuthorID,
+		CoverImageID:      in.CoverImageID,
+		MetaTitle:         nilIfEmpty(in.MetaTitle),
+		MetaDescription:   nilIfEmpty(in.MetaDescription),
+		Excerpt:           nilIfEmpty(in.Excerpt),
+		FocusKeyword:      nilIfEmpty(in.FocusKeyword),
+		SecondaryKeywords: nilIfEmpty(in.SecondaryKeywords),
+		SeoScore:          seoScore,
+		CreatedAt:         s.nowFn().UTC(),
+		UpdatedAt:         s.nowFn().UTC(),
 	}
 	if err := s.store.CreateArticle(ctx, article); err != nil {
 		if errors.Is(err, cmsrepo.ErrSlugTaken) {
@@ -184,6 +199,26 @@ func (s *Service) UpdateArticle(ctx context.Context, in UpdateArticleInput) (*mo
 	}
 	if in.CoverImageID != nil {
 		patch.CoverImageID = in.CoverImageID
+	}
+	if in.FocusKeyword != nil {
+		fk := strings.TrimSpace(*in.FocusKeyword)
+		if err := validateMaxLen(fk, maxFocusKeywordLen, cmsapi.ErrFocusKeywordTooLong); err != nil {
+			return nil, err
+		}
+		patch.FocusKeyword = &fk
+	}
+	if in.SecondaryKeywords != nil {
+		sk := strings.TrimSpace(*in.SecondaryKeywords)
+		if err := validateMaxLen(sk, maxSecondaryKeywordsLen, cmsapi.ErrSecondaryKeywordsTooLong); err != nil {
+			return nil, err
+		}
+		patch.SecondaryKeywords = &sk
+	}
+	if in.SeoScore != nil {
+		if _, err := validateSeoScore(in.SeoScore); err != nil {
+			return nil, err
+		}
+		patch.SeoScore = in.SeoScore
 	}
 
 	if err := s.store.UpdateArticle(ctx, patch); err != nil {
@@ -357,6 +392,10 @@ func (s *Service) UploadImage(ctx context.Context, in UploadImageInput) (*model.
 	if !webp.IsAllowedMime(in.MimeType) {
 		return nil, cmsapi.ErrImageInvalidType
 	}
+	altText := strings.TrimSpace(in.AltText)
+	if err := validateMaxLen(altText, maxAltTextLen, cmsapi.ErrAltTextTooLong); err != nil {
+		return nil, err
+	}
 
 	// Batasi read agar tidak overshoot (defense terhadap MIME lie).
 	limitedR := io.LimitReader(in.FileReader, s.maxImgBytes+1)
@@ -393,8 +432,8 @@ func (s *Service) UploadImage(ctx context.Context, in UploadImageInput) (*model.
 		UploadedBy:   &in.UploaderID,
 		UploadedAt:   now,
 	}
-	if in.AltText != "" {
-		alt := in.AltText
+	if altText != "" {
+		alt := altText
 		row.AltText = &alt
 	}
 
@@ -403,6 +442,42 @@ func (s *Service) UploadImage(ctx context.Context, in UploadImageInput) (*model.
 		return nil, fmt.Errorf("insert article_image row: %w", err)
 	}
 	return row, nil
+}
+
+// UpdateImageAltText — patch alt_text satu gambar (dipakai panel SEO editor
+// untuk mengisi alt text gambar yang sudah diupload/embed).
+func (s *Service) UpdateImageAltText(ctx context.Context, id uuid.UUID, altText string) (*model.ArticleImage, error) {
+	trimmed := strings.TrimSpace(altText)
+	if err := validateMaxLen(trimmed, maxAltTextLen, cmsapi.ErrAltTextTooLong); err != nil {
+		return nil, err
+	}
+	if err := s.store.UpdateImageAltText(ctx, id, trimmed); err != nil {
+		if errors.Is(err, cmsrepo.ErrNotFound) {
+			return nil, cmsapi.ErrImageNotFound
+		}
+		return nil, fmt.Errorf("update image alt text: %w", err)
+	}
+	img, err := s.store.FindImageByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, cmsrepo.ErrNotFound) {
+			return nil, cmsapi.ErrImageNotFound
+		}
+		return nil, fmt.Errorf("update image alt text: get updated image: %w", err)
+	}
+	return img, nil
+}
+
+// GetImageMeta — return row article_images apa adanya (metadata JSON untuk
+// admin editor), berbeda dari GetImage yang resolve path fisik untuk serving.
+func (s *Service) GetImageMeta(ctx context.Context, id uuid.UUID) (*model.ArticleImage, error) {
+	img, err := s.store.FindImageByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, cmsrepo.ErrNotFound) {
+			return nil, cmsapi.ErrImageNotFound
+		}
+		return nil, fmt.Errorf("get image meta: %w", err)
+	}
+	return img, nil
 }
 
 // GetImage — serve image publicly (artikel img embed di halaman public).
@@ -480,12 +555,44 @@ func SlugifyTitle(title string) string {
 	return slug
 }
 
+// validateSeoScore — nil = belum dihitung (tidak divalidasi). Non-nil wajib
+// 0-100; scoring-nya sendiri dihitung client-side, backend cuma menjaga
+// rentangnya (lihat CHECK constraint di migration 000029).
+func validateSeoScore(score *int) (*int16, error) {
+	if score == nil {
+		return nil, nil
+	}
+	if *score < 0 || *score > 100 {
+		return nil, cmsapi.ErrInvalidSeoScore
+	}
+	v := int16(*score)
+	return &v, nil
+}
+
 func nilIfEmpty(s string) *string {
-	if strings.TrimSpace(s) == "" {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
 		return nil
 	}
-	v := s
-	return &v
+	return &trimmed
+}
+
+// Batas panjang kolom VARCHAR terkait (harus konsisten dengan migration
+// 000009 & 000029). Dicek pakai utf8.RuneCountInString, bukan len(), karena
+// VARCHAR(N) Postgres menghitung karakter, bukan byte.
+const (
+	maxFocusKeywordLen      = 100
+	maxSecondaryKeywordsLen = 300
+	maxAltTextLen           = 255
+)
+
+// validateMaxLen — return sentinel kalau s (sudah di-trim caller) melebihi
+// max karakter. String kosong selalu lolos (field opsional).
+func validateMaxLen(s string, max int, sentinel error) error {
+	if utf8.RuneCountInString(s) > max {
+		return sentinel
+	}
+	return nil
 }
 
 // safeOriginalName — buang path separator supaya nama file yg disimpan aman

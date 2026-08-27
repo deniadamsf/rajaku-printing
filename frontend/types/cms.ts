@@ -11,6 +11,9 @@ export interface Article {
   cover_image_id?: string | null
   meta_title?: string | null
   meta_description?: string | null
+  focus_keyword?: string | null
+  secondary_keywords?: string | null
+  seo_score?: number | null
   status: ArticleStatus
   published_at?: string | null
   author_id: string
@@ -46,6 +49,9 @@ export interface CreateArticleBody {
   meta_title?: string
   meta_description?: string
   cover_image_id?: string | null
+  focus_keyword?: string | null
+  secondary_keywords?: string | null
+  seo_score?: number | null
 }
 
 export interface UpdateArticleBody {
@@ -56,4 +62,7 @@ export interface UpdateArticleBody {
   meta_title?: string
   meta_description?: string
   cover_image_id?: string | null
+  focus_keyword?: string | null
+  secondary_keywords?: string | null
+  seo_score?: number | null
 }

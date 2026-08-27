@@ -13,6 +13,11 @@ var (
 	ErrContentRequired = errors.New("cmsapi: content is required")
 	ErrInvalidStatus   = errors.New("cmsapi: invalid status")
 	ErrNotPublishable  = errors.New("cmsapi: article cannot be published (already archived / missing content)")
+	ErrInvalidSeoScore = errors.New("cmsapi: seo_score must be between 0 and 100")
+
+	ErrFocusKeywordTooLong      = errors.New("cmsapi: focus_keyword max 100 karakter")
+	ErrSecondaryKeywordsTooLong = errors.New("cmsapi: secondary_keywords max 300 karakter")
+	ErrAltTextTooLong           = errors.New("cmsapi: alt_text max 255 karakter")
 
 	ErrImageNotFound     = errors.New("cmsapi: image not found")
 	ErrImageEmpty        = errors.New("cmsapi: image file is empty")

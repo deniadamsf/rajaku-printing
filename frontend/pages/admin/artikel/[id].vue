@@ -27,7 +27,13 @@ const form = reactive({
   meta_title: '',
   meta_description: '',
   cover_image_id: null as string | null,
+  focus_keyword: '',
+  secondary_keywords: '',
+  seo_score: null as number | null,
 })
+
+const coverAltText = ref('')
+const savingAlt = ref(false)
 
 const saving = ref(false)
 const uploadingCover = ref(false)
@@ -55,6 +61,17 @@ async function loadArticle() {
     form.meta_title = a.meta_title ?? ''
     form.meta_description = a.meta_description ?? ''
     form.cover_image_id = a.cover_image_id ?? null
+    form.focus_keyword = a.focus_keyword ?? ''
+    form.secondary_keywords = a.secondary_keywords ?? ''
+    form.seo_score = a.seo_score ?? null
+    if (form.cover_image_id) {
+      try {
+        const meta = await cms.getImageMeta(form.cover_image_id)
+        coverAltText.value = meta.alt_text ?? ''
+      } catch {
+        // Non-fatal — alt text sekadar kosong kalau gagal dimuat.
+      }
+    }
   } catch (e: unknown) {
     errorMsg.value = e instanceof ApiError ? e.message : 'Gagal memuat artikel'
   } finally {
@@ -77,6 +94,9 @@ async function onSave() {
       meta_title: form.meta_title,
       meta_description: form.meta_description,
       cover_image_id: form.cover_image_id,
+      focus_keyword: form.focus_keyword,
+      secondary_keywords: form.secondary_keywords,
+      seo_score: form.seo_score,
     })
     article.value = updated
     successMsg.value = 'Perubahan tersimpan.'
@@ -119,6 +139,21 @@ async function removeCover() {
     setTimeout(() => (successMsg.value = null), 3000)
   } catch (e: unknown) {
     errorMsg.value = e instanceof ApiError ? e.message : 'Gagal hapus cover'
+  }
+}
+
+async function saveAltText() {
+  if (!form.cover_image_id) return
+  savingAlt.value = true
+  errorMsg.value = null
+  try {
+    await cms.updateImageAlt(form.cover_image_id, coverAltText.value)
+    successMsg.value = 'Alt text tersimpan.'
+    setTimeout(() => (successMsg.value = null), 3000)
+  } catch (e: unknown) {
+    errorMsg.value = e instanceof ApiError ? e.message : 'Gagal simpan alt text'
+  } finally {
+    savingAlt.value = false
   }
 }
 
@@ -247,30 +282,8 @@ function fmtDate(s: string | null | undefined): string {
 
         <div>
           <label class="text-sm font-medium text-ink-900">Konten (Markdown) <span class="text-brand-500">*</span></label>
-          <textarea
-            v-model="form.content_md"
-            rows="16"
-            required
-            class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm font-mono placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-          />
+          <AdminMarkdownToolbar v-model="form.content_md" :article-id="articleId" :rows="16" />
         </div>
-
-        <details class="rounded-lg border border-hairline bg-canvas p-4">
-          <summary class="cursor-pointer text-sm font-medium text-ink-900">SEO override</summary>
-          <div class="mt-4 space-y-4">
-            <BaseInput id="meta_title" v-model="form.meta_title" label="Meta title" placeholder="Default: judul artikel" />
-            <div>
-              <label class="text-sm font-medium text-ink-900">Meta description</label>
-              <textarea
-                v-model="form.meta_description"
-                rows="2"
-                maxlength="320"
-                class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-              />
-              <p class="mt-1 text-xs text-ink-500">{{ form.meta_description.length }} / 320 karakter</p>
-            </div>
-          </div>
-        </details>
 
         <div class="flex items-center gap-3 pt-2">
           <button
@@ -333,7 +346,42 @@ function fmtDate(s: string | null | undefined): string {
               @change="onCoverChange"
             >
           </label>
+
+          <div v-if="form.cover_image_id" class="mt-4 space-y-2 border-t border-hairline pt-4">
+            <BaseInput
+              id="cover-alt-text"
+              v-model="coverAltText"
+              label="Alt text"
+              placeholder="Deskripsikan gambar untuk SEO & aksesibilitas"
+              :max-length="255"
+            />
+            <button
+              type="button"
+              class="inline-flex items-center gap-2 text-xs text-ink-700 hover:text-ink-900 transition-colors disabled:opacity-60"
+              :disabled="savingAlt"
+              @click="saveAltText"
+            >
+              <span
+                v-if="savingAlt"
+                class="inline-block h-3 w-3 rounded-full border-2 border-ink-500 border-t-transparent animate-spin"
+                aria-hidden="true"
+              />
+              Simpan alt text
+            </button>
+          </div>
         </div>
+
+        <AdminSeoPanel
+          v-model:focus-keyword="form.focus_keyword"
+          v-model:secondary-keywords="form.secondary_keywords"
+          v-model:meta-title="form.meta_title"
+          v-model:meta-description="form.meta_description"
+          :title="form.title"
+          :slug="form.slug"
+          :content-md="form.content_md"
+          :cover-alt-text="coverAltText"
+          @update:score="form.seo_score = $event"
+        />
 
         <div class="rounded-lg border border-hairline bg-canvas p-6 text-xs text-ink-700 space-y-2">
           <div class="flex justify-between items-center">

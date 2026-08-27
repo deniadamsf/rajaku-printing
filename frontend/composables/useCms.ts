@@ -70,6 +70,16 @@ export function useCms() {
     return `${config.public.apiBase}/cms/images/${imageId}`
   }
 
+  /** Ubah alt text sebuah gambar (cover atau gambar inline di konten). */
+  function updateImageAlt(imageId: string, altText: string): Promise<ArticleImage> {
+    return api.patch<ArticleImage>(`/admin/articles/images/${imageId}`, { alt_text: altText })
+  }
+
+  /** Ambil metadata gambar (bukan file-nya) — dipakai untuk baca alt text saat ini. */
+  function getImageMeta(imageId: string): Promise<ArticleImage> {
+    return api.get<ArticleImage>(`/admin/articles/images/${imageId}`)
+  }
+
   // ---- Public endpoints (no auth) — dipakai halaman /artikel & /artikel/[slug] ----
 
   function listPublic(params: { page?: number; limit?: number; q?: string }): Promise<ArticleListResponse> {
@@ -94,6 +104,8 @@ export function useCms() {
     remove,
     uploadImage,
     imageUrl,
+    updateImageAlt,
+    getImageMeta,
     listPublic,
     getBySlug,
   }

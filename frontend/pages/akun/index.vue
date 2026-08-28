@@ -9,7 +9,7 @@
  *
  * Design: patuh CLAUDE.md §26.
  */
-import { User, Package, Plus, Loader2, ChevronRight, Search } from '@lucide/vue'
+import { User, Package, Plus, Loader2, ChevronRight, Search, Crown } from '@lucide/vue'
 import type { Order, OrderStatus } from '~/types/order'
 import { ApiError } from '~/composables/useApi'
 
@@ -153,6 +153,19 @@ function needsAction(status: string): boolean {
            daftarnya masih menampilkan keadaan sebelum penggabungan. -->
       <AccountPhonePanel @merged="fetchOrders" />
     </div>
+
+    <!-- Membership shortcut (§30.4) -->
+    <NuxtLink
+      to="/akun/membership"
+      class="mt-4 group flex items-center gap-3 rounded-lg border border-hairline bg-canvas p-4 hover:border-gold-300 hover:bg-gold-50/40 transition-colors"
+    >
+      <Crown class="h-5 w-5 text-gold-500 flex-none" :stroke-width="1.5" />
+      <div class="flex-1">
+        <p class="text-sm font-medium text-ink-900">Membership</p>
+        <p class="text-xs text-ink-500">Lihat status & ajukan jadi member untuk diskon khusus</p>
+      </div>
+      <ChevronRight class="h-4 w-4 text-ink-400 group-hover:text-gold-500 transition-colors" :stroke-width="1.75" />
+    </NuxtLink>
 
     <!-- Orders section -->
     <div id="pesanan" class="mt-10 scroll-mt-24">

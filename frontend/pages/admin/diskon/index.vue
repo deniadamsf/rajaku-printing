@@ -13,10 +13,19 @@ import {
   Trash2,
   Loader2,
   TicketPercent,
+  Crown,
 } from '@lucide/vue'
 import type { DataTableColumn } from '~/components/admin/DataTable.vue'
 import { ApiError } from '~/composables/useApi'
-import type { Discount, DiscountAppliesTo, DiscountInput, DiscountStatus, DiscountType } from '~/types/discount'
+import type {
+  Discount,
+  DiscountAppliesTo,
+  DiscountAudienceScope,
+  DiscountInput,
+  DiscountMemberScope,
+  DiscountStatus,
+  DiscountType,
+} from '~/types/discount'
 import type { AdminProduct } from '~/types/catalog-admin'
 
 definePageMeta({
@@ -28,6 +37,7 @@ useSeoMeta({ title: 'Diskon — Rajaku Admin' })
 
 const discountSvc = useDiscount()
 const catalogSvc = useAdminCatalog()
+const membershipSvc = useMembership()
 
 // -------------------- produk (untuk cakupan §28.9) --------------------
 const products = ref<AdminProduct[]>([])
@@ -47,6 +57,28 @@ async function fetchProducts() {
 /** Nama produk untuk ringkasan cakupan di tabel — fallback ke id kalau produk sudah tidak ada di katalog yang termuat. */
 function productName(id: string): string {
   return products.value.find((p) => p.id === id)?.name ?? id
+}
+
+// -------------------- member aktif (untuk cakupan §30.3) --------------------
+// Sumbernya daftar member 'active' (bukan search-semua-customer) — diskon
+// audience_scope='member' cuma pernah berlaku untuk customer 'active', jadi
+// memilih dari non-member percuma. per_page 100 = batas maksimum backend
+// (§30.3 brief); untuk toko dengan >100 member aktif, member di luar 100
+// pertama (urut requested_at DESC) belum tampil di pemilih ini — cukup untuk
+// MVP, lihat catatan di PR.
+const activeMembers = ref<Array<{ id: string; name: string; phone: string }>>([])
+const membersLoading = ref(false)
+async function fetchActiveMembers() {
+  membersLoading.value = true
+  try {
+    const res = await membershipSvc.list({ status: 'active', page: 1, per_page: 100 })
+    activeMembers.value = res.items.map((m) => ({ id: m.customer_id, name: m.name, phone: m.phone }))
+  } catch {
+    // Non-blocking — sama seperti fetchProducts, admin masih bisa memakai
+    // "Semua member" walau pemilih member tertentu gagal dimuat.
+  } finally {
+    membersLoading.value = false
+  }
 }
 
 // -------------------- list state --------------------
@@ -106,6 +138,7 @@ async function fetchList() {
 onMounted(() => {
   fetchList()
   fetchProducts()
+  fetchActiveMembers()
 })
 watch([statusFilter, page], fetchList)
 
@@ -150,6 +183,9 @@ const form = reactive<DiscountInput>({
   is_active: true,
   applies_to: 'all',
   product_ids: [],
+  audience_scope: 'all',
+  member_scope: '',
+  customer_ids: [],
 })
 
 /** Kode diskon: huruf besar, angka, dan `-`/`_` saja — dirapikan sambil mengetik. */
@@ -197,6 +233,9 @@ function openCreate() {
   form.is_active = true
   form.applies_to = 'all'
   form.product_ids = []
+  form.audience_scope = 'all'
+  form.member_scope = ''
+  form.customer_ids = []
   startsAtLocal.value = ''
   endsAtLocal.value = ''
   formOpen.value = true
@@ -223,6 +262,11 @@ function openEdit(d: Discount) {
   // diam-diam menganggap daftar kosong = tercakup semua (§28.9).
   form.applies_to = d.applies_to ?? 'all'
   form.product_ids = d.product_ids ? [...d.product_ids] : []
+  // Sama alasannya dengan applies_to/product_ids di atas — jatuh ke default
+  // "semua audiens" kalau backend lama belum mengirim field ini (§30.3).
+  form.audience_scope = d.audience_scope ?? 'all'
+  form.member_scope = d.member_scope ?? ''
+  form.customer_ids = d.customer_ids ? [...d.customer_ids] : []
   startsAtLocal.value = isoToLocalInput(d.starts_at)
   endsAtLocal.value = isoToLocalInput(d.ends_at)
   formOpen.value = true
@@ -232,6 +276,22 @@ function openEdit(d: Discount) {
 function onAppliesToChange(v: DiscountAppliesTo) {
   form.applies_to = v
   if (v === 'all') form.product_ids = []
+}
+
+/** Ganti "Semua"/"Member" → reset sub-pilihan lama, sama pola dengan onAppliesToChange (§30.3). */
+function onAudienceScopeChange(v: DiscountAudienceScope) {
+  form.audience_scope = v
+  if (v === 'all') {
+    form.member_scope = ''
+    form.customer_ids = []
+  } else if (!form.member_scope) {
+    form.member_scope = 'all_members'
+  }
+}
+/** Ganti "Semua member" → bersihkan daftar tercentang lama, sama pola dengan onAppliesToChange (§30.3). */
+function onMemberScopeChange(v: DiscountMemberScope) {
+  form.member_scope = v
+  if (v === 'all_members') form.customer_ids = []
 }
 
 function onTypeChange(t: DiscountType) {
@@ -251,6 +311,17 @@ async function saveDiscount() {
   // bukan berarti "berlaku semua", itu diskon yang mustahil dipakai.
   if (form.applies_to === 'selected' && form.product_ids.length === 0) {
     modalError.value = 'Pilih minimal satu produk, atau ubah cakupan ke "Semua produk".'
+    return
+  }
+  // Validasi wajib di UI (§30.3 brief): "Member" tanpa sub-pilihan, atau
+  // "Member tertentu" tanpa satu pun member tercentang, HARUS ditolak sebelum
+  // request dikirim — sama alasannya dengan validasi produk di atas.
+  if (form.audience_scope === 'member' && !form.member_scope) {
+    modalError.value = 'Pilih "Semua member" atau "Member tertentu" untuk cakupan audiens ini.'
+    return
+  }
+  if (form.audience_scope === 'member' && form.member_scope === 'selected_members' && form.customer_ids.length === 0) {
+    modalError.value = 'Pilih minimal satu member, atau ubah cakupan ke "Semua member".'
     return
   }
   saving.value = true
@@ -276,6 +347,9 @@ async function saveDiscount() {
       is_active: form.is_active,
       applies_to: form.applies_to,
       product_ids: form.applies_to === 'selected' ? [...form.product_ids] : [],
+      audience_scope: form.audience_scope,
+      member_scope: form.audience_scope === 'member' ? form.member_scope : '',
+      customer_ids: form.audience_scope === 'member' && form.member_scope === 'selected_members' ? [...form.customer_ids] : [],
     }
     if (editingId.value) {
       await discountSvc.update(editingId.value, body)
@@ -367,6 +441,15 @@ function scopeLabel(d: Discount): string {
 function scopeTooltip(d: Discount): string | undefined {
   if (d.applies_to !== 'selected' || !d.product_ids?.length) return undefined
   return d.product_ids.map((id) => productName(id)).join(', ')
+}
+/** Ringkasan cakupan audiens (§30.3) untuk kolom tabel. Undefined = tidak ditampilkan (bukan diskon member). */
+function audienceLabel(d: Discount): string | undefined {
+  if (d.audience_scope !== 'member') return undefined
+  if (d.member_scope === 'selected_members') {
+    const n = d.customer_ids?.length ?? 0
+    return n === 1 ? 'Member (1 orang)' : `Member (${n} orang)`
+  }
+  return 'Semua member'
 }
 function statusLabel(s: DiscountStatus | string): string {
   const map: Record<string, string> = {
@@ -466,6 +549,10 @@ function statusTone(s: DiscountStatus | string): 'green' | 'amber' | 'ink' | 'ro
       </template>
       <template #cell-scope="{ row }">
         <span class="text-xs text-ink-600" :title="scopeTooltip(row as Discount)">{{ scopeLabel(row as Discount) }}</span>
+        <span v-if="audienceLabel(row as Discount)" class="mt-0.5 flex items-center gap-1 text-xs text-gold-700">
+          <Crown class="h-3 w-3" :stroke-width="1.75" />
+          {{ audienceLabel(row as Discount) }}
+        </span>
       </template>
       <template #cell-status="{ row }">
         <AdminStatusBadge :status="statusLabel((row as Discount).status)" :tone="statusTone((row as Discount).status)" />
@@ -707,6 +794,74 @@ function statusTone(s: DiscountStatus | string): 'green' | 'amber' | 'ink' | 'ro
                       Diskon ini hanya bisa dipakai kalau order-nya untuk salah satu produk tercentang. Kosongkan
                       pilihan bukan cara untuk "berlaku semua" — daftar kosong membuat diskon tidak bisa dipakai
                       sama sekali.
+                    </p>
+                  </div>
+                </div>
+
+                <!-- Cakupan audiens (§30.3) -->
+                <div class="sm:col-span-2">
+                  <label class="flex items-center gap-1.5 text-sm font-medium text-ink-900">
+                    <Crown class="h-3.5 w-3.5 text-gold-500" :stroke-width="1.75" />
+                    Cakupan audiens
+                  </label>
+                  <div class="mt-1 flex gap-2">
+                    <label
+                      :class="[
+                        'flex-1 flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors',
+                        form.audience_scope === 'all' ? 'border-brand-500 bg-brand-50/50 text-ink-950' : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                      ]"
+                    >
+                      <input type="radio" value="all" :checked="form.audience_scope === 'all'" class="accent-brand-500" @change="onAudienceScopeChange('all')">
+                      <span class="font-semibold">Semua pelanggan</span>
+                    </label>
+                    <label
+                      :class="[
+                        'flex-1 flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors',
+                        form.audience_scope === 'member' ? 'border-brand-500 bg-brand-50/50 text-ink-950' : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                      ]"
+                    >
+                      <input type="radio" value="member" :checked="form.audience_scope === 'member'" class="accent-brand-500" @change="onAudienceScopeChange('member')">
+                      <span class="font-semibold">Member saja</span>
+                    </label>
+                  </div>
+
+                  <div v-if="form.audience_scope === 'member'" class="mt-3 space-y-3">
+                    <div class="flex gap-2">
+                      <label
+                        :class="[
+                          'flex-1 flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors',
+                          form.member_scope === 'all_members' ? 'border-brand-500 bg-brand-50/50 text-ink-950' : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                        ]"
+                      >
+                        <input type="radio" value="all_members" :checked="form.member_scope === 'all_members'" class="accent-brand-500" @change="onMemberScopeChange('all_members')">
+                        <span class="font-semibold">Semua member</span>
+                      </label>
+                      <label
+                        :class="[
+                          'flex-1 flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors',
+                          form.member_scope === 'selected_members' ? 'border-brand-500 bg-brand-50/50 text-ink-950' : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                        ]"
+                      >
+                        <input type="radio" value="selected_members" :checked="form.member_scope === 'selected_members'" class="accent-brand-500" @change="onMemberScopeChange('selected_members')">
+                        <span class="font-semibold">Member tertentu</span>
+                      </label>
+                    </div>
+
+                    <div v-if="form.member_scope === 'selected_members'">
+                      <AdminMemberMultiSelect
+                        v-model="form.customer_ids"
+                        :members="activeMembers"
+                        :loading="membersLoading"
+                      />
+                      <p class="mt-1 text-xs text-ink-500">
+                        Hanya menampilkan pelanggan berstatus member aktif. Kosongkan pilihan bukan cara untuk
+                        "berlaku semua member" — daftar kosong membuat diskon tidak bisa dipakai sama sekali.
+                      </p>
+                    </div>
+
+                    <p class="text-xs text-ink-500 leading-relaxed">
+                      Diskon ini cuma berlaku untuk pelanggan yang membership-nya sedang <strong class="text-ink-700">aktif</strong>
+                      saat order dibuat (§30.3) — tidak berpengaruh ke channel (Online/POS) yang dipilih di atas.
                     </p>
                   </div>
                 </div>

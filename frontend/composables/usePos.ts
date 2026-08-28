@@ -21,6 +21,13 @@ export interface PosCustomerSearchResult {
   id: string
   name: string
   phone: string
+  /**
+   * Proyeksi `authapi.Identity.MembershipStatus` (§30.4) — dipakai layar
+   * kasir untuk menampilkan badge "Member" saat `'active'`, dan untuk
+   * mengirim `customer_id` ke `useDiscount().applicable()` supaya diskon
+   * khusus member ikut tersaring (§30.3).
+   */
+  membership_status: 'none' | 'pending' | 'active' | 'rejected' | 'revoked'
 }
 
 export function usePos() {

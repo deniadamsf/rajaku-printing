@@ -54,10 +54,15 @@ export function useDiscount() {
    * cakupannya `selected` dan tidak mencakup produk terpilih tidak pernah
    * muncul di daftar (mencegah kasir memilih diskon yang bakal ditolak
    * backend saat submit).
+   * `customer_id` opsional (§30.3) — TANPA ini, diskon `audience_scope=member`
+   * TIDAK IKUT MUNCUL sama sekali (bukan bug, disengaja backend). Kirim
+   * begitu kasir sudah resolve pelanggan (dapat customer_id dari hasil
+   * pencarian POS), supaya promo member ikut tersaring sejak awal.
    */
-  async function applicable(params: { channel: Exclude<DiscountChannelScope, 'all'>; subtotal: number; product_id?: string }): Promise<ApplicableDiscount[]> {
+  async function applicable(params: { channel: Exclude<DiscountChannelScope, 'all'>; subtotal: number; product_id?: string; customer_id?: string }): Promise<ApplicableDiscount[]> {
     const query: Record<string, string> = { channel: params.channel, subtotal: String(params.subtotal) }
     if (params.product_id) query.product_id = params.product_id
+    if (params.customer_id) query.customer_id = params.customer_id
     const res = await api.get<{ items: ApplicableDiscount[] }>('/admin/discounts/applicable', { query })
     return res.items
   }

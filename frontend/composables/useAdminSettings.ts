@@ -46,6 +46,13 @@ export const SETTING_PAYMENT_QRIS_NMID = 'payment.qris_nmid'
  */
 export const SETTING_POS_RECEIPT_WIDTH_MM = 'pos.receipt_width_mm'
 
+/**
+ * Saklar on/off fitur membership customer (§30.1). Nilainya string
+ * `"true"`/`"false"` — backend `settings/service` (`boolRules`) yang
+ * memvalidasi, frontend cukup kirim string hasil `String(boolean)`.
+ */
+export const SETTING_MEMBERSHIP_ENABLED = 'membership_enabled'
+
 /** Urutan render di card "Rekening & QRIS" — lihat `pages/admin/pengaturan/index.vue`. */
 export const PAYMENT_SETTING_KEYS = [
   SETTING_PAYMENT_BANK_NAME,

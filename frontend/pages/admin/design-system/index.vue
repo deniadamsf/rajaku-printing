@@ -10,6 +10,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CreditCard,
+  Crown,
   ImageOff as ImageOffIcon,
   Package,
   Palette as PaletteIcon,
@@ -104,6 +105,14 @@ const demoProducts = [
   { id: 'prod-4', name: 'Roll Banner (lama)', category: 'Indoor', is_active: false },
 ]
 
+// --- Pemilih member (multi-select, dipakai form diskon §30.3) ---
+const demoMemberSelection = ref<string[]>(['mem-1'])
+const demoMembers = [
+  { id: 'mem-1', name: 'Bu Sari', phone: '628123456789' },
+  { id: 'mem-2', name: 'Pak Joko', phone: '628567891234' },
+  { id: 'mem-3', name: 'Nadia Putri', phone: '628998877665' },
+]
+
 // --- Editor artikel: toolbar markdown + panel SEO (dipakai /admin/artikel) ---
 const dsMarkdown = ref('## Kenapa memilih banner outdoor tahan air\n\nBanner outdoor tahan air cocok untuk...')
 const dsFocusKeyword = ref('banner outdoor tahan air')
@@ -178,6 +187,10 @@ const demoTextarea = ref('')
 const demoSelect = ref('')
 const demoSelectLoading = ref(false)
 
+// --- Toggle switch demo state (pola dipakai di /admin/pengaturan, §30.1) ---
+const dsToggleOn = ref(true)
+const dsToggleDisabled = ref(false)
+
 // --- OTP input demo state (pola dipakai di /auth/google, sub-state otp_form) ---
 const demoOtp = ref('')
 function onDemoOtpInput(e: Event) {
@@ -201,7 +214,9 @@ function onDemoOtpInput(e: Event) {
       <a href="#typography" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Tipografi</a>
       <a href="#buttons" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Buttons</a>
       <a href="#inputs" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Inputs</a>
+      <a href="#toggle-switch" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Toggle switch</a>
       <a href="#product-multiselect" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Pemilih produk</a>
+      <a href="#member-multiselect" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Pemilih member</a>
       <a href="#badges" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Badges</a>
       <a href="#cards" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Cards</a>
       <a href="#media-upload" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Media upload</a>
@@ -545,6 +560,29 @@ function onDemoOtpInput(e: Event) {
       </div>
     </section>
 
+    <!-- ================================= Toggle switch ================================= -->
+    <section id="toggle-switch" class="mb-16 scroll-mt-20">
+      <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Toggle switch</h2>
+      <p class="mt-2 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">&lt;AdminToggleSwitch&gt;</code> —
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">v-model</code> boolean, dipakai untuk
+        setting on/off satu keping (mis. <strong class="text-ink-900">Membership</strong> di
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/pengaturan</code>, §30.1). Native
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">&lt;button role="switch"&gt;</code> — bukan
+        checkbox — karena konvensinya membaca "saklar yang langsung berefek", bukan "pilih dari daftar".
+      </p>
+      <div class="mt-6 rounded-lg border border-hairline bg-canvas p-5 space-y-4">
+        <div class="flex items-center gap-3">
+          <AdminToggleSwitch v-model="dsToggleOn" aria-label="Contoh toggle aktif" />
+          <span class="text-sm font-medium text-ink-900">{{ dsToggleOn ? 'Aktif' : 'Nonaktif' }}</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <AdminToggleSwitch v-model="dsToggleDisabled" disabled aria-label="Contoh toggle disabled" />
+          <span class="text-sm font-medium text-ink-500">Disabled (mis. tanpa permission settings.manage)</span>
+        </div>
+      </div>
+    </section>
+
     <!-- ================================= Pemilih produk (multi-select) ================================= -->
     <section id="product-multiselect" class="mb-16 scroll-mt-20">
       <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Pemilih produk (multi-select)</h2>
@@ -560,6 +598,25 @@ function onDemoOtpInput(e: Event) {
         <AdminProductMultiSelect v-model="demoProductSelection" :products="demoProducts" />
         <p class="mt-3 text-xs text-ink-500">
           Terpilih: <span class="font-mono text-ink-700">{{ demoProductSelection.join(', ') || '(kosong)' }}</span>
+        </p>
+      </div>
+    </section>
+
+    <!-- ================================= Pemilih member ================================= -->
+    <section id="member-multiselect" class="mb-16 scroll-mt-20">
+      <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Pemilih member (multi-select)</h2>
+      <p class="mt-2 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">&lt;AdminMemberMultiSelect&gt;</code> —
+        checklist member aktif + pencarian, dipakai form <strong class="text-ink-900">Diskon</strong>
+        (<code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/diskon</code>) untuk cakupan
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">member_scope: 'selected_members'</code> (§30.3). Pola
+        sama dengan pemilih produk di atas, tapi sumber datanya daftar member berstatus <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">active</code> —
+        diskon khusus member cuma pernah berlaku untuk mereka.
+      </p>
+      <div class="mt-6 max-w-md rounded-lg border border-hairline bg-canvas p-5">
+        <AdminMemberMultiSelect v-model="demoMemberSelection" :members="demoMembers" />
+        <p class="mt-3 text-xs text-ink-500">
+          Terpilih: <span class="font-mono text-ink-700">{{ demoMemberSelection.join(', ') || '(kosong)' }}</span>
         </p>
       </div>
     </section>
@@ -586,6 +643,24 @@ function onDemoOtpInput(e: Event) {
         <AdminStatusBadge status="Kuota habis" tone="rose" />
         <AdminStatusBadge status="Kadaluarsa" tone="ink" />
         <AdminStatusBadge status="Nonaktif" tone="ink" />
+      </div>
+
+      <p class="mt-4 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        Badge <strong class="text-ink-900">Member</strong> (§30.4) BUKAN preset <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">&lt;AdminStatusBadge&gt;</code> —
+        markup manual dengan <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">bg-gold-50 text-gold-900 ring-gold-200</code>, dipakai di
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/pos</code> (hasil pencarian pelanggan) &amp;
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/akun/membership</code> (badge "Member Aktif") — emas dipilih karena konteksnya
+        memang premium (§26.1), bukan status semantic biasa.
+      </p>
+      <div class="mt-3 rounded-lg border border-hairline bg-canvas p-5 flex flex-wrap gap-2">
+        <span class="inline-flex items-center gap-1 rounded-full bg-gold-50 px-1.5 py-0.5 text-[10px] font-medium text-gold-900 ring-1 ring-inset ring-gold-200">
+          <Crown class="h-2.5 w-2.5" :stroke-width="1.75" />
+          Member
+        </span>
+        <span class="inline-flex items-center gap-1.5 rounded-full bg-gold-50 px-2.5 py-1 text-xs font-medium text-gold-900 ring-1 ring-inset ring-gold-200">
+          <Crown class="h-3 w-3" :stroke-width="1.75" />
+          Member Aktif
+        </span>
       </div>
     </section>
 

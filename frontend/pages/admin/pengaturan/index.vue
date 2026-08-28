@@ -3,11 +3,13 @@
  * /admin/pengaturan — Setting global aplikasi (§19).
  *
  * Isi saat ini: retensi file desain (hari), lebar kertas struk POS (§12),
- * dan rekening & QRIS pembayaran (§7). Nilai retensi dibaca job retention
- * tiap kali jalan; lebar struk dibaca `/admin/pos/index.vue` untuk `@page`
- * dinamis; nilai rekening/QRIS dibaca publik lewat `GET /payment-info`
- * (lihat `usePaymentInfo.ts`) — jadi perubahan di sini langsung tampil ke
- * pembeli, tanpa deploy ulang.
+ * saklar fitur membership (§30.1), dan rekening & QRIS pembayaran (§7). Nilai
+ * retensi dibaca job retention tiap kali jalan; lebar struk dibaca
+ * `/admin/pos/index.vue` untuk `@page` dinamis; saklar membership dibaca
+ * service `discount`/`membership` saat validasi & oleh halaman akun customer
+ * untuk sembunyikan/tampilkan "Ajukan jadi Member"; nilai rekening/QRIS
+ * dibaca publik lewat `GET /payment-info` (lihat `usePaymentInfo.ts`) — jadi
+ * perubahan di sini langsung tampil ke pembeli, tanpa deploy ulang.
  *
  * Sengaja tidak generic-form: tiap setting punya konteks & konsekuensi sendiri
  * yang perlu dijelaskan ke admin (menurunkan retensi = file lama langsung
@@ -17,11 +19,12 @@
  *
  * Design: patuh CLAUDE.md §26 (Fraunces + Inter + Lucide, brand/ink/hairline).
  */
-import { HardDrive, Landmark, Printer, QrCode, Save, RotateCcw, Loader2, TriangleAlert } from '@lucide/vue'
+import { HardDrive, Landmark, Printer, QrCode, Save, RotateCcw, Loader2, TriangleAlert, UserCheck } from '@lucide/vue'
 import { ApiError } from '~/composables/useApi'
 import {
   SETTING_DESIGN_RETENTION_DAYS,
   SETTING_POS_RECEIPT_WIDTH_MM,
+  SETTING_MEMBERSHIP_ENABLED,
   PAYMENT_SETTING_KEYS,
   SETTING_PAYMENT_BANK_NAME,
   SETTING_PAYMENT_ACCOUNT_NAME,
@@ -96,6 +99,23 @@ const receiptWidthDirty = computed(
 const receiptWidthOptions = computed(
   () => receiptWidth.value?.allowed_values ?? FALLBACK_RECEIPT_WIDTH_OPTIONS,
 )
+
+// -------------------- Membership (§30.1) --------------------
+const membership = computed(() =>
+  settings.value.find((s) => s.key === SETTING_MEMBERSHIP_ENABLED),
+)
+const membershipDirty = computed(
+  () =>
+    !!membership.value &&
+    toValue(SETTING_MEMBERSHIP_ENABLED) !== membership.value.value,
+)
+/** Toggle switch butuh boolean; setting-nya tersimpan sebagai string "true"/"false" (§22 — bind body JSON tetap string). */
+const membershipDraftEnabled = computed({
+  get: () => toValue(SETTING_MEMBERSHIP_ENABLED) === 'true',
+  set: (v: boolean) => {
+    draft[SETTING_MEMBERSHIP_ENABLED] = v ? 'true' : 'false'
+  },
+})
 
 // -------------------- Rekening & QRIS (§7) --------------------
 function settingByKey(key: string): AppSetting | undefined {
@@ -388,6 +408,82 @@ onMounted(fetchSettings)
       </p>
     </div>
 
+    <!-- ============ Membership (§30.1) ============ -->
+    <div v-if="membership" class="max-w-2xl rounded-lg border border-hairline bg-canvas p-6 md:p-8">
+      <div class="flex items-start gap-3">
+        <UserCheck class="mt-0.5 h-5 w-5 shrink-0 text-ink-600" :stroke-width="1.5" />
+        <div>
+          <h2 class="text-lg font-semibold text-ink-950">{{ membership.display_name }}</h2>
+          <p class="mt-1 text-sm leading-relaxed text-ink-500">
+            {{ membership.description }}
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-6 flex items-center gap-3">
+        <AdminToggleSwitch
+          v-model="membershipDraftEnabled"
+          :disabled="!canManage || saving"
+          aria-label="Aktifkan fitur membership"
+        />
+        <span class="text-sm font-medium text-ink-900">
+          {{ membershipDraftEnabled ? 'Aktif' : 'Nonaktif' }}
+        </span>
+      </div>
+
+      <div class="mt-6 flex items-center gap-2">
+        <button
+          type="button"
+          :disabled="!canManage || saving || !membershipDirty"
+          class="inline-flex items-center gap-2 rounded-md bg-brand-500 px-4 py-2 text-sm font-semibold text-canvas transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-alt disabled:cursor-not-allowed disabled:opacity-50"
+          @click="save(SETTING_MEMBERSHIP_ENABLED)"
+        >
+          <Loader2 v-if="saving" class="h-4 w-4 animate-spin" :stroke-width="1.5" />
+          <Save v-else class="h-4 w-4" :stroke-width="1.5" />
+          Simpan
+        </button>
+        <button
+          type="button"
+          :disabled="saving || !membershipDirty"
+          class="inline-flex items-center gap-2 rounded-md border border-hairline bg-canvas px-3 py-2 text-sm font-medium text-ink-900 transition-colors hover:bg-canvas-alt disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+          @click="reset(SETTING_MEMBERSHIP_ENABLED)"
+        >
+          <RotateCcw class="h-4 w-4" :stroke-width="1.5" />
+          Batal
+        </button>
+      </div>
+
+      <!-- Konsekuensi yang gampang tidak disadari: menonaktifkan TIDAK me-reset
+           data member yang sudah ada (§30.1) — hanya menyembunyikan halaman
+           pengajuan & menolak diskon khusus member dipakai. -->
+      <div
+        v-if="membershipDirty && !membershipDraftEnabled"
+        class="mt-5 flex items-start gap-2 rounded-md bg-brand-50 p-3 text-xs leading-relaxed text-ink-700"
+      >
+        <TriangleAlert class="mt-0.5 h-4 w-4 shrink-0 text-brand-500" :stroke-width="1.5" />
+        <p>
+          Menonaktifkan menyembunyikan halaman "Ajukan jadi Member" dan menolak diskon
+          khusus member saat dipakai. Data member yang sudah ada tetap tersimpan dan
+          otomatis berlaku lagi kalau diaktifkan ulang.
+        </p>
+      </div>
+
+      <dl class="mt-6 space-y-1 border-t border-hairline pt-4 text-xs text-ink-500">
+        <div class="flex gap-2">
+          <dt>Key</dt>
+          <dd class="font-mono text-ink-700">{{ membership.key }}</dd>
+        </div>
+        <div class="flex gap-2">
+          <dt>Terakhir diubah</dt>
+          <dd>{{ formatDate(membership.updated_at) }}</dd>
+        </div>
+      </dl>
+
+      <p v-if="!canManage" class="mt-4 text-xs text-ink-500">
+        Anda tidak punya permission <span class="font-mono">settings.manage</span> — nilai hanya bisa dilihat.
+      </p>
+    </div>
+
     <!-- ============ Rekening & QRIS (§7) ============ -->
     <div v-if="paymentLoaded" class="max-w-2xl rounded-lg border border-hairline bg-canvas p-6 md:p-8">
       <div class="flex items-start gap-3">
@@ -539,7 +635,7 @@ onMounted(fetchSettings)
       </p>
     </div>
 
-    <div v-if="!retention && !receiptWidth && !paymentLoaded" class="rounded-lg border border-hairline bg-canvas p-8 text-center">
+    <div v-if="!retention && !receiptWidth && !membership && !paymentLoaded" class="rounded-lg border border-hairline bg-canvas p-8 text-center">
       <p class="text-sm text-ink-500">Belum ada pengaturan yang bisa diubah.</p>
     </div>
     </div>

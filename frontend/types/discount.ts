@@ -6,6 +6,15 @@ export type DiscountChannelScope = 'all' | 'online' | 'pos'
 export type DiscountStatus = 'aktif' | 'terjadwal' | 'kadaluarsa' | 'nonaktif' | 'kuota_habis'
 /** Cakupan produk (CLAUDE.md §28.9). `selected` TANPA `product_ids` bukan "berlaku semua" — itu diskon yang tidak bisa dipakai sama sekali. */
 export type DiscountAppliesTo = 'all' | 'selected'
+/** Cakupan audiens (CLAUDE.md §30.3). `member` menambah syarat customer harus berstatus `active` (lihat useMembership). */
+export type DiscountAudienceScope = 'all' | 'member'
+/**
+ * Hanya relevan kalau `audience_scope === 'member'`. BEDA dengan `applies_to`
+ * (§28.9): ini enum eksplisit, bukan "kosong = semua" — `selected_members`
+ * dengan `customer_ids` kosong WAJIB ditolak backend (§30.3), jangan
+ * disamakan dengan pola `applies_to==='selected'`.
+ */
+export type DiscountMemberScope = 'all_members' | 'selected_members' | ''
 
 export interface Discount {
   id: string
@@ -27,6 +36,12 @@ export interface Discount {
   applies_to: DiscountAppliesTo
   /** Kosong kalau `applies_to === 'all'`. */
   product_ids: string[]
+  /** Default `all` — sinkron dengan default backend (§30.3). */
+  audience_scope: DiscountAudienceScope
+  /** "" kalau `audience_scope === 'all'`. */
+  member_scope: DiscountMemberScope
+  /** Kosong kalau `member_scope !== 'selected_members'`. */
+  customer_ids: string[]
   created_at: string
   updated_at: string
 }
@@ -69,4 +84,9 @@ export interface DiscountInput {
   applies_to: DiscountAppliesTo
   /** Wajib diisi (minimal 1) kalau `applies_to === 'selected'` — backend menolak daftar kosong (§28.9). */
   product_ids: string[]
+  audience_scope: DiscountAudienceScope
+  /** Wajib diisi ('all_members'/'selected_members') kalau `audience_scope === 'member'`, wajib "" kalau tidak (§30.3). */
+  member_scope: DiscountMemberScope
+  /** Wajib diisi (minimal 1) kalau `member_scope === 'selected_members'` — backend menolak daftar kosong (§30.3). */
+  customer_ids: string[]
 }

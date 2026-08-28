@@ -28,6 +28,7 @@ import {
   Loader2,
   TicketPercent,
   Search,
+  Crown,
 } from '@lucide/vue'
 import { onClickOutside } from '@vueuse/core'
 import type { CatalogProduct, CatalogProductDetail, CatalogQuote } from '~/types/catalog'
@@ -99,6 +100,20 @@ const customerSearchResults = ref<PosCustomerSearchResult[]>([])
 const customerSearchLoading = ref(false)
 const customerSearchError = ref<string | null>(null)
 const customerSearchOpen = ref(false)
+// Pelanggan yang di-resolve dari hasil pencarian (§30.3) — id-nya dikirim ke
+// discountSvc.applicable() supaya diskon audience_scope='member' ikut
+// tersaring. Disimpan berpasangan dengan name/phone SAAT dipilih (bukan
+// watcher terpisah) supaya perbandingan di `selectedCustomerId` di bawah
+// otomatis membatalkan diri kalau kasir mengedit nama/WA manual sesudahnya —
+// customer_id lama bisa jadi identitas orang lain kalau tetap dikirim.
+const resolvedCustomer = ref<{ id: string; name: string; phone: string } | null>(null)
+const selectedCustomerId = computed(() =>
+  resolvedCustomer.value
+  && resolvedCustomer.value.name === form.customerName
+  && resolvedCustomer.value.phone === form.customerPhone
+    ? resolvedCustomer.value.id
+    : null,
+)
 
 let customerSearchTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleCustomerSearch() {
@@ -141,6 +156,7 @@ async function runCustomerSearch() {
 function selectCustomer(c: PosCustomerSearchResult) {
   form.customerName = c.name
   form.customerPhone = c.phone
+  resolvedCustomer.value = { id: c.id, name: c.name, phone: c.phone }
   customerSearchQuery.value = ''
   customerSearchResults.value = []
   customerSearchOpen.value = false
@@ -309,6 +325,7 @@ async function fetchApplicableDiscounts() {
       channel: 'pos',
       subtotal: subtotal.value,
       product_id: form.productId || undefined,
+      customer_id: selectedCustomerId.value || undefined,
     })
     if (selectedDiscountId.value && !applicableDiscounts.value.some((d) => d.id === selectedDiscountId.value)) {
       selectedDiscountId.value = ''
@@ -321,7 +338,7 @@ async function fetchApplicableDiscounts() {
     discountsLoading.value = false
   }
 }
-watch([subtotal, () => form.productId], scheduleDiscountFetch)
+watch([subtotal, () => form.productId, selectedCustomerId], scheduleDiscountFetch)
 
 const canSubmit = computed(() => {
   if (submitting.value) return false
@@ -408,6 +425,7 @@ function resetForm() {
   successResult.value = null
   form.customerName = ''
   form.customerPhone = ''
+  resolvedCustomer.value = null
   form.productId = ''
   form.materialId = ''
   form.widthCm = 0
@@ -635,7 +653,16 @@ async function printStruk() {
                     class="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left cursor-pointer hover:bg-canvas-alt transition-colors"
                     @click="selectCustomer(c)"
                   >
-                    <span class="text-sm font-medium text-ink-900">{{ c.name }}</span>
+                    <span class="flex items-center gap-1.5">
+                      <span class="text-sm font-medium text-ink-900">{{ c.name }}</span>
+                      <span
+                        v-if="c.membership_status === 'active'"
+                        class="inline-flex items-center gap-1 rounded-full bg-gold-50 px-1.5 py-0.5 text-[10px] font-medium text-gold-900 ring-1 ring-inset ring-gold-200"
+                      >
+                        <Crown class="h-2.5 w-2.5" :stroke-width="1.75" />
+                        Member
+                      </span>
+                    </span>
                     <span class="text-xs font-mono text-ink-500">{{ c.phone }}</span>
                   </button>
                 </li>

@@ -25,6 +25,7 @@ import {
   QrCode,
   TicketPercent,
   ClipboardList,
+  UserCheck,
 } from '@lucide/vue'
 
 export interface AdminNavItem {
@@ -122,6 +123,14 @@ export function useAdminNav() {
       description: 'Laporan penjualan & diskon',
       icon: ClipboardList,
       permission: 'report.view',
+      group: 'kelola',
+    },
+    {
+      label: 'Membership',
+      to: '/admin/membership',
+      description: 'Approve/tolak/cabut pengajuan member',
+      icon: UserCheck,
+      permission: 'membership.view',
       group: 'kelola',
     },
     {

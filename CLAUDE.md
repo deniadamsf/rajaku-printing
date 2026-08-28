@@ -35,6 +35,7 @@ Modul terpisah (masing-masing punya service/route sendiri, komunikasi via intern
 12. `admin` — role & menu toggle per staff
 13. `tracking` — public endpoint cek resi (no-login)
 14. `discount` — master diskon (persen/nominal), masa berlaku, kuota, soft-delete; nilainya di-*snapshot* ke order saat dipakai (§28)
+15. `membership` — pengajuan & approval status member customer, modular (bisa dimatikan via setting); diskon khusus member menumpang di modul `discount` sebagai `audience_scope`, bukan sistem terpisah (§30)
 
 > Rekap order (§28.5) **tidak** jadi modul sendiri — ia laporan baca-saja di atas tabel `orders`, jadi tinggal di modul `order` (`repository.Recap` → `service.RecapOrders` → `GET /admin/orders/recap`). Bikin modul `report` terpisah malah memaksa cross-module read ke internal `order`, yang dilarang §22.
 
@@ -279,6 +280,11 @@ Selain skill yang sudah kamu punya (`ui-ux-pro-max`, sudah disesuaikan ke Vue), 
 ## 24. Status Keputusan
 Tidak ada lagi item TBD terbuka. Seluruh keputusan arsitektur & fitur (section 1-23) sudah final per tanggal dokumen ini disepakati. Spec ini siap dijadikan acuan penuh untuk mulai development.
 
+> **Addendum (2026-08-28):** Section 30 (Modul Membership) ditambahkan. Diskon
+> khusus member **menumpang** di tabel `discounts` (§28) lewat `audience_scope`,
+> bukan sistem diskon kedua — kalau ada yang tergoda bikin tabel harga override
+> terpisah untuk member, baca alasan penolakannya di §30.3 dulu.
+>
 > **Addendum (2026-08-27):** Section 29 (Cetak Struk Thermal) ditambahkan, dan §12 direvisi. `window.print()` **bukan lagi** jalur cetak struk ke printer thermal — keputusan ini berbasis bukti byte-level, bukan preferensi. Baca §29 sebelum menyentuh apa pun yang berhubungan dengan cetak struk.
 >
 > **Addendum (2026-08-24):** Section 28 (Modul Diskon & Rekap Order) ditambahkan. Aturan snapshot di §28.2 **binding** — setiap perhitungan uang yang menyentuh diskon wajib membaca kolom snapshot di `orders`, bukan JOIN ke tabel `discounts`.
@@ -938,3 +944,231 @@ Kalau suatu saat toko memakai printer thermal yang `GS v 0`-nya benar
 (mis. printer meja Rongta/Xprinter), jalur `window.print()` cukup untuk
 printer itu dan agen tidak diperlukan — batasan di §29.1 spesifik ke firmware
 RPP02, bukan ke semua printer thermal.
+
+## 30. Modul Membership (28 Agustus 2026)
+
+Fitur member untuk customer, **modular** — bisa dimatikan total lewat satu
+setting tanpa mengubah data yang sudah ada. Dua bagian yang sengaja dipisah:
+status keanggotaan (siapa yang member) dan diskonnya (apa untungnya jadi
+member) — dijelaskan kenapa di §30.3.
+
+### 30.1. Saklar on/off
+
+Setting `membership_enabled` (boolean, tabel `settings` yang sudah dipakai
+untuk `pos.receipt_width_mm` §29.3 dkk). Efeknya saat `false`:
+
+- Halaman "Ajukan jadi Member" disembunyikan dari area akun customer.
+- Diskon dengan `audience_scope='member'` (§30.3) **ditolak di service saat
+  dipakai**, bukan cuma disembunyikan di UI — kasir/checkout yang mencoba
+  memakainya tetap kena `ErrDiscountMembershipDisabled`. UI-only hiding tanpa
+  validasi service adalah pola yang sudah dilarang berulang kali di dokumen
+  ini (§22, §28.9): jangan diulang di sini.
+- Data status member **tidak di-reset**. Kalau diaktifkan lagi, member yang
+  sudah `active` otomatis berlaku lagi — tidak perlu ajukan ulang. Order lama
+  yang sudah memakai diskon member tetap utuh di rekap karena sudah
+  ter-*snapshot* (aturan yang sama dengan §28.2, tidak diulang di sini).
+
+### 30.2. Pengajuan & approval
+
+**Syarat mengajukan**: customer harus `customer_type='registered'` (login via
+OAuth/akun) — guest (termasuk hasil walk-in POS §11) tidak bisa mengajukan
+langsung. Kalau pelanggan walk-in mau jadi member, jalurnya: dia daftar akun
+online pakai nomor WA yang **sama persis** dengan yang dipakai kasir dulu →
+backend match ke `customer_id` yang sudah ada lewat unique index nomor WA
+(mekanisme ini sudah ada di §11) → riwayat order lama ikut, lalu baru bisa
+ajukan membership dari akun itu.
+
+**Kolom di tabel `customers`** (bukan tabel status terpisah — status member
+adalah state eksplisit yang cuma berubah lewat satu aksi admin bertahap, beda
+dari kasus kuota diskon §28.4 yang sengaja **tidak** disimpan sebagai counter
+karena rawan banyak jalur lupa update; di sini cuma ada satu jalur perubahan
+status, jadi menyimpannya langsung aman):
+
+```
+membership_status        VARCHAR(20) NOT NULL DEFAULT 'none'
+                          -- none | pending | active | rejected | revoked
+membership_requested_at  TIMESTAMPTZ NULL
+membership_decided_at    TIMESTAMPTZ NULL
+membership_decided_by    UUID NULL   -- FK staff/user, siapa yang approve/reject/revoke
+membership_decision_note TEXT NULL   -- alasan reject atau revoke, wajib diisi utk keduanya
+```
+
+Ditambah tabel log murni untuk audit trail (bukan sumber kebenaran status —
+`customers.membership_status` itu sumber kebenarannya):
+
+```
+membership_status_logs (
+  id UUID, customer_id UUID,
+  from_status VARCHAR(20), to_status VARCHAR(20),
+  changed_by UUID NULL, note TEXT NULL,
+  created_at TIMESTAMPTZ
+)
+```
+
+**Transisi status yang sah**:
+
+```
+none      → pending   (customer klik "Ajukan jadi Member")
+pending   → active    (admin approve)
+pending   → rejected  (admin reject, note wajib)
+rejected  → pending   (customer ajukan ulang — diperbolehkan)
+active    → revoked   (admin cabut, note wajib — mis. penyalahgunaan)
+revoked   → active    (admin reinstate, note wajib — jalur pemulihan manual)
+```
+
+`revoked` **tidak** bisa self-service ajukan ulang oleh customer (beda dari
+`rejected`) — harus lewat admin secara manual lewat aksi **Reinstate**
+(`POST /admin/membership/:id/reinstate`, permission `membership.manage`,
+note wajib), karena revoke berarti ada alasan spesifik yang perlu ditinjau
+ulang manusia, bukan penolakan rutin. **Wajib ada endpoint ini** — kalau
+tidak, `revoked` jadi jalan buntu permanen yang cuma bisa diperbaiki lewat
+`UPDATE` manual di DB (melewati `membership_status_logs`, merusak audit
+trail yang jadi alasan tabel itu dibuat).
+
+**Endpoint baca status untuk customer** — wajib ada
+`GET /api/v1/account/membership` (customer, auth required) yang mengembalikan
+status member saat ini. Tanpa ini, status cuma terbaca sekali di body respons
+mutasi (Apply/Approve/dst) lalu hilang begitu customer reload halaman —
+halaman akun (§30.4) tidak bisa render card status tanpa endpoint ini.
+
+**Endpoint**: `POST /api/v1/account/membership/apply` (customer, butuh
+`membership_enabled=true` dan status saat ini `none`/`rejected`, selain itu
+`ErrMembershipInvalidTransition`), `GET /api/v1/account/membership` (customer,
+baca status sendiri — lihat alasan di atas). Admin: `GET /admin/membership`
+(daftar + filter status), `POST /admin/membership/:id/approve`,
+`POST /admin/membership/:id/reject` (body: `reason` wajib),
+`POST /admin/membership/:id/revoke` (body: `reason` wajib),
+`POST /admin/membership/:id/reinstate` (body: `reason` wajib, `revoked` →
+`active`).
+
+**Saat re-apply (`rejected → pending`)**, kolom `membership_decided_at`,
+`membership_decided_by`, dan `membership_decision_note` dari penolakan
+sebelumnya **wajib dikosongkan lagi** (bukan dibiarkan menempel) — kalau
+tidak, pengajuan baru yang statusnya `pending` masih menampilkan catatan
+penolakan lama, dan reviewer kedua bisa salah baca sebagai "sudah pernah
+diputuskan" lalu melewatkannya.
+
+**Notifikasi WA** (§13 pola sama): terkirim saat status berubah jadi
+`active`/`rejected`/`revoked`, lewat `notification_job` queue yang sama —
+bukan sinkron.
+
+**Permission baru** (pola §28.6): `membership.manage` (approve/reject/revoke)
+default `super_admin`, toggleable ke role lain lewat Kelola Role — sama
+peringatannya dengan `discount.apply`: pemegang permission ini bisa membuka
+akses ke diskon member, jadi jangan diberi sembarangan.
+
+### 30.3. Diskon khusus member — menumpang di modul `discount`, bukan sistem baru
+
+**Kenapa bukan modul/tabel terpisah**: modul `discount` (§28) sudah punya
+seluruh mesin yang dibutuhkan — snapshot ke order (§28.2), validasi masa
+berlaku/kuota/channel (§28.4), dan pola pembatasan cakupan
+(`discount_products`, §28.9). Diskon member cuma butuh **satu sumbu
+pembatasan baru** yang sejajar dengan `channel_scope` yang sudah ada, bukan
+konsep uang yang berbeda. Membuat sistem kedua berarti dua tempat untuk bug
+snapshot yang sama, dan rekap (§28.5) harus tahu cara gabungkan keduanya.
+
+**Perluasan tabel `discounts`**:
+
+```
+audience_scope  VARCHAR(20) NOT NULL DEFAULT 'all'    -- all | member
+member_scope    VARCHAR(20) NULL                       -- all_members | selected_members
+                                                         -- diisi hanya kalau audience_scope='member'
+```
+
+`audience_scope` independen dari `channel_scope` yang sudah ada — sebuah
+diskon boleh sekaligus "khusus member" DAN "khusus POS".
+
+**Tabel `discount_customers`** (`discount_id`, `customer_id`, unique
+berpasangan, FK ke `customers`) — dipakai untuk "diskon khusus member
+tertentu" saat `member_scope='selected_members'`.
+
+**Beda penting dengan `discount_products` (§28.9) — jangan disamakan**:
+di `discount_products`, daftar kosong berarti diskon **tidak berlaku untuk
+produk manapun** (ditolak). Di sini, `member_scope` adalah enum eksplisit,
+bukan disimpulkan dari isi tabel kosong-atau-tidak:
+- `member_scope='all_members'` → berlaku untuk **semua** member `active`,
+  `discount_customers` tidak dipakai sama sekali (boleh kosong, itu normal).
+- `member_scope='selected_members'` → berlaku **hanya** untuk customer yang
+  ada barisnya di `discount_customers`; kalau baris itu kosong, sama seperti
+  §28.9 — jalur create/update **wajib menolak** (`ErrDiscountMemberScopeEmpty`),
+  jangan biarkan tersimpan lalu ditolak belakangan.
+
+Alasan dibuat enum eksplisit (bukan "kosong = semua, ada isi = terbatas" ala
+`discount_products`): kalau dipakai konvensi yang sama, kosong pada
+`discount_customers` akan **ambigu** — apakah maksudnya "semua member" atau
+"belum ada satupun dipilih, jangan berlaku dulu"? Ambiguitas itu persis jenis
+kegagalan senyap yang sudah diperingatkan di §28.9 untuk kasus produk. Enum
+eksplisit menghapus tebak-tebakan ini dari awal.
+
+**"Harga khusus untuk member tertentu"** — diimplementasikan sebagai diskon
+biasa dengan `audience_scope='member'`, `member_scope='selected_members'`,
+dan satu baris di `discount_customers` untuk 1 customer. **Bukan** tabel
+harga override/pengganti terpisah — alasan: harga override flat bentrok
+dengan `pricing_type='per_m2'` (§9) yang menghitung harga dari formula
+`harga × lebar × tinggi`, bukan angka tetap per produk. Memakai mekanisme
+diskon (persen/nominal di atas harga yang sudah dihitung formula) tetap
+kompatibel dengan kedua `pricing_type`, sedangkan tabel harga pengganti tidak.
+
+**Validasi tambahan di `validateForUse`** (sentinel baru, pola §28.4):
+- `ErrDiscountMembershipDisabled` — `membership_enabled=false` di setting.
+- `ErrDiscountMembershipRequired` — `audience_scope='member'` tapi customer
+  order berstatus bukan `active` (termasuk guest tanpa `customer_id` member).
+- `ErrDiscountMemberMismatch` — `member_scope='selected_members'` dan
+  customer order tidak ada di `discount_customers`.
+
+**Snapshot**: tidak berubah dari §28.2 — kolom `discount_amount`,
+`discount_name_snapshot`, dkk di `orders` sudah menampung ini tanpa
+perubahan skema, karena diskon member tetaplah baris di tabel `discounts`
+yang sama.
+
+**Endpoint `/applicable`** (§28.9) tambah parameter opsional `customer_id`,
+persis pola `product_id` yang sudah ada — **bukan** dibaca dari sesi login,
+karena pemanggil endpoint ini selalu staff (permission `discount.apply`), bukan
+si member sendiri: di POS, kasir mencari pelanggan dulu (§11) baru dapat
+`customer_id`-nya, lalu mengirimkannya ke `/applicable` supaya daftar diskon
+yang tampil di layar kasir sudah tersaring status member pelanggan itu sejak
+awal. Tanpa `customer_id` dikirim, diskon `audience_scope='member'` tidak
+ikut muncul di hasil (sama seperti tanpa `product_id`, diskon
+`applies_to='selected'` tidak muncul) — bukan error, cuma tersaring keluar.
+
+### 30.4. UI (§26 berlaku penuh)
+
+- `/admin/membership` — tab Pending/Aktif/Ditolak/Dicabut, tombol
+  approve/reject/revoke mengikuti pola destructive §26.7 (reject & revoke
+  wajib input alasan), ikon Lucide `UserCheck`.
+- Halaman akun customer: card "Status Membership" — tombol "Ajukan jadi
+  Member" kalau `none`/`rejected`, badge status kalau sudah diajukan (pending:
+  amber semantic, active: aksen `gold.500` karena membership memang konteks
+  premium yang cocok dengan token emas §26.1, rejected/revoked: netral
+  `ink.500`).
+- Form diskon (`/admin/diskon`): field baru "Cakupan Audiens" (Semua/Member).
+  Pilih Member → muncul sub-pilihan Semua Member/Member Tertentu; Member
+  Tertentu membuka picker customer (pola sama dengan picker produk §28.9).
+- POS (`/admin/pos`): hasil pencarian pelanggan existing (§11) menampilkan
+  badge "Member" kalau `membership_status='active'`, dan daftar diskon yang
+  ditawarkan ke kasir otomatis include diskon member yang applicable.
+
+### 30.5. Permission
+
+| Kode | Untuk apa | Default |
+|---|---|---|
+| `membership.manage` | Approve/reject/revoke pengajuan member | `super_admin` |
+| `membership.view` | Lihat daftar & status member (read-only, mis. utk CS) | `super_admin` |
+
+Seperti permission lain (§10), keduanya bisa di-toggle ke role manapun lewat
+"Kelola Role".
+
+### 30.6. Yang sengaja TIDAK dibuat sekarang
+
+- **Tidak ada tier** (silver/gold/platinum) — cuma dua keadaan, member atau
+  bukan. Kalau nanti dibutuhkan tier, polanya diperluas dari `audience_scope`
+  yang sama (mis. tambah tabel `membership_tiers` + FK di `customers`),
+  dicatat sebagai keputusan terpisah saat itu terjadi.
+- **Tidak ada biaya/iuran pendaftaran** — status member gratis, approval
+  murni manual oleh admin. Kalau nanti berbayar, itu menyentuh modul
+  `payment` dan perlu keputusan terpisah (mis. member baru aktif setelah
+  bukti bayar iuran diverifikasi).
+- **Tidak ada auto-approve** — semua pengajuan wajib ditinjau admin, walau
+  cuma cek nomor WA valid. Ini sengaja manual dulu untuk MVP; auto-approve
+  bisa jadi keputusan lanjutan kalau volume pengajuan sudah bikin admin
+  kewalahan.

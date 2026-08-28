@@ -158,6 +158,19 @@ func (f *fakeCustomers) SearchCustomers(context.Context, string, int) ([]authapi
 	return nil, f.err
 }
 
+// GetMembershipInfo/UpdateMembershipStatus/ListMembers (§30) — dummy impls
+// agar fake satisfy authapi.CustomerService. Invoice tests tidak butuh
+// perilaku ini.
+func (f *fakeCustomers) GetMembershipInfo(context.Context, uuid.UUID) (*authapi.MembershipInfo, error) {
+	return nil, f.err
+}
+func (f *fakeCustomers) UpdateMembershipStatus(context.Context, authapi.UpdateMembershipStatusInput) error {
+	return f.err
+}
+func (f *fakeCustomers) ListMembers(context.Context, authapi.ListMembershipFilter) (*authapi.ListMembershipResult, error) {
+	return nil, f.err
+}
+
 type fakeNotifier struct {
 	calls      int
 	lastKind   notificationapi.Kind

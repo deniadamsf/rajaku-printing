@@ -27,6 +27,10 @@ var (
 	// dan insert (race) — keduanya dipetakan ke sentinel yang sama supaya
 	// caller tidak perlu tahu bedanya.
 	ErrProductNotFound = errors.New("discount/repository: one or more product ids not found")
+	// ErrCustomerNotFound — satu atau lebih customer_id di cakupan member
+	// diskon (discount_customers, §30.3) tidak ada di tabel users. Mirror
+	// ErrProductNotFound persis — sama dua lapis penegakannya.
+	ErrCustomerNotFound = errors.New("discount/repository: one or more customer ids not found")
 )
 
 const (
@@ -42,21 +46,26 @@ func NewDiscountRepository(db *gorm.DB) *DiscountRepository { return &DiscountRe
 
 // Create inserts a new discount row plus its initial product scope
 // (discount_products, §28.9 — empty productIDs is fine, e.g. applies_to=
-// "all") atomically in one transaction. Returns ErrCodeConflict specifically
-// when the partial unique index on `code` is violated.
-func (r *DiscountRepository) Create(ctx context.Context, d *model.Discount, productIDs []uuid.UUID) error {
+// "all") AND its initial member scope (discount_customers, §30.3 — empty
+// customerIDs is fine, e.g. audience_scope="all" or member_scope=
+// "all_members") atomically in one transaction. Returns ErrCodeConflict
+// specifically when the partial unique index on `code` is violated.
+func (r *DiscountRepository) Create(ctx context.Context, d *model.Discount, productIDs, customerIDs []uuid.UUID) error {
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(d).Error; err != nil {
 			return err
 		}
-		return insertDiscountProducts(tx, d.ID, productIDs)
+		if err := insertDiscountProducts(tx, d.ID, productIDs); err != nil {
+			return err
+		}
+		return insertDiscountCustomers(tx, d.ID, customerIDs)
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrCodeConflict
 		}
-		if errors.Is(err, ErrProductNotFound) || isForeignKeyViolation(err) {
-			return ErrProductNotFound
+		if sentinel, ok := classifyScopeInsertErr(err); ok {
+			return sentinel
 		}
 		return fmt.Errorf("create discount: %w", err)
 	}
@@ -158,22 +167,33 @@ func (r *DiscountRepository) CountUsageOne(ctx context.Context, id uuid.UUID) (i
 	return count, nil
 }
 
-// UpdateWithProducts applies a partial field update AND (kalau
-// replaceProducts true) mengganti SELURUH cakupan produk diskon, DALAM SATU
-// TRANSAKSI (temuan review #1). Sebelum ini, Update dan ReplaceProducts
-// adalah dua transaksi terpisah dipanggil berurutan dari service — kalau
-// yang kedua gagal (koneksi putus, ctx timeout, produk tidak ditemukan),
-// field diskon (mis. applies_to='selected') sudah ter-commit duluan TANPA
-// cakupan produknya, persis state yang §28.9 larang keras. Sekarang
-// keduanya hidup/mati bersama, sama seperti Create.
+// ScopeReplace — instruksi "ganti SELURUH daftar cakupan ini" untuk satu
+// sumbu (produk §28.9 atau member §30.3) dalam satu panggilan
+// UpdateWithScopes. Replace=false berarti "jangan sentuh cakupan sumbu ini
+// sama sekali" — IDs diabaikan.
+type ScopeReplace struct {
+	Replace bool
+	IDs     []uuid.UUID
+}
+
+// UpdateWithScopes applies a partial field update AND (kalau Replace=true di
+// salah satu/kedua ScopeReplace) mengganti SELURUH cakupan produk dan/atau
+// member diskon, DALAM SATU TRANSAKSI (temuan review #1, extended §30.3 —
+// dulu bernama UpdateWithProducts, hanya menangani cakupan produk). Sebelum
+// pola transaksi tunggal ini ada, Update dan ganti-cakupan adalah panggilan
+// terpisah — kalau salah satu gagal belakangan, field diskon (mis.
+// applies_to='selected') sudah ter-commit duluan TANPA cakupannya, persis
+// state yang §28.9/§30.3 larang keras. Field, cakupan produk, dan cakupan
+// member sekarang hidup/mati bersama, sama seperti Create.
 //
 // Mengembalikan ErrNotFound kalau baris tidak ada/sudah di-soft-delete
 // (hanya dicek kalau fields tidak kosong — kalau caller cuma mengganti
-// cakupan produk, PK/FK constraint discount_products sudah menegakkan
-// keberadaan discountID). ErrProductNotFound kalau salah satu productIDs
-// tidak ada di tabel products.
-func (r *DiscountRepository) UpdateWithProducts(ctx context.Context, id uuid.UUID, fields map[string]any, replaceProducts bool, productIDs []uuid.UUID) error {
-	if len(fields) == 0 && !replaceProducts {
+// cakupan, PK/FK constraint discount_products/discount_customers sudah
+// menegakkan keberadaan discountID). ErrProductNotFound /
+// ErrCustomerNotFound kalau salah satu id di cakupan terkait tidak
+// ditemukan.
+func (r *DiscountRepository) UpdateWithScopes(ctx context.Context, id uuid.UUID, fields map[string]any, products, customers ScopeReplace) error {
+	if len(fields) == 0 && !products.Replace && !customers.Replace {
 		return nil
 	}
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -193,11 +213,19 @@ func (r *DiscountRepository) UpdateWithProducts(ctx context.Context, id uuid.UUI
 				return ErrNotFound
 			}
 		}
-		if replaceProducts {
+		if products.Replace {
 			if err := tx.Exec("DELETE FROM discount_products WHERE discount_id = ?", id).Error; err != nil {
 				return fmt.Errorf("clear discount product scope: %w", err)
 			}
-			if err := insertDiscountProducts(tx, id, productIDs); err != nil {
+			if err := insertDiscountProducts(tx, id, products.IDs); err != nil {
+				return err
+			}
+		}
+		if customers.Replace {
+			if err := tx.Exec("DELETE FROM discount_customers WHERE discount_id = ?", id).Error; err != nil {
+				return fmt.Errorf("clear discount member scope: %w", err)
+			}
+			if err := insertDiscountCustomers(tx, id, customers.IDs); err != nil {
 				return err
 			}
 		}
@@ -210,8 +238,8 @@ func (r *DiscountRepository) UpdateWithProducts(ctx context.Context, id uuid.UUI
 		if isUniqueViolation(err) {
 			return ErrCodeConflict
 		}
-		if errors.Is(err, ErrProductNotFound) || isForeignKeyViolation(err) {
-			return ErrProductNotFound
+		if sentinel, ok := classifyScopeInsertErr(err); ok {
+			return sentinel
 		}
 		return fmt.Errorf("update discount %s: %w", id, err)
 	}
@@ -264,8 +292,27 @@ func (r *DiscountRepository) ProductIDs(ctx context.Context, discountIDs []uuid.
 	return out, nil
 }
 
+// CustomerIDs returns, for each discount id in `discountIDs`, the list of
+// customer ids currently scoped to it (discount_customers rows, §30.3) —
+// bulk variant used both for single lookups (Get, ResolveForOrder) and for
+// listing pages (List, Applicable) to avoid N+1 queries — mirror ProductIDs.
+func (r *DiscountRepository) CustomerIDs(ctx context.Context, discountIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	out := make(map[uuid.UUID][]uuid.UUID, len(discountIDs))
+	if len(discountIDs) == 0 {
+		return out, nil
+	}
+	var rows []model.DiscountCustomer
+	if err := r.db.WithContext(ctx).Where("discount_id IN ?", discountIDs).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list discount member scope: %w", err)
+	}
+	for _, row := range rows {
+		out[row.DiscountID] = append(out[row.DiscountID], row.CustomerID)
+	}
+	return out, nil
+}
+
 // insertDiscountProducts bulk-inserts discount_products rows for
-// discountID — shared by Create and UpdateWithProducts. No-op when
+// discountID — shared by Create and UpdateWithScopes. No-op when
 // productIDs is empty. Validates every id exists in `products` FIRST
 // (temuan review #3) — kalau tidak, memberikan ErrProductNotFound yang
 // jelas alih-alih membiarkan raw FK violation (23503) meledak jadi 500 di
@@ -311,6 +358,59 @@ func ensureProductsExist(tx *gorm.DB, productIDs []uuid.UUID) error {
 	return nil
 }
 
+// insertDiscountCustomers bulk-inserts discount_customers rows for
+// discountID (§30.3) — mirror insertDiscountProducts, shared by Create and
+// UpdateWithScopes. No-op when customerIDs is empty. Validates every id
+// exists in `users` FIRST — kalau tidak, memberikan ErrCustomerNotFound yang
+// jelas alih-alih membiarkan raw FK violation (23503) meledak jadi 500.
+func insertDiscountCustomers(tx *gorm.DB, discountID uuid.UUID, customerIDs []uuid.UUID) error {
+	if len(customerIDs) == 0 {
+		return nil
+	}
+	if err := ensureCustomersExist(tx, customerIDs); err != nil {
+		return err
+	}
+	values := make([]any, 0, len(customerIDs)*2)
+	placeholders := ""
+	for i, cid := range customerIDs {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "(?, ?)"
+		values = append(values, discountID, cid)
+	}
+	sql := "INSERT INTO discount_customers (discount_id, customer_id) VALUES " + placeholders
+	if err := tx.Exec(sql, values...).Error; err != nil {
+		return fmt.Errorf("insert discount member scope: %w", err)
+	}
+	return nil
+}
+
+// ensureCustomersExist bulk-checks (single query) that every id in
+// customerIDs exists in `users` AND is actually a customer account (mirror
+// ensureProductsExist). `users` holds BOTH customers and staff (migration
+// 000001, column `user_type` CHECK IN ('customer','staff')) — without this
+// filter a staff/admin UUID would silently pass as a valid discount member
+// scope target, get inserted into discount_customers, and then NEVER match
+// any real order.customer_id (orders are always created for customer
+// accounts), leaving the discount quietly unusable while admin believes it's
+// configured (code review finding, §30.3). Caller is expected to have
+// already de-duplicated customerIDs (service.dedupeUUIDs) — count is
+// compared against len(customerIDs) exactly, so a caller passing duplicates
+// would false-positive here.
+func ensureCustomersExist(tx *gorm.DB, customerIDs []uuid.UUID) error {
+	var count int64
+	if err := tx.Table("users").
+		Where("id IN ? AND user_type = ?", customerIDs, "customer").
+		Count(&count).Error; err != nil {
+		return fmt.Errorf("verify customer ids exist: %w", err)
+	}
+	if count != int64(len(customerIDs)) {
+		return ErrCustomerNotFound
+	}
+	return nil
+}
+
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
@@ -319,13 +419,41 @@ func isUniqueViolation(err error) bool {
 	return false
 }
 
-// isForeignKeyViolation — jaring pengaman kalau produk terhapus di antara
-// ensureProductsExist dan INSERT (race sempit); ensureProductsExist
-// menangani jalur normal (produk memang tidak ada dari awal).
-func isForeignKeyViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == pgForeignKeyViolationCode
+// classifyScopeInsertErr maps an error coming out of Create/UpdateWithScopes'
+// transaction closure to the right §28.9/§30.3 sentinel — checking the
+// EXPLICIT bulk-existence-check sentinels first (ensureProductsExist/
+// ensureCustomersExist, the normal path), then falling back to the FK
+// violation's TableName (23503 — jaring pengaman kalau baris dihapus di
+// antara pengecekan dan INSERT, race sempit). Returns ok=false when err
+// isn't one of these — caller then wraps it as a generic internal error.
+func classifyScopeInsertErr(err error) (error, bool) {
+	if errors.Is(err, ErrProductNotFound) {
+		return ErrProductNotFound, true
 	}
-	return false
+	if errors.Is(err, ErrCustomerNotFound) {
+		return ErrCustomerNotFound, true
+	}
+	if table, ok := foreignKeyViolationTable(err); ok {
+		if table == "discount_customers" {
+			return ErrCustomerNotFound, true
+		}
+		// TableName kosong/tidak dikenal default ke ErrProductNotFound —
+		// cocok dengan perilaku repository ini SEBELUM discount_customers
+		// ada (satu-satunya tabel cakupan waktu itu adalah discount_products).
+		return ErrProductNotFound, true
+	}
+	return nil, false
+}
+
+// foreignKeyViolationTable reports the referencing table name of a Postgres
+// FK-violation error (23503), if err is one — driver populates pgErr.
+// TableName with the table the failed INSERT targeted (discount_products or
+// discount_customers here), which is how classifyScopeInsertErr tells the
+// two scope kinds apart without needing separate error types per call site.
+func foreignKeyViolationTable(err error) (string, bool) {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == pgForeignKeyViolationCode {
+		return pgErr.TableName, true
+	}
+	return "", false
 }

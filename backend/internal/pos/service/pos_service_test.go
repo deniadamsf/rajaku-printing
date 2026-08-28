@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/rajaku-printing/backend/internal/auth/authapi"
+	"github.com/rajaku-printing/backend/internal/discount/discountapi"
 	"github.com/rajaku-printing/backend/internal/invoice/invoiceapi"
 	"github.com/rajaku-printing/backend/internal/notification/notificationapi"
 	"github.com/rajaku-printing/backend/internal/order/orderapi"
@@ -109,6 +110,18 @@ func (f *fakeCustomers) SearchCustomers(context.Context, string, int) ([]authapi
 	return []authapi.Identity{*f.identity}, nil
 }
 
+// GetMembershipInfo/UpdateMembershipStatus/ListMembers (§30) — dummy impls
+// agar fake satisfy authapi.CustomerService. POS tests tidak butuh perilaku ini.
+func (f *fakeCustomers) GetMembershipInfo(context.Context, uuid.UUID) (*authapi.MembershipInfo, error) {
+	return nil, f.err
+}
+func (f *fakeCustomers) UpdateMembershipStatus(context.Context, authapi.UpdateMembershipStatusInput) error {
+	return f.err
+}
+func (f *fakeCustomers) ListMembers(context.Context, authapi.ListMembershipFilter) (*authapi.ListMembershipResult, error) {
+	return nil, f.err
+}
+
 type fakeNotifier struct {
 	calls    int
 	lastKind notificationapi.Kind
@@ -146,6 +159,12 @@ func (f *fakeSettings) GetInt(_ context.Context, _ string) (int, error) {
 		return 0, f.err
 	}
 	return f.width, nil
+}
+
+// GetBool — dummy impl agar fake satisfy settingsapi.Reader (§30). POS tests
+// tidak butuh perilaku ini.
+func (f *fakeSettings) GetBool(_ context.Context, _ string) (bool, error) {
+	return false, f.err
 }
 
 // ---------- helpers ----------
@@ -322,6 +341,55 @@ func TestCreateOrder_CustomerResolveFails_WrappedAsPOSErr(t *testing.T) {
 	_, err := svc.CreateOrder(context.Background(), validInput(uuid.New()))
 	if !errors.Is(err, posapi.ErrCustomerResolve) {
 		t.Fatalf("want ErrCustomerResolve, got %v", err)
+	}
+}
+
+// TestCreateOrder_DiscountSentinel_PropagatesViaErrorsIs mengunci temuan
+// review "sentinel diskon ketelan jadi HTTP 500" — order/service.CreatePOSOrder
+// mengembalikan sentinel diskon MENTAH (tidak dibungkus, lihat
+// order/service/order_service.go resolveDiscount/CreatePOSOrder), dan
+// pos/service.CreateOrder wajib meneruskannya sedemikian rupa sehingga
+// errors.Is(hasil, sentinelAsli) TETAP true di level pemanggil manapun
+// (handler). Sebelum diperbaiki, baris fallback di CreateOrder membungkus
+// error asli dengan `%v` (bukan `%w`), memutus rantai ini untuk SETIAP
+// sentinel yang tidak eksplisit ada di daftar bubble-up (§28.9 lama maupun
+// §30.3 baru seperti ErrDiscountMembershipRequired) — errors.Is jadi selalu
+// false dan handler jatuh ke case generic (500).
+func TestCreateOrder_DiscountSentinel_PropagatesViaErrorsIs(t *testing.T) {
+	sentinels := []error{
+		discountapi.ErrDiscountMembershipRequired, // §30.3, baru — TIDAK ada di daftar bubble-up eksplisit pos/service
+		discountapi.ErrDiscountMembershipDisabled, // §30.3, baru — idem
+		discountapi.ErrDiscountMemberMismatch,     // §30.3, baru — idem
+		discountapi.ErrDiscountMemberScopeEmpty,   // §30.3, baru — idem
+		discountapi.ErrDiscountScopeEmpty,         // §28.9, lama — idem
+		discountapi.ErrDiscountProductMismatch,    // §28.9, lama — idem
+	}
+
+	for _, sentinel := range sentinels {
+		sentinel := sentinel
+		t.Run(sentinel.Error(), func(t *testing.T) {
+			cmd := &fakeOrderCmd{createErr: sentinel}
+			custs := &fakeCustomers{identity: &authapi.Identity{
+				UserID: uuid.New(), Name: "Budi", Phone: "6281234567890",
+			}}
+			svc := newSvc(cmd, custs, nil, nil)
+
+			_, err := svc.CreateOrder(context.Background(), validInput(uuid.New()))
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			// Rantai ke sentinel ASLI wajib tetap tertembus — ini yang patah
+			// sebelum fix (%v).
+			if !errors.Is(err, sentinel) {
+				t.Errorf("errors.Is(err, %v) = false, want true (err: %v)", sentinel, err)
+			}
+			// Rantai ke posapi.ErrOrderCreate (fallback marker) juga wajib
+			// tetap tertembus — ini bagian dari kontrak "%w dua kali", bukan
+			// cuma salah satunya.
+			if !errors.Is(err, posapi.ErrOrderCreate) {
+				t.Errorf("errors.Is(err, posapi.ErrOrderCreate) = false, want true (err: %v)", err)
+			}
+		})
 	}
 }
 
@@ -623,7 +691,7 @@ func TestCreateOrder_ShippingCostNilForPickup(t *testing.T) {
 
 func TestSearchCustomers_HappyPath_MapsIdentitiesToResults(t *testing.T) {
 	custID := uuid.New()
-	custs := &fakeCustomers{identity: &authapi.Identity{UserID: custID, Name: "Budi", Phone: "6281234567890"}}
+	custs := &fakeCustomers{identity: &authapi.Identity{UserID: custID, Name: "Budi", Phone: "6281234567890", MembershipStatus: "active"}}
 	svc := newSvc(&fakeOrderCmd{}, custs, nil, nil)
 
 	results, err := svc.SearchCustomers(context.Background(), "budi")
@@ -633,7 +701,7 @@ func TestSearchCustomers_HappyPath_MapsIdentitiesToResults(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("want 1 result, got %d", len(results))
 	}
-	if results[0].ID != custID || results[0].Name != "Budi" || results[0].Phone != "6281234567890" {
+	if results[0].ID != custID || results[0].Name != "Budi" || results[0].Phone != "6281234567890" || results[0].MembershipStatus != "active" {
 		t.Errorf("result not mapped correctly: %+v", results[0])
 	}
 }

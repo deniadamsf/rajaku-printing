@@ -63,6 +63,15 @@ type stringRule struct {
 	digitsOnly bool
 }
 
+// boolRule — key bertipe boolean, disimpan sebagai string "true"/"false"
+// (strconv.ParseBool). Melengkapi intRules/stringRules untuk key non-angka
+// non-string-bebas, mis. saklar fitur (§30 membership_enabled).
+type boolRule struct{}
+
+var boolRules = map[string]boolRule{
+	settingsapi.KeyMembershipEnabled: {},
+}
+
 var stringRules = map[string]stringRule{
 	settingsapi.KeyPaymentBankName:      {required: true, maxLen: 120},
 	settingsapi.KeyPaymentAccountName:   {required: true, maxLen: 120},
@@ -103,6 +112,24 @@ func (s *Service) GetInt(ctx context.Context, key string) (int, error) {
 			key, row.Value, settingsapi.ErrInvalidValue)
 	}
 	return n, nil
+}
+
+// GetBool implements settingsapi.Reader — sama disiplinnya dengan GetInt:
+// TIDAK ada fallback diam-diam ke default kalau row hilang.
+func (s *Service) GetBool(ctx context.Context, key string) (bool, error) {
+	row, err := s.store.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, settingsrepo.ErrNotFound) {
+			return false, settingsapi.ErrSettingNotFound
+		}
+		return false, fmt.Errorf("settings: get %q: %w", key, err)
+	}
+	b, err := strconv.ParseBool(strings.TrimSpace(row.Value))
+	if err != nil {
+		return false, fmt.Errorf("settings: key %q value %q is not a boolean: %w",
+			key, row.Value, settingsapi.ErrInvalidValue)
+	}
+	return b, nil
 }
 
 // List mengembalikan semua setting untuk admin panel, masing-masing dilengkapi
@@ -191,10 +218,25 @@ func validateSettingValue(key, value string) (string, error) {
 	if rule, ok := intRules[key]; ok {
 		return validateIntValue(key, value, rule)
 	}
+	if _, ok := boolRules[key]; ok {
+		return validateBoolValue(key, value)
+	}
 	if rule, ok := stringRules[key]; ok {
 		return validateStringValue(key, value, rule)
 	}
 	return "", settingsapi.ErrUnknownKey
+}
+
+// validateBoolValue memastikan value adalah representasi boolean yang sah
+// ("true"/"false", case-sensitive lowercase — sengaja tidak menerima "1"/"0"
+// supaya nilai yang tersimpan selalu satu bentuk kanonik, cocok langsung
+// dibaca ulang lewat strconv.ParseBool di GetBool).
+func validateBoolValue(key, value string) (string, error) {
+	if value != "true" && value != "false" {
+		return "", fmt.Errorf("settings: %q harus \"true\" atau \"false\", dapat %q: %w",
+			key, value, settingsapi.ErrInvalidValue)
+	}
+	return value, nil
 }
 
 func validateIntValue(key, value string, rule intRule) (string, error) {

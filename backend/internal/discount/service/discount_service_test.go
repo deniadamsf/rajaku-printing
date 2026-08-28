@@ -432,7 +432,7 @@ func TestUpdate_SwitchToNominalWithExistingMaxDiscountAmount_ReturnsSentinel(t *
 // ---- Review finding #1: Update field + product scope harus atomik ----
 
 // TestUpdate_ProductScopeReplaceFails_ReturnsError memastikan kegagalan
-// repository (dilempar sebagai satu kesatuan lewat UpdateWithProducts) tetap
+// repository (dilempar sebagai satu kesatuan lewat UpdateWithScopes) tetap
 // dipropagasi sebagai error ke caller — atomicity SEBENARNYA (rollback DB)
 // dibuktikan di repository_test.go (butuh sqlmock, bukan fake); test ini
 // hanya menjaga service TIDAK menelan errornya atau melaporkan sukses palsu.
@@ -445,8 +445,8 @@ func TestUpdate_ProductScopeReplaceFails_ReturnsError(t *testing.T) {
 			IsActive: true, ChannelScope: model.ChannelScopeAll,
 			AppliesTo: model.AppliesToSelected,
 		},
-		productIDsResult:      map[uuid.UUID][]uuid.UUID{id: {uuid.New()}},
-		updateWithProductsErr: repository.ErrProductNotFound,
+		productIDsResult:    map[uuid.UUID][]uuid.UUID{id: {uuid.New()}},
+		updateWithScopesErr: repository.ErrProductNotFound,
 	}
 	svc := New(store)
 	newIDs := []uuid.UUID{uuid.New()}
@@ -591,7 +591,7 @@ func TestApplicable_EmptyScope_FilteredOut_EvenWithoutProductID(t *testing.T) {
 		productIDsResult: map[uuid.UUID][]uuid.UUID{}, // cakupan kosong
 	}
 	svc := New(store)
-	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil)
+	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil, uuid.Nil)
 	if err != nil {
 		t.Fatalf("Applicable() error = %v, want nil", err)
 	}
@@ -617,7 +617,7 @@ func TestApplicable_SelectedNonEmptyScope_ShownWhenProductIDOmitted(t *testing.T
 		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {scopedProductID}},
 	}
 	svc := New(store)
-	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil)
+	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil, uuid.Nil)
 	if err != nil {
 		t.Fatalf("Applicable() error = %v, want nil", err)
 	}
@@ -644,7 +644,7 @@ func TestApplicable_ProductIDGiven_FiltersOutOfScopeDiscount(t *testing.T) {
 		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {scopedProductID}},
 	}
 	svc := New(store)
-	views, err := svc.Applicable(context.Background(), "pos", 100_000, requestedProductID)
+	views, err := svc.Applicable(context.Background(), "pos", 100_000, requestedProductID, uuid.Nil)
 	if err != nil {
 		t.Fatalf("Applicable() error = %v, want nil", err)
 	}
@@ -669,11 +669,297 @@ func TestApplicable_QuotaExhausted_FilteredOut(t *testing.T) {
 		usageMap: map[uuid.UUID]int64{id: 5},
 	}
 	svc := New(store)
-	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil)
+	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil, uuid.Nil)
 	if err != nil {
 		t.Fatalf("Applicable() error = %v, want nil", err)
 	}
 	if len(views) != 0 {
 		t.Fatalf("Applicable() = %+v, want empty (kuota sudah habis)", views)
+	}
+}
+
+// ---- Diskon khusus member (§30.3) ----
+
+func TestCreate_Member_HappyPath_AllMembers(t *testing.T) {
+	store := &fakeDiscountStore{}
+	svc := New(store)
+	view, err := svc.Create(context.Background(), CreateInput{
+		Code: "MEMBER10", Name: "Diskon Member", Type: "percent", ValuePercent: floatPtr(10),
+		ChannelScope: "all", IsActive: true,
+		AudienceScope: "member", MemberScope: "all_members",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	if view.AudienceScope != "member" || view.MemberScope != "all_members" {
+		t.Fatalf("Create() audience_scope/member_scope = %q/%q, want member/all_members",
+			view.AudienceScope, view.MemberScope)
+	}
+}
+
+func TestCreate_Member_SelectedMembers_HappyPath(t *testing.T) {
+	store := &fakeDiscountStore{}
+	svc := New(store)
+	customerID := uuid.New()
+	view, err := svc.Create(context.Background(), CreateInput{
+		Code: "VIP10", Name: "Diskon VIP", Type: "percent", ValuePercent: floatPtr(10),
+		ChannelScope: "all", IsActive: true,
+		AudienceScope: "member", MemberScope: "selected_members",
+		CustomerIDs: []uuid.UUID{customerID},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	if len(view.CustomerIDs) != 1 || view.CustomerIDs[0] != customerID {
+		t.Fatalf("Create() customer_ids = %+v, want [%s]", view.CustomerIDs, customerID)
+	}
+	if len(store.createCustomerIDs) != 1 || store.createCustomerIDs[0] != customerID {
+		t.Fatalf("Create() customerIDs passed to store = %+v, want [%s]", store.createCustomerIDs, customerID)
+	}
+}
+
+// TestCreate_Member_SelectedMembers_EmptyList_Rejected — §30.3 aturan
+// keras: member_scope="selected_members" dengan daftar customer kosong
+// TIDAK boleh diperlakukan sebagai "berlaku untuk semua member".
+func TestCreate_Member_SelectedMembers_EmptyList_Rejected(t *testing.T) {
+	svc := New(&fakeDiscountStore{})
+	_, err := svc.Create(context.Background(), CreateInput{
+		Code: "VIP10", Name: "Diskon VIP", Type: "percent", ValuePercent: floatPtr(10),
+		AudienceScope: "member", MemberScope: "selected_members",
+	})
+	if !errors.Is(err, discountapi.ErrDiscountMemberScopeEmpty) {
+		t.Fatalf("Create() error = %v, want ErrDiscountMemberScopeEmpty", err)
+	}
+}
+
+// TestCreate_Member_MissingMemberScope_Rejected — audience_scope="member"
+// wajib disertai member_scope, tidak boleh dibiarkan kosong.
+func TestCreate_Member_MissingMemberScope_Rejected(t *testing.T) {
+	svc := New(&fakeDiscountStore{})
+	_, err := svc.Create(context.Background(), CreateInput{
+		Code: "MEMBER10", Name: "Diskon Member", Type: "percent", ValuePercent: floatPtr(10),
+		AudienceScope: "member",
+	})
+	if !errors.Is(err, discountapi.ErrDiscountMemberScopeInvalid) {
+		t.Fatalf("Create() error = %v, want ErrDiscountMemberScopeInvalid", err)
+	}
+}
+
+// TestCreate_MemberScopeWithoutAudienceMember_Rejected — member_scope diisi
+// padahal audience_scope bukan "member" (default "all") — kombinasi yang
+// tidak boleh diam-diam diterima (CHECK constraint di DB, migration 000031,
+// jadi lapis terakhir kalau ini lolos).
+func TestCreate_MemberScopeWithoutAudienceMember_Rejected(t *testing.T) {
+	svc := New(&fakeDiscountStore{})
+	_, err := svc.Create(context.Background(), CreateInput{
+		Code: "X", Name: "Promo", Type: "percent", ValuePercent: floatPtr(10),
+		MemberScope: "all_members",
+	})
+	if !errors.Is(err, discountapi.ErrDiscountMemberScopeInvalid) {
+		t.Fatalf("Create() error = %v, want ErrDiscountMemberScopeInvalid", err)
+	}
+}
+
+func TestCreate_AudienceScopeAll_DefaultWhenOmitted(t *testing.T) {
+	store := &fakeDiscountStore{}
+	svc := New(store)
+	view, err := svc.Create(context.Background(), CreateInput{
+		Code: "GLOBAL", Name: "Diskon Semua", Type: "percent", ValuePercent: floatPtr(10),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	if view.AudienceScope != "all" {
+		t.Fatalf("Create() audience_scope = %q, want all (default kalau tidak dikirim)", view.AudienceScope)
+	}
+	if view.MemberScope != "" {
+		t.Fatalf("Create() member_scope = %q, want empty", view.MemberScope)
+	}
+}
+
+// TestUpdate_SwitchToMember_AutoClearsOnLeaving — reconcileMemberScope harus
+// AUTO-CLEAR member_scope kalau audience_scope dipatch balik ke "all" pada
+// PATCH yang sama, tanpa memaksa caller juga mengirim member_scope:null.
+func TestUpdate_SwitchToMember_AutoClearsOnLeaving(t *testing.T) {
+	id := uuid.New()
+	selected := model.MemberScopeAllMembers
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeMember,
+			MemberScope:   &selected,
+		},
+	}
+	svc := New(store)
+	newScope := "all"
+	view, err := svc.Update(context.Background(), id, UpdateInput{AudienceScope: &newScope})
+	if err != nil {
+		t.Fatalf("Update() error = %v, want nil", err)
+	}
+	if view.AudienceScope != "all" || view.MemberScope != "" {
+		t.Fatalf("Update() audience_scope/member_scope = %q/%q, want all/empty (auto-cleared)",
+			view.AudienceScope, view.MemberScope)
+	}
+	if v, ok := store.updateFields["member_scope"]; !ok || v != nil {
+		t.Fatalf("Update() fields[member_scope] = %v (ok=%v), want explicit nil (auto-clear must reach DB)", v, ok)
+	}
+}
+
+// TestUpdate_SwitchToMember_WithoutMemberScope_Rejected — audience_scope
+// dipatch ke "member" tanpa member_scope disertakan -> ditolak, tidak boleh
+// diam-diam dibiarkan NULL (akan melanggar CHECK constraint di DB kalau
+// lolos sampai situ).
+func TestUpdate_SwitchToMember_WithoutMemberScope_Rejected(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeAll,
+		},
+	}
+	svc := New(store)
+	newScope := "member"
+	_, err := svc.Update(context.Background(), id, UpdateInput{AudienceScope: &newScope})
+	if !errors.Is(err, discountapi.ErrDiscountMemberScopeInvalid) {
+		t.Fatalf("Update() error = %v, want ErrDiscountMemberScopeInvalid", err)
+	}
+}
+
+// TestUpdate_MemberScopeExplicit_WithoutAudienceMember_Rejected — caller
+// explicitly sends member_scope while the final audience_scope isn't
+// "member" (never was, and this PATCH doesn't change it) — explicit
+// disagreement, must be rejected outright, not silently ignored.
+func TestUpdate_MemberScopeExplicit_WithoutAudienceMember_Rejected(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeAll,
+		},
+	}
+	svc := New(store)
+	newMemberScope := "all_members"
+	_, err := svc.Update(context.Background(), id, UpdateInput{MemberScope: &newMemberScope})
+	if !errors.Is(err, discountapi.ErrDiscountMemberScopeInvalid) {
+		t.Fatalf("Update() error = %v, want ErrDiscountMemberScopeInvalid", err)
+	}
+}
+
+// TestUpdate_ReplacesCustomerScopeEntirely — §30.3 mirror
+// TestUpdate_ReplacesProductScopeEntirely: PATCH customer_ids mengganti
+// SELURUH daftar (delete+insert), bukan menambah/merge parsial.
+func TestUpdate_ReplacesCustomerScopeEntirely(t *testing.T) {
+	id := uuid.New()
+	oldCustomerID := uuid.New()
+	newCustomerID := uuid.New()
+	selected := model.MemberScopeSelected
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "X", Name: "Promo",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeMember,
+			MemberScope:   &selected,
+		},
+		customerIDsResult: map[uuid.UUID][]uuid.UUID{id: {oldCustomerID}},
+	}
+	svc := New(store)
+	newIDs := []uuid.UUID{newCustomerID}
+	view, err := svc.Update(context.Background(), id, UpdateInput{CustomerIDs: &newIDs})
+	if err != nil {
+		t.Fatalf("Update() error = %v, want nil", err)
+	}
+	if store.replaceCustomersID != id {
+		t.Fatalf("ReplaceCustomers discountID = %s, want %s", store.replaceCustomersID, id)
+	}
+	if len(store.replaceCustomersIDs) != 1 || store.replaceCustomersIDs[0] != newCustomerID {
+		t.Fatalf("ReplaceCustomers customerIDs = %+v, want [%s] (entire replace, old id dropped)",
+			store.replaceCustomersIDs, newCustomerID)
+	}
+	if len(view.CustomerIDs) != 1 || view.CustomerIDs[0] != newCustomerID {
+		t.Fatalf("Update() view.customer_ids = %+v, want [%s]", view.CustomerIDs, newCustomerID)
+	}
+}
+
+// TestApplicable_Member_NoCustomerID_FilteredOutByDefault — §30.3: tanpa
+// customer_id, diskon audience_scope="member" SAMA SEKALI TIDAK MUNCUL
+// (aman by default) — beda dari product_id di mana applies_to="all" tetap
+// lolos tanpa product_id.
+func TestApplicable_Member_NoCustomerID_FilteredOutByDefault(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		activeResult: []model.Discount{{
+			ID: id, Code: "MEMBER10", Name: "Diskon Member",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeMember,
+			MemberScope:   memberScopePtr(model.MemberScopeAllMembers),
+		}},
+	}
+	svc := New(store)
+	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil, uuid.Nil)
+	if err != nil {
+		t.Fatalf("Applicable() error = %v, want nil", err)
+	}
+	if len(views) != 0 {
+		t.Fatalf("Applicable() = %+v, want empty (member discount hidden without customer_id)", views)
+	}
+}
+
+// TestApplicable_Member_CustomerIDGiven_ActiveMember_Shown — customer_id
+// dikirim & customer-nya member aktif -> diskon member ikut muncul.
+func TestApplicable_Member_CustomerIDGiven_ActiveMember_Shown(t *testing.T) {
+	id := uuid.New()
+	customerID := uuid.New()
+	store := &fakeDiscountStore{
+		activeResult: []model.Discount{{
+			ID: id, Code: "MEMBER10", Name: "Diskon Member",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeMember,
+			MemberScope:   memberScopePtr(model.MemberScopeAllMembers),
+		}},
+	}
+	svc := New(store)
+	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
+	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: true})
+	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil, customerID)
+	if err != nil {
+		t.Fatalf("Applicable() error = %v, want nil", err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("Applicable() = %+v, want 1 item (active member)", views)
+	}
+}
+
+// TestApplicable_Member_CustomerIDGiven_NotActiveMember_FilteredOut —
+// customer_id dikirim tapi bukan member aktif -> diskon member disaring.
+func TestApplicable_Member_CustomerIDGiven_NotActiveMember_FilteredOut(t *testing.T) {
+	id := uuid.New()
+	customerID := uuid.New()
+	store := &fakeDiscountStore{
+		activeResult: []model.Discount{{
+			ID: id, Code: "MEMBER10", Name: "Diskon Member",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeMember,
+			MemberScope:   memberScopePtr(model.MemberScopeAllMembers),
+		}},
+	}
+	svc := New(store)
+	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
+	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: false})
+	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil, customerID)
+	if err != nil {
+		t.Fatalf("Applicable() error = %v, want nil", err)
+	}
+	if len(views) != 0 {
+		t.Fatalf("Applicable() = %+v, want empty (not an active member)", views)
 	}
 }

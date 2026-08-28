@@ -33,6 +33,12 @@ func (f *fakeSettings) GetInt(_ context.Context, key string) (int, error) {
 	return f.days, nil
 }
 
+// GetBool — dummy impl agar fake satisfy settingsapi.Reader (§30). Design
+// retention tests tidak butuh perilaku ini.
+func (f *fakeSettings) GetBool(_ context.Context, _ string) (bool, error) {
+	return false, f.err
+}
+
 type alertCall struct {
 	kind     notificationapi.Kind
 	orderID  *uuid.UUID

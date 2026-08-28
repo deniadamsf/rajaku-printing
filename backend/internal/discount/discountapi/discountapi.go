@@ -98,6 +98,49 @@ var (
 	// review #3). Sebelumnya ini lolos validasi lalu meledak jadi FK
 	// violation mentah (500) di repository.
 	ErrDiscountProductNotFound = errors.New("discountapi: satu atau lebih product_id tidak ditemukan")
+
+	// --- Diskon khusus member (§30.3) ---
+
+	// ErrDiscountAudienceScopeInvalid — audience_scope bukan "all" atau
+	// "member".
+	ErrDiscountAudienceScopeInvalid = errors.New("discountapi: audience_scope harus all atau member")
+	// ErrDiscountMemberScopeInvalid — member_scope bukan "all_members"/
+	// "selected_members" yang valid, ATAU diisi padahal audience_scope bukan
+	// "member", ATAU kosong padahal audience_scope="member" (kombinasi
+	// keduanya wajib konsisten — CHECK constraint di DB, migration 000031,
+	// jadi lapis terakhir; sentinel ini lapis pertama di service supaya
+	// admin dapat pesan yang jelas sebelum meledak jadi 500 di DB).
+	ErrDiscountMemberScopeInvalid = errors.New("discountapi: member_scope tidak valid untuk audience_scope yang dipilih")
+	// ErrDiscountMemberScopeEmpty — member_scope="selected_members" tapi
+	// discount_customers kosong (belum diisi admin, ATAU seluruh customer
+	// cakupannya sudah tidak lagi member aktif — TIDAK relevan di sini,
+	// keanggotaan tabelnya independen dari status membership). Daftar kosong
+	// TIDAK PERNAH berarti "berlaku untuk semua member" — ditolak DUA KALI:
+	// saat create/update DAN saat validateForUse dipakai (mirror
+	// ErrDiscountScopeEmpty §28.9).
+	ErrDiscountMemberScopeEmpty = errors.New("discountapi: cakupan member diskon kosong")
+	// ErrDiscountCustomerNotFound — salah satu customer_id yang dikirim di
+	// create/PATCH (customer_ids) tidak ditemukan (mirror
+	// ErrDiscountProductNotFound).
+	ErrDiscountCustomerNotFound = errors.New("discountapi: satu atau lebih customer_id tidak ditemukan")
+	// ErrDiscountMembershipDisabled — audience_scope="member" dipakai untuk
+	// membuat order, tapi setting membership_enabled=false secara global
+	// (§30.1). Ditolak SAAT DIPAKAI, bukan saat create/update — admin boleh
+	// menyiapkan diskon member sebelum fitur diaktifkan.
+	ErrDiscountMembershipDisabled = errors.New("discountapi: fitur membership sedang nonaktif, diskon khusus member tidak bisa dipakai")
+	// ErrDiscountMembershipRequired — audience_scope="member" tapi customer
+	// order bukan member aktif (termasuk guest tanpa customer_id / order
+	// tanpa customer_id sama sekali).
+	ErrDiscountMembershipRequired = errors.New("discountapi: diskon ini khusus untuk member aktif")
+	// ErrDiscountMemberMismatch — member_scope="selected_members" dan
+	// customer_id order yang mau memakainya tidak ada dalam daftar cakupan.
+	ErrDiscountMemberMismatch = errors.New("discountapi: diskon tidak berlaku untuk pelanggan ini")
+	// ErrDiscountMembershipUnavailable — audience_scope="member" dipakai
+	// tapi resolver membership/settings belum di-wire (nil) di discount
+	// service (§22 no-silent-stub — jangan diam-diam anggap "bukan member"
+	// kalau checker-nya memang belum ter-wire, mirror
+	// orderapi.ErrDiscountUnavailable).
+	ErrDiscountMembershipUnavailable = errors.New("discountapi: validasi membership belum siap, coba lagi nanti")
 )
 
 // ResolveInput — payload untuk menghitung potongan diskon sebuah order.
@@ -115,6 +158,12 @@ type ResolveInput struct {
 	// applies_to="selected" (§28.9). Diabaikan untuk diskon manual & diskon
 	// applies_to="all".
 	ProductID uuid.UUID
+	// CustomerID — customer order ini, dicocokkan dengan status membership &
+	// cakupan diskon kalau audience_scope="member" (§30.3). uuid.Nil berarti
+	// "tidak ada customer" (order guest tanpa customer_id) — selalu gagal
+	// ErrDiscountMembershipRequired untuk diskon audience_scope="member".
+	// Diabaikan untuk diskon manual & diskon audience_scope="all".
+	CustomerID uuid.UUID
 }
 
 // Snapshot — hasil resolusi diskon, SIAP disalin ke kolom snapshot orders

@@ -431,6 +431,115 @@ func (r *UserRepository) SetPassword(ctx context.Context, id uuid.UUID, hash str
 	return nil
 }
 
+// ---- Membership (§30 CLAUDE.md) ----
+
+// MembershipStatusUpdate — parameter transisi CAS (compare-and-swap) untuk
+// UpdateMembershipStatus. Pointer fields (RequestedAt/DecidedAt/DecidedBy/
+// Note) nil berarti "biarkan kolomnya apa adanya" — dibedakan dari "kosongkan"
+// (ClearDecision=true, yang menulis NULL eksplisit ke ketiga kolom
+// keputusan), sama pola dengan applyClearable* di discount/service.
+type MembershipStatusUpdate struct {
+	CustomerID    uuid.UUID
+	FromStatus    string
+	ToStatus      string
+	RequestedAt   *time.Time
+	DecidedAt     *time.Time
+	DecidedBy     *uuid.UUID
+	Note          *string
+	ClearDecision bool
+}
+
+// UpdateMembershipStatus conditionally transitions users.membership_status
+// dari FromStatus ke ToStatus — WHERE clause menyertakan
+// "membership_status = FromStatus" supaya dua transisi konkuren tidak bisa
+// sama-sama sukses (§30.2 race safety, pola sama seperti
+// discount_repository.go SoftDelete's RowsAffected check). Return (false, nil)
+// kalau 0 baris ter-update — caller (membership/service) memetakan ini ke
+// "status berubah sejak dibaca", BUKAN "row tidak ada" (baris users tidak
+// pernah hard-deleted).
+func (r *UserRepository) UpdateMembershipStatus(ctx context.Context, p MembershipStatusUpdate) (bool, error) {
+	updates := map[string]any{
+		"membership_status": p.ToStatus,
+		"updated_at":        gorm.Expr("NOW()"),
+	}
+	if p.RequestedAt != nil {
+		updates["membership_requested_at"] = *p.RequestedAt
+	}
+	if p.ClearDecision {
+		// Re-apply dari rejected (§30.2) — kosongkan catatan keputusan lama
+		// eksplisit ke NULL, bukan meninggalkannya menempel di pengajuan baru.
+		updates["membership_decided_at"] = nil
+		updates["membership_decided_by"] = nil
+		updates["membership_decision_note"] = nil
+	} else {
+		if p.DecidedAt != nil {
+			updates["membership_decided_at"] = *p.DecidedAt
+		}
+		if p.DecidedBy != nil {
+			updates["membership_decided_by"] = *p.DecidedBy
+		}
+		if p.Note != nil {
+			updates["membership_decision_note"] = *p.Note
+		}
+	}
+	res := r.db.WithContext(ctx).Model(&model.User{}).
+		Where("id = ? AND membership_status = ?", p.CustomerID, p.FromStatus).
+		Updates(updates)
+	if res.Error != nil {
+		return false, fmt.Errorf("update membership status for user %s: %w", p.CustomerID, res.Error)
+	}
+	return res.RowsAffected > 0, nil
+}
+
+// ListMembershipFilter — filter+paginasi untuk ListByMembershipStatus.
+type ListMembershipFilter struct {
+	// Status — "" berarti "semua status YANG PERNAH dipakai" (dikecualikan
+	// 'none', lihat ListByMembershipStatus); non-kosong menyaring exact match.
+	Status   string
+	Page     int
+	PageSize int
+}
+
+type ListMembershipResult struct {
+	Items    []model.User
+	Total    int64
+	Page     int
+	PageSize int
+}
+
+// ListByMembershipStatus returns customers (user_type=customer) yang
+// membership_status-nya cocok filter, dipakai GET /admin/membership (§30.2).
+// Filter Status kosong TIDAK berarti "semua customer" — tetap menyaring
+// membership_status <> 'none', karena customer yang belum pernah menyentuh
+// fitur membership tidak relevan untuk daftar pengajuan/member.
+func (r *UserRepository) ListByMembershipStatus(ctx context.Context, f ListMembershipFilter) (*ListMembershipResult, error) {
+	if f.Page < 1 {
+		f.Page = 1
+	}
+	if f.PageSize < 1 || f.PageSize > 100 {
+		f.PageSize = 20
+	}
+	q := r.db.WithContext(ctx).Model(&model.User{}).Where("user_type = ?", model.UserTypeCustomer)
+	if f.Status != "" {
+		q = q.Where("membership_status = ?", f.Status)
+	} else {
+		q = q.Where("membership_status <> ?", model.MembershipStatusNone)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, fmt.Errorf("count membership customers: %w", err)
+	}
+	var items []model.User
+	if err := q.
+		Order("membership_requested_at DESC NULLS LAST, created_at DESC").
+		Offset((f.Page - 1) * f.PageSize).
+		Limit(f.PageSize).
+		Find(&items).Error; err != nil {
+		return nil, fmt.Errorf("list membership customers: %w", err)
+	}
+	return &ListMembershipResult{Items: items, Total: total, Page: f.Page, PageSize: f.PageSize}, nil
+}
+
 // ReplaceRoles atomically replaces user's role set. Cocok untuk super admin
 // re-assign role staff. Insert AssignedBy untuk audit trail per row.
 func (r *UserRepository) ReplaceRoles(ctx context.Context, userID uuid.UUID, roleIDs []uuid.UUID, assignedBy *uuid.UUID) error {

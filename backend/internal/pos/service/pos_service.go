@@ -124,7 +124,16 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (*Create
 		if strings.Contains(msg, "metode_bayar POS") {
 			return nil, posapi.ErrInvalidMetodeBayar
 		}
-		return nil, fmt.Errorf("%w: %v", posapi.ErrOrderCreate, err)
+		// %w dua kali (Go 1.20+, lihat go.mod): errors.Is(hasil,
+		// posapi.ErrOrderCreate) TETAP selalu true (kode di atas ini sudah
+		// menangkap sentinel yang punya penanganan HTTP khusus; baris ini
+		// adalah fallback generic), TAPI err aslinya (mis. sentinel diskon
+		// dari orderapi/discountapi yang belum dikenal handler versi ini,
+		// atau error internal lain) juga tetap bisa dicek errors.Is sampai
+		// ke handler — dulu dibungkus %v di sini yang memutus rantai itu,
+		// membuat sentinel apa pun jatuh ke case ErrOrderCreate (500 generic)
+		// alih-alih case spesifiknya masing-masing.
+		return nil, fmt.Errorf("%w: %w", posapi.ErrOrderCreate, err)
 	}
 
 	result := &CreateOrderResult{
@@ -241,7 +250,7 @@ func (s *Service) SearchCustomers(ctx context.Context, q string) ([]CustomerSear
 	}
 	out := make([]CustomerSearchResult, 0, len(identities))
 	for _, id := range identities {
-		out = append(out, CustomerSearchResult{ID: id.UserID, Name: id.Name, Phone: id.Phone})
+		out = append(out, CustomerSearchResult{ID: id.UserID, Name: id.Name, Phone: id.Phone, MembershipStatus: id.MembershipStatus})
 	}
 	return out, nil
 }

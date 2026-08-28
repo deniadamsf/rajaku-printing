@@ -22,6 +22,13 @@ func (c templateCtx) trackingURL() string {
 	return fmt.Sprintf("%s/lacak/%s", c.BaseURL, c.Resi)
 }
 
+// accountURL — halaman akun customer (§30.4 "Status Membership"), dipakai
+// template membership yang TIDAK terikat satu order (beda dari
+// trackingURL, yang butuh Resi). Sumber base URL sama (§2).
+func (c templateCtx) accountURL() string {
+	return fmt.Sprintf("%s/akun/membership", c.BaseURL)
+}
+
 // render mengembalikan pesan WA untuk `kind`, atau ErrUnknownKind kalau kind
 // belum di-implementasi. Pure — no I/O, gampang di-test.
 //
@@ -67,6 +74,14 @@ func render(kind notificationapi.Kind, ctx templateCtx) (string, error) {
 		return renderPOSOrderCreated(ctx), nil
 	case notificationapi.KindDesignRetentionWarning:
 		return renderDesignRetentionWarning(ctx), nil
+	case notificationapi.KindMembershipApproved:
+		return renderMembershipApproved(ctx), nil
+	case notificationapi.KindMembershipRejected:
+		return renderMembershipRejected(ctx), nil
+	case notificationapi.KindMembershipRevoked:
+		return renderMembershipRevoked(ctx), nil
+	case notificationapi.KindMembershipReinstated:
+		return renderMembershipReinstated(ctx), nil
 	default:
 		return "", notificationapi.ErrUnknownKind
 	}
@@ -211,6 +226,62 @@ func renderDesignRetentionWarning(c templateCtx) string {
 			"Download dulu kalau masih dibutuhkan:\n%s/admin/desain/%s\n\n"+
 			"Setelah dihapus, catatan file tetap ada di sistem tapi filenya tidak bisa diunduh lagi.",
 		fileName, c.Resi, daysLeft, retentionDays, orderStatus, c.BaseURL, c.Resi,
+	)
+}
+
+// renderMembershipApproved — §30.2, dikirim saat admin approve pengajuan.
+func renderMembershipApproved(c templateCtx) string {
+	return fmt.Sprintf(
+		"Halo %s ✅\n\nSelamat! Pengajuan membership Anda sudah *disetujui*.\n"+
+			"Nikmati keuntungan khusus member di setiap transaksi berikutnya.\n\n"+
+			"Cek status membership di:\n%s",
+		c.CustomerName, c.accountURL(),
+	)
+}
+
+// renderMembershipRejected — §30.2, dikirim saat admin reject pengajuan.
+// Reason wajib diisi caller (extras["reason"]).
+func renderMembershipRejected(c templateCtx) string {
+	reason, _ := c.Extras["reason"].(string)
+	if reason == "" {
+		reason = "(alasan tidak dicatat)"
+	}
+	return fmt.Sprintf(
+		"Halo %s ⚠️\n\nPengajuan membership Anda belum bisa kami setujui.\n"+
+			"Alasan: %s\n\n"+
+			"Anda bisa mengajukan ulang kapan saja di:\n%s",
+		c.CustomerName, reason, c.accountURL(),
+	)
+}
+
+// renderMembershipRevoked — §30.2, dikirim saat admin mencabut status member
+// aktif. Reason wajib diisi caller (extras["reason"]).
+func renderMembershipRevoked(c templateCtx) string {
+	reason, _ := c.Extras["reason"].(string)
+	if reason == "" {
+		reason = "(alasan tidak dicatat)"
+	}
+	return fmt.Sprintf(
+		"Halo %s\n\nStatus membership Anda telah *dicabut* oleh admin.\n"+
+			"Alasan: %s\n\n"+
+			"Hubungi kami kalau ada pertanyaan.",
+		c.CustomerName, reason,
+	)
+}
+
+// renderMembershipReinstated — §30.2, dikirim saat admin memulihkan status
+// member dari revoked kembali ke active. Reason wajib diisi caller
+// (extras["reason"]).
+func renderMembershipReinstated(c templateCtx) string {
+	reason, _ := c.Extras["reason"].(string)
+	if reason == "" {
+		reason = "(alasan tidak dicatat)"
+	}
+	return fmt.Sprintf(
+		"Halo %s ✅\n\nStatus membership Anda sudah *dipulihkan* oleh admin.\n"+
+			"Keterangan: %s\n\n"+
+			"Cek status membership di:\n%s",
+		c.CustomerName, reason, c.accountURL(),
 	)
 }
 

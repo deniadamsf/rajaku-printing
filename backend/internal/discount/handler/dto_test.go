@@ -59,3 +59,53 @@ func TestParseUpdateInput_AppliesToEmptyString_PassesThroughAsSent(t *testing.T)
 		t.Fatalf("parseUpdateInput() AppliesTo = %v, want pointer to empty string (explicitly sent)", in.AppliesTo)
 	}
 }
+
+// TestParseUpdateInput_MemberScopeNull_TreatedAsExplicitClear — §30.3, BEDA
+// dengan applies_to/audience_scope: member_scope:null DIPERBOLEHKAN di sini
+// (bukan error) dan diperlakukan sama seperti member_scope:"" — keduanya
+// berarti "kosongkan member_scope" (final consistency-nya divalidasi ulang
+// oleh service, butuh tahu audience_scope final dulu).
+func TestParseUpdateInput_MemberScopeNull_TreatedAsExplicitClear(t *testing.T) {
+	in, err := parseUpdateInput(map[string]json.RawMessage{"member_scope": json.RawMessage(`null`)})
+	if err != nil {
+		t.Fatalf("parseUpdateInput() error = %v, want nil", err)
+	}
+	if in.MemberScope == nil || *in.MemberScope != "" {
+		t.Fatalf("parseUpdateInput() MemberScope = %v, want pointer to empty string (explicit clear)", in.MemberScope)
+	}
+}
+
+func TestParseUpdateInput_MemberScopeValue_PassesThrough(t *testing.T) {
+	in, err := parseUpdateInput(map[string]json.RawMessage{"member_scope": json.RawMessage(`"all_members"`)})
+	if err != nil {
+		t.Fatalf("parseUpdateInput() error = %v, want nil", err)
+	}
+	if in.MemberScope == nil || *in.MemberScope != "all_members" {
+		t.Fatalf("parseUpdateInput() MemberScope = %v, want pointer to all_members", in.MemberScope)
+	}
+}
+
+// TestParseUpdateInput_AudienceScopeNull_Rejected — BEDA dengan
+// member_scope: audience_scope:null TETAP ditolak (mirror applies_to/
+// channel_scope — kolom ini tidak nullable, tidak ada makna "kosongkan").
+func TestParseUpdateInput_AudienceScopeNull_Rejected(t *testing.T) {
+	_, err := parseUpdateInput(map[string]json.RawMessage{"audience_scope": json.RawMessage(`null`)})
+	if err == nil {
+		t.Fatalf("parseUpdateInput() error = nil, want error (audience_scope tidak boleh null)")
+	}
+}
+
+func TestParseUpdateInput_CustomerIDsTooMany_Rejected(t *testing.T) {
+	ids := make([]uuid.UUID, 501)
+	for i := range ids {
+		ids[i] = uuid.New()
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	_, err = parseUpdateInput(map[string]json.RawMessage{"customer_ids": json.RawMessage(b)})
+	if err == nil {
+		t.Fatalf("parseUpdateInput() error = nil, want error (501 customer_ids exceeds limit)")
+	}
+}

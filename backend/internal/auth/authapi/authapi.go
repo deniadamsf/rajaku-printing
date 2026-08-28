@@ -13,6 +13,7 @@ package authapi
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -24,6 +25,15 @@ type UserType string
 const (
 	UserTypeCustomer UserType = "customer"
 	UserTypeStaff    UserType = "staff"
+)
+
+// CustomerType eksternal (duplicate string constant dari model — sengaja,
+// supaya modul lain, mis. membership §30, tidak perlu import package model).
+type CustomerType string
+
+const (
+	CustomerTypeGuest      CustomerType = "guest"
+	CustomerTypeRegistered CustomerType = "registered"
 )
 
 // ScopeGuestOrder marks a token issued via POST /lacak/:resi/verify — a guest
@@ -51,6 +61,13 @@ type Identity struct {
 	// terbatas ini (mis. design) WAJIB menolak akses ke order lain kalau field
 	// ini terisi — lihat token.Claims.OrderID.
 	OrderID *uuid.UUID
+	// MembershipStatus — proyeksi users.membership_status (§30.2 CLAUDE.md),
+	// salah satu dari "none"|"pending"|"active"|"rejected"|"revoked". Selalu
+	// terisi (kolom NOT NULL DEFAULT 'none' di DB, termasuk untuk staff, yang
+	// nilainya akan selalu "none"). Dipakai POS (§30.4) untuk menampilkan
+	// badge "Member" di hasil SearchCustomers tanpa round-trip terpisah ke
+	// modul membership — lihat membershipapi.Status untuk daftar resmi nilai.
+	MembershipStatus string
 }
 
 // HasPermission returns true iff `code` ada di Permissions.
@@ -104,4 +121,70 @@ type CustomerService interface {
 	// already has an identity — online or walk-in — instead of re-entering
 	// their data and creating a duplicate.
 	SearchCustomers(ctx context.Context, query string, limit int) ([]Identity, error)
+
+	// --- Membership (§30 CLAUDE.md) — dipakai modul membership. ---
+
+	// GetMembershipInfo returns the membership projection of a customer/user
+	// by primary key. Return ErrCustomerNotFound kalau tidak ada.
+	GetMembershipInfo(ctx context.Context, customerID uuid.UUID) (*MembershipInfo, error)
+
+	// UpdateMembershipStatus conditionally transitions a customer's
+	// membership status (CAS on FromStatus, §30.2 race safety). Return
+	// ErrMembershipStatusConflict kalau status sudah berubah sejak caller
+	// membaca FromStatus (mis. race dua approve bersamaan).
+	UpdateMembershipStatus(ctx context.Context, in UpdateMembershipStatusInput) error
+
+	// ListMembers returns customers whose membership_status matches f.Status
+	// (paginated) — f.Status kosong berarti "semua status yang PERNAH dipakai"
+	// (mengecualikan 'none'), dipakai GET /admin/membership (§30.2).
+	ListMembers(ctx context.Context, f ListMembershipFilter) (*ListMembershipResult, error)
+}
+
+// MembershipInfo — proyeksi status keanggotaan member seorang customer
+// (§30.2). Status salah satu dari "none"|"pending"|"active"|"rejected"|
+// "revoked" — lihat daftar resmi di membershipapi.
+type MembershipInfo struct {
+	CustomerID   uuid.UUID
+	Name         string
+	Phone        string
+	CustomerType CustomerType
+	Status       string
+	RequestedAt  *time.Time
+	DecidedAt    *time.Time
+	DecidedBy    *uuid.UUID
+	DecisionNote string
+}
+
+// UpdateMembershipStatusInput — payload transisi CAS (§30.2). Pointer fields
+// nil berarti "biarkan kolomnya apa adanya" di DB — dibedakan dari "kosongkan
+// eksplisit" (pointer ke zero value, mis. Note ke "").
+//
+// ClearDecision — true berarti kosongkan DecidedAt/DecidedBy/Note ke NULL di
+// DB (dipakai Apply saat re-apply dari rejected, §30.2, supaya catatan
+// keputusan penolakan lama tidak menempel di pengajuan baru). Mutually
+// exclusive dengan mengisi DecidedAt/DecidedBy/Note — kalau ClearDecision
+// true, ketiga field itu diabaikan.
+type UpdateMembershipStatusInput struct {
+	CustomerID    uuid.UUID
+	FromStatus    string
+	ToStatus      string
+	RequestedAt   *time.Time
+	DecidedAt     *time.Time
+	DecidedBy     *uuid.UUID
+	Note          *string
+	ClearDecision bool
+}
+
+// ListMembershipFilter/ListMembershipResult — paginasi GET /admin/membership.
+type ListMembershipFilter struct {
+	Status  string
+	Page    int
+	PerPage int
+}
+
+type ListMembershipResult struct {
+	Items   []MembershipInfo
+	Total   int64
+	Page    int
+	PerPage int
 }

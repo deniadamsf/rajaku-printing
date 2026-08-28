@@ -979,6 +979,7 @@ func (s *Service) CreatePOSOrder(ctx context.Context, in orderapi.POSCreateOrder
 		Subtotal:     subtotal,
 		Channel:      string(model.ChannelPOS),
 		ProductID:    quote.ProductID,
+		CustomerID:   in.CustomerID,
 	})
 	if err != nil {
 		return nil, err

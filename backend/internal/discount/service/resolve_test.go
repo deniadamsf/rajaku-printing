@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,7 +11,39 @@ import (
 	"github.com/rajaku-printing/backend/internal/discount/discountapi"
 	"github.com/rajaku-printing/backend/internal/discount/model"
 	"github.com/rajaku-printing/backend/internal/discount/repository"
+	"github.com/rajaku-printing/backend/internal/membership/membershipapi"
+	"github.com/rajaku-printing/backend/internal/settings/settingsapi"
 )
+
+// fakeMembershipChecker — minimal membershipapi.Checker fake for
+// service-level tests (§30.3).
+type fakeMembershipChecker struct {
+	isActive bool
+	err      error
+}
+
+var _ membershipapi.Checker = (*fakeMembershipChecker)(nil)
+
+func (f *fakeMembershipChecker) IsActiveMember(_ context.Context, _ uuid.UUID) (bool, error) {
+	return f.isActive, f.err
+}
+
+// fakeSettingsReader — minimal settingsapi.Reader fake for service-level
+// tests (§30.1/§30.3). Only GetBool is exercised by the discount module.
+type fakeSettingsReader struct {
+	boolValue bool
+	boolErr   error
+}
+
+var _ settingsapi.Reader = (*fakeSettingsReader)(nil)
+
+func (f *fakeSettingsReader) GetInt(_ context.Context, _ string) (int, error) {
+	return 0, errors.New("fakeSettingsReader: GetInt not implemented")
+}
+
+func (f *fakeSettingsReader) GetBool(_ context.Context, _ string) (bool, error) {
+	return f.boolValue, f.boolErr
+}
 
 // fakeDiscountStore — minimal DiscountStore fake for service-level tests
 // (mirrors the fakeStore pattern used in order/service tests).
@@ -24,9 +57,10 @@ type fakeDiscountStore struct {
 	usageMap map[uuid.UUID]int64
 	usageErr error
 
-	createErr        error
-	created          *model.Discount
-	createProductIDs []uuid.UUID
+	createErr         error
+	created           *model.Discount
+	createProductIDs  []uuid.UUID
+	createCustomerIDs []uuid.UUID
 
 	listResult []model.Discount
 	listErr    error
@@ -34,8 +68,8 @@ type fakeDiscountStore struct {
 	activeResult []model.Discount
 	activeErr    error
 
-	updateWithProductsErr error
-	updateFields          map[string]any
+	updateWithScopesErr error
+	updateFields        map[string]any
 
 	softDeleteErr    error
 	softDeleteParams repository.SoftDeleteParams
@@ -43,17 +77,26 @@ type fakeDiscountStore struct {
 	productIDsResult map[uuid.UUID][]uuid.UUID
 	productIDsErr    error
 
+	customerIDsResult map[uuid.UUID][]uuid.UUID
+	customerIDsErr    error
+
 	// replaceProductsID/replaceProductsIDs are only populated when
-	// UpdateWithProducts is called with replaceProducts=true — mirrors the
+	// UpdateWithScopes is called with products.Replace=true — mirrors the
 	// old standalone ReplaceProducts fake so existing test assertions keep
 	// working unchanged.
 	replaceProductsID  uuid.UUID
 	replaceProductsIDs []uuid.UUID
+
+	// replaceCustomersID/replaceCustomersIDs — mirror above, for the member
+	// scope axis (§30.3), only populated when customers.Replace=true.
+	replaceCustomersID  uuid.UUID
+	replaceCustomersIDs []uuid.UUID
 }
 
-func (f *fakeDiscountStore) Create(_ context.Context, d *model.Discount, productIDs []uuid.UUID) error {
+func (f *fakeDiscountStore) Create(_ context.Context, d *model.Discount, productIDs, customerIDs []uuid.UUID) error {
 	f.created = d
 	f.createProductIDs = productIDs
+	f.createCustomerIDs = customerIDs
 	return f.createErr
 }
 
@@ -87,13 +130,17 @@ func (f *fakeDiscountStore) CountUsageOne(_ context.Context, _ uuid.UUID) (int64
 	return f.usageOne, f.usageOneErr
 }
 
-func (f *fakeDiscountStore) UpdateWithProducts(_ context.Context, id uuid.UUID, fields map[string]any, replaceProducts bool, productIDs []uuid.UUID) error {
+func (f *fakeDiscountStore) UpdateWithScopes(_ context.Context, id uuid.UUID, fields map[string]any, products, customers repository.ScopeReplace) error {
 	f.updateFields = fields
-	if replaceProducts {
+	if products.Replace {
 		f.replaceProductsID = id
-		f.replaceProductsIDs = productIDs
+		f.replaceProductsIDs = products.IDs
 	}
-	return f.updateWithProductsErr
+	if customers.Replace {
+		f.replaceCustomersID = id
+		f.replaceCustomersIDs = customers.IDs
+	}
+	return f.updateWithScopesErr
 }
 
 func (f *fakeDiscountStore) SoftDelete(_ context.Context, p repository.SoftDeleteParams) error {
@@ -107,6 +154,17 @@ func (f *fakeDiscountStore) ProductIDs(_ context.Context, ids []uuid.UUID) (map[
 	}
 	if f.productIDsResult != nil {
 		return f.productIDsResult, nil
+	}
+	out := make(map[uuid.UUID][]uuid.UUID, len(ids))
+	return out, nil
+}
+
+func (f *fakeDiscountStore) CustomerIDs(_ context.Context, ids []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	if f.customerIDsErr != nil {
+		return nil, f.customerIDsErr
+	}
+	if f.customerIDsResult != nil {
+		return f.customerIDsResult, nil
 	}
 	out := make(map[uuid.UUID][]uuid.UUID, len(ids))
 	return out, nil
@@ -324,5 +382,185 @@ func TestResolveForOrder_AmbiguousInput(t *testing.T) {
 	})
 	if err != discountapi.ErrDiscountAmbiguousInput {
 		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountAmbiguousInput", err)
+	}
+}
+
+// ---- Diskon khusus member (§30.3) ----
+
+func TestResolveForOrder_MasterDiscount_Member_HappyPath(t *testing.T) {
+	id := uuid.New()
+	customerID := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "MEMBER10", Name: "Diskon Member",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeMember,
+			MemberScope:   memberScopePtr(model.MemberScopeAllMembers),
+		},
+	}
+	svc := New(store)
+	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
+	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: true})
+	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Subtotal: 100_000, Channel: "pos", CustomerID: customerID,
+	})
+	if err != nil {
+		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
+	}
+	if snap.Amount != 10_000 {
+		t.Fatalf("ResolveForOrder() amount = %d, want 10000", snap.Amount)
+	}
+}
+
+// TestResolveForOrder_MasterDiscount_Member_NotActiveMember_Rejected — kasus
+// gagal wajib: customer bukan member aktif.
+func TestResolveForOrder_MasterDiscount_Member_NotActiveMember_Rejected(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "MEMBER10", Name: "Diskon Member",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeMember,
+			MemberScope:   memberScopePtr(model.MemberScopeAllMembers),
+		},
+	}
+	svc := New(store)
+	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
+	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: false})
+	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Subtotal: 100_000, Channel: "pos", CustomerID: uuid.New(),
+	})
+	if err != discountapi.ErrDiscountMembershipRequired {
+		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountMembershipRequired", err)
+	}
+}
+
+func TestResolveForOrder_MasterDiscount_Member_Disabled_Rejected(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "MEMBER10", Name: "Diskon Member",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeMember,
+			MemberScope:   memberScopePtr(model.MemberScopeAllMembers),
+		},
+	}
+	svc := New(store)
+	svc.SetSettingsReader(&fakeSettingsReader{boolValue: false})
+	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: true})
+	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Subtotal: 100_000, Channel: "pos", CustomerID: uuid.New(),
+	})
+	if err != discountapi.ErrDiscountMembershipDisabled {
+		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountMembershipDisabled", err)
+	}
+}
+
+// TestResolveForOrder_MasterDiscount_Member_SelectedScope_Match — §30.3
+// member_scope="selected_members".
+func TestResolveForOrder_MasterDiscount_Member_SelectedScope_Match(t *testing.T) {
+	id := uuid.New()
+	customerID := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "VIP10", Name: "Diskon VIP",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeMember,
+			MemberScope:   memberScopePtr(model.MemberScopeSelected),
+		},
+		customerIDsResult: map[uuid.UUID][]uuid.UUID{id: {customerID}},
+	}
+	svc := New(store)
+	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
+	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: true})
+	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Subtotal: 100_000, Channel: "pos", CustomerID: customerID,
+	})
+	if err != nil {
+		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
+	}
+	if snap.Amount != 10_000 {
+		t.Fatalf("ResolveForOrder() amount = %d, want 10000", snap.Amount)
+	}
+}
+
+func TestResolveForOrder_MasterDiscount_Member_SelectedScope_Mismatch_Rejected(t *testing.T) {
+	id := uuid.New()
+	scopedCustomerID := uuid.New()
+	otherCustomerID := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "VIP10", Name: "Diskon VIP",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeMember,
+			MemberScope:   memberScopePtr(model.MemberScopeSelected),
+		},
+		customerIDsResult: map[uuid.UUID][]uuid.UUID{id: {scopedCustomerID}},
+	}
+	svc := New(store)
+	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
+	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: true})
+	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Subtotal: 100_000, Channel: "pos", CustomerID: otherCustomerID,
+	})
+	if err != discountapi.ErrDiscountMemberMismatch {
+		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountMemberMismatch", err)
+	}
+}
+
+// TestResolveForOrder_MasterDiscount_Member_CheckerNotWired_Rejected — §22
+// no-silent-stub: kalau discountSvc belum di-wire dengan
+// SetMembershipChecker/SetSettingsReader, diskon audience_scope="member"
+// HARUS ditolak eksplisit (ErrDiscountMembershipUnavailable), bukan
+// diam-diam dianggap "bukan member".
+func TestResolveForOrder_MasterDiscount_Member_CheckerNotWired_Rejected(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "MEMBER10", Name: "Diskon Member",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeMember,
+			MemberScope:   memberScopePtr(model.MemberScopeAllMembers),
+		},
+	}
+	svc := New(store) // sengaja TIDAK memanggil SetMembershipChecker/SetSettingsReader
+	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Subtotal: 100_000, Channel: "pos", CustomerID: uuid.New(),
+	})
+	if err != discountapi.ErrDiscountMembershipUnavailable {
+		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountMembershipUnavailable", err)
+	}
+}
+
+// TestResolveForOrder_MasterDiscount_AudienceAll_NoMembershipQuery — diskon
+// audience_scope="all" (mayoritas kasus) tidak boleh butuh
+// SetMembershipChecker/SetSettingsReader ter-wire sama sekali — regression
+// guard supaya jalur "all" tidak diam-diam mulai memanggil dependency
+// membership yang belum tentu ada.
+func TestResolveForOrder_MasterDiscount_AudienceAll_NoMembershipQuery(t *testing.T) {
+	id := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "GLOBAL10", Name: "Diskon Semua",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeAll,
+		},
+	}
+	svc := New(store) // TIDAK di-wire, dan seharusnya tidak masalah untuk diskon "all"
+	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Subtotal: 100_000, Channel: "pos",
+	})
+	if err != nil {
+		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
+	}
+	if snap.Amount != 10_000 {
+		t.Fatalf("ResolveForOrder() amount = %d, want 10000", snap.Amount)
 	}
 }

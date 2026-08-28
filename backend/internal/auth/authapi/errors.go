@@ -19,6 +19,12 @@ var (
 	// Lookup
 	ErrCustomerNotFound = errors.New("authapi: customer not found")
 
+	// Membership (§30 CLAUDE.md) — CAS transition conflict: membership_status
+	// berubah di antara caller membaca status lama dan menulis status baru
+	// (mis. dua approve konkuren). Caller (membership/service) memetakan ini
+	// ke membershipapi.ErrMembershipInvalidTransition.
+	ErrMembershipStatusConflict = errors.New("authapi: membership status changed concurrently, retry")
+
 	// Guest order ownership verification (POST /lacak/:resi/verify). Deliberately
 	// generic — resi-not-found and phone-mismatch map to THIS SAME sentinel so
 	// the HTTP response is identical for both cases (no resi enumeration).

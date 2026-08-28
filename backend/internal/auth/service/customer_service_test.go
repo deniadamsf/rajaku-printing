@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/rajaku-printing/backend/internal/auth/model"
+	"github.com/rajaku-printing/backend/internal/auth/repository"
 )
 
 // ---------------------------------------------------------------------------
@@ -47,6 +48,16 @@ func (f *fakeCustomerUserStore) SearchCustomers(_ context.Context, q string, lim
 		return nil, f.searchErr
 	}
 	return f.searchResult, nil
+}
+
+// UpdateMembershipStatus/ListByMembershipStatus (§30) — dummy impls agar fake
+// satisfy customerUserStore. Not used by these tests.
+func (f *fakeCustomerUserStore) UpdateMembershipStatus(_ context.Context, _ repository.MembershipStatusUpdate) (bool, error) {
+	return false, errors.New("fakeCustomerUserStore.UpdateMembershipStatus: not used by these tests")
+}
+
+func (f *fakeCustomerUserStore) ListByMembershipStatus(_ context.Context, _ repository.ListMembershipFilter) (*repository.ListMembershipResult, error) {
+	return nil, errors.New("fakeCustomerUserStore.ListByMembershipStatus: not used by these tests")
 }
 
 // (1) Happy path: a query >= minSearchQueryLen reaches the repository and its

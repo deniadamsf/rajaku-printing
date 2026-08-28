@@ -56,6 +56,13 @@ const (
 	// Dikembalikan ke kasir saat order POS dibuat supaya frontend bisa atur
 	// CSS `@page` sesuai roll printer yang terpasang.
 	KeyPOSReceiptWidthMM = "pos.receipt_width_mm"
+
+	// KeyMembershipEnabled — saklar on/off fitur membership customer (§30
+	// CLAUDE.md). Saat false: halaman "Ajukan jadi Member" disembunyikan DAN
+	// service menolak pengajuan baru (ErrMembershipDisabled) — bukan cuma
+	// UI-only hiding (§30.1, pola yang sama dilarang berulang di §22/§28.9).
+	// Data member yang sudah ada TIDAK ikut ter-reset saat dimatikan.
+	KeyMembershipEnabled = "membership_enabled"
 )
 
 // POSReceiptWidthsMM — SATU-SATUNYA daftar lebar roll thermal yang didukung
@@ -90,4 +97,8 @@ type Reader interface {
 	// Return ErrSettingNotFound kalau key tidak ada di DB, ErrInvalidValue
 	// kalau nilainya bukan integer valid.
 	GetInt(ctx context.Context, key string) (int, error)
+	// GetBool mengembalikan nilai setting sebagai boolean (mis.
+	// membership_enabled, §30). Return ErrSettingNotFound kalau key tidak ada
+	// di DB, ErrInvalidValue kalau nilainya bukan "true"/"false" valid.
+	GetBool(ctx context.Context, key string) (bool, error)
 }

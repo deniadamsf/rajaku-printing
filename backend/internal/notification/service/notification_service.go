@@ -67,10 +67,11 @@ type Config struct {
 }
 
 var (
-	_ notificationapi.Enqueuer        = (*Service)(nil)
-	_ notificationapi.InternalAlerter = (*Service)(nil)
-	_ notificationapi.OTPSender       = (*Service)(nil)
-	_ notificationapi.JobCanceller    = (*Service)(nil)
+	_ notificationapi.Enqueuer              = (*Service)(nil)
+	_ notificationapi.InternalAlerter       = (*Service)(nil)
+	_ notificationapi.OTPSender             = (*Service)(nil)
+	_ notificationapi.JobCanceller          = (*Service)(nil)
+	_ notificationapi.CustomerEventEnqueuer = (*Service)(nil)
 )
 
 func New(jobs JobStore, orderCmd orderapi.OrderCommandService, customers authapi.CustomerService, cfg Config) *Service {
@@ -156,6 +157,69 @@ func (s *Service) EnqueueOrderEvent(ctx context.Context, kind notificationapi.Ki
 			return nil
 		}
 		return fmt.Errorf("enqueue: insert job: %w", err)
+	}
+	return nil
+}
+
+// EnqueueCustomerEvent implements notificationapi.CustomerEventEnqueuer
+// (§30 — membership status events, tidak terikat order). Beda dari
+// EnqueueOrderEvent: recipient di-resolve langsung dari customerID (bukan
+// lewat order.customer_id), dan tracking URL template diarahkan ke halaman
+// akun (bukan /lacak/:resi — customer bisa tidak sedang menunggu order apa
+// pun saat statusnya berubah).
+func (s *Service) EnqueueCustomerEvent(
+	ctx context.Context,
+	kind notificationapi.Kind,
+	customerID uuid.UUID,
+	extras map[string]any,
+	dedupKey string,
+) error {
+	if strings.TrimSpace(dedupKey) == "" {
+		return fmt.Errorf("enqueue customer event: dedup key required for kind %s", kind)
+	}
+	cust, err := s.customers.FindByID(ctx, customerID)
+	if err != nil {
+		if errors.Is(err, authapi.ErrCustomerNotFound) {
+			return notificationapi.ErrRecipientMissing
+		}
+		return fmt.Errorf("enqueue customer event: lookup customer: %w", err)
+	}
+	phoneNum := strings.TrimSpace(cust.Phone)
+	if phoneNum == "" {
+		return notificationapi.ErrRecipientMissing
+	}
+
+	msg, err := render(kind, templateCtx{
+		CustomerName: cust.Name,
+		BaseURL:      s.cfg.BaseURL,
+		Extras:       extras,
+	})
+	if err != nil {
+		return err
+	}
+
+	payload := model.JSONPayload{"customer_id": customerID.String()}
+	for k, v := range extras {
+		payload[k] = v
+	}
+
+	job := &model.NotificationJob{
+		Kind:           string(kind),
+		RecipientPhone: phoneNum,
+		Message:        msg,
+		Payload:        payload,
+		DedupKey:       &dedupKey,
+		Status:         model.JobPending,
+		Attempts:       0,
+		MaxAttempts:    s.maxAttempts(),
+		NextAttemptAt:  s.nowFn().UTC(),
+	}
+	if err := s.jobs.Create(ctx, job); err != nil {
+		if errors.Is(err, repository.ErrDedupConflict) {
+			// Idempotent: same dedup key already enqueued.
+			return nil
+		}
+		return fmt.Errorf("enqueue customer event: insert job: %w", err)
 	}
 	return nil
 }

@@ -23,6 +23,19 @@ const (
 	CustomerTypeRegistered CustomerType = "registered"
 )
 
+// MembershipStatus — status keanggotaan member customer (§30.2 CLAUDE.md).
+// Daftar resmi, jangan mengarang nilai baru — lihat state machine di
+// membership/service.
+type MembershipStatus string
+
+const (
+	MembershipStatusNone     MembershipStatus = "none"
+	MembershipStatusPending  MembershipStatus = "pending"
+	MembershipStatusActive   MembershipStatus = "active"
+	MembershipStatusRejected MembershipStatus = "rejected"
+	MembershipStatusRevoked  MembershipStatus = "revoked"
+)
+
 type User struct {
 	ID    uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 	Email *string   `gorm:"uniqueIndex;size:255"                            json:"email,omitempty"`
@@ -53,8 +66,19 @@ type User struct {
 	// we drop it here. Every Go path currently sets IsActive explicitly.
 	IsActive    bool       `gorm:"not null"                                        json:"is_active"`
 	LastLoginAt *time.Time `                                                       json:"last_login_at,omitempty"`
-	CreatedAt   time.Time  `gorm:"not null;default:now()"                          json:"created_at"`
-	UpdatedAt   time.Time  `gorm:"not null;default:now()"                          json:"updated_at"`
+
+	// Membership (§30 CLAUDE.md) — status keanggotaan member. Kolom milik
+	// `users` sendiri (bukan tabel terpisah), lihat migration 000030 untuk
+	// alasannya. MembershipStatus sumber kebenaran; membership_status_logs
+	// (modul membership) cuma audit trail.
+	MembershipStatus       MembershipStatus `gorm:"size:20;not null;default:none;column:membership_status" json:"membership_status"`
+	MembershipRequestedAt  *time.Time       `gorm:"column:membership_requested_at"                          json:"membership_requested_at,omitempty"`
+	MembershipDecidedAt    *time.Time       `gorm:"column:membership_decided_at"                            json:"membership_decided_at,omitempty"`
+	MembershipDecidedBy    *uuid.UUID       `gorm:"type:uuid;column:membership_decided_by"                  json:"membership_decided_by,omitempty"`
+	MembershipDecisionNote *string          `gorm:"column:membership_decision_note"                         json:"membership_decision_note,omitempty"`
+
+	CreatedAt time.Time `gorm:"not null;default:now()"                          json:"created_at"`
+	UpdatedAt time.Time `gorm:"not null;default:now()"                          json:"updated_at"`
 
 	Roles []Role `gorm:"many2many:user_roles;joinForeignKey:user_id;joinReferences:role_id" json:"roles,omitempty"`
 }

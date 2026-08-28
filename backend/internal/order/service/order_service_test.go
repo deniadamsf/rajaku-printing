@@ -309,6 +309,21 @@ func (f *fakeCustomers) SearchCustomers(_ context.Context, _ string, _ int) ([]a
 	return nil, f.err
 }
 
+// GetMembershipInfo/UpdateMembershipStatus/ListMembers (§30) — dummy impls
+// agar fake satisfy authapi.CustomerService. Order-side tests tidak butuh
+// perilaku ini.
+func (f *fakeCustomers) GetMembershipInfo(_ context.Context, _ uuid.UUID) (*authapi.MembershipInfo, error) {
+	return nil, f.err
+}
+
+func (f *fakeCustomers) UpdateMembershipStatus(_ context.Context, _ authapi.UpdateMembershipStatusInput) error {
+	return f.err
+}
+
+func (f *fakeCustomers) ListMembers(_ context.Context, _ authapi.ListMembershipFilter) (*authapi.ListMembershipResult, error) {
+	return nil, f.err
+}
+
 // ---------- helpers ----------
 
 func newQuote(productID, materialID uuid.UUID) *catalogapi.QuoteResult {

@@ -41,7 +41,15 @@ func computeStatus(d *model.Discount, usageCount int64, now time.Time) string {
 // saved with applies_to="selected" — a product that used to be the sole
 // member of the scope can be dropped from it AFTER the discount was created,
 // so this must be re-checked here every time, not just at create/update.
-func validateForUse(d *model.Discount, subtotal int64, channel string, usageCount int64, now time.Time, productID uuid.UUID, scopedProductIDs []uuid.UUID) error {
+//
+// customerID + isActiveMember + membershipEnabled + scopedCustomerIDs
+// implement §30.3: only checked when d.AudienceScope == "member" — an "all"
+// audience discount ignores all four arguments entirely. Checked AFTER the
+// §28.9 product scope, so callers see the same ordering documented in
+// §28.4/§30.3 (channel/period/quota/product scope first, member scope last).
+func validateForUse(d *model.Discount, subtotal int64, channel string, usageCount int64, now time.Time,
+	productID uuid.UUID, scopedProductIDs []uuid.UUID,
+	customerID uuid.UUID, isActiveMember bool, membershipEnabled bool, scopedCustomerIDs []uuid.UUID) error {
 	if !d.IsActive {
 		return discountapi.ErrDiscountInactive
 	}
@@ -73,6 +81,33 @@ func validateForUse(d *model.Discount, subtotal int64, channel string, usageCoun
 		// caller benar-benar menyebutkan produknya.
 		if productID != uuid.Nil && !containsUUID(scopedProductIDs, productID) {
 			return discountapi.ErrDiscountProductMismatch
+		}
+	}
+	if d.AudienceScope == model.AudienceScopeMember {
+		// §30.1 — ditolak SAAT DIPAKAI, bukan cuma disembunyikan di UI. Dicek
+		// duluan sebelum status member: kalau fiturnya mati total, tidak ada
+		// gunanya membedakan "bukan member" dari "member" — keduanya sama2
+		// tidak bisa memakainya.
+		if !membershipEnabled {
+			return discountapi.ErrDiscountMembershipDisabled
+		}
+		if !isActiveMember {
+			return discountapi.ErrDiscountMembershipRequired
+		}
+		if d.MemberScope != nil && *d.MemberScope == model.MemberScopeSelected {
+			// Cakupan kosong ditolak TANPA SYARAT (mirror §28.9 di atas) —
+			// member_scope="selected_members" dengan discount_customers
+			// kosong TIDAK PERNAH bisa dipakai, terlepas dari customerID
+			// diisi atau tidak.
+			if len(scopedCustomerIDs) == 0 {
+				return discountapi.ErrDiscountMemberScopeEmpty
+			}
+			// customerID == uuid.Nil berarti "tidak difilter berdasarkan
+			// customer tertentu" (dipakai Applicable ketika caller tidak
+			// mengirim customer_id sama sekali).
+			if customerID != uuid.Nil && !containsUUID(scopedCustomerIDs, customerID) {
+				return discountapi.ErrDiscountMemberMismatch
+			}
 		}
 	}
 	return nil
@@ -132,13 +167,20 @@ func clampAmount(raw, subtotal int64) int64 {
 	return raw
 }
 
-// toDiscountView projects a model.Discount + usage count + product scope
-// into the admin-facing DiscountView (§28.8/§28.9), computing the derived
-// `status` field. productIDs is always normalized to a non-nil slice so the
-// JSON field serializes as `[]`, never `null`.
-func toDiscountView(d *model.Discount, usageCount int64, productIDs []uuid.UUID, now time.Time) DiscountView {
+// toDiscountView projects a model.Discount + usage count + product/member
+// scope into the admin-facing DiscountView (§28.8/§28.9/§30.3), computing
+// the derived `status` field. productIDs/customerIDs are always normalized
+// to a non-nil slice so the JSON field serializes as `[]`, never `null`.
+func toDiscountView(d *model.Discount, usageCount int64, productIDs []uuid.UUID, customerIDs []uuid.UUID, now time.Time) DiscountView {
 	if productIDs == nil {
 		productIDs = []uuid.UUID{}
+	}
+	if customerIDs == nil {
+		customerIDs = []uuid.UUID{}
+	}
+	var memberScope string
+	if d.MemberScope != nil {
+		memberScope = string(*d.MemberScope)
 	}
 	return DiscountView{
 		ID:                d.ID,
@@ -156,6 +198,9 @@ func toDiscountView(d *model.Discount, usageCount int64, productIDs []uuid.UUID,
 		ChannelScope:      string(d.ChannelScope),
 		AppliesTo:         string(d.AppliesTo),
 		ProductIDs:        productIDs,
+		AudienceScope:     string(d.AudienceScope),
+		MemberScope:       memberScope,
+		CustomerIDs:       customerIDs,
 		IsActive:          d.IsActive,
 		Status:            computeStatus(d, usageCount, now),
 		CreatedAt:         d.CreatedAt,

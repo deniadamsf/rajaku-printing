@@ -41,6 +41,33 @@ const (
 	AppliesToSelected AppliesToScope = "selected"
 )
 
+// AudienceScope — batas audiens sebuah diskon (§30.3): apakah diskon berlaku
+// untuk semua orang, atau khusus member. Independen dari AppliesToScope
+// (cakupan produk) — sebuah diskon boleh sekaligus "khusus member" DAN
+// "khusus produk tertentu". Default 'all' wajib membuat diskon lama (dibuat
+// sebelum kolom ini ada) tetap berperilaku persis seperti sebelumnya.
+type AudienceScope string
+
+const (
+	AudienceScopeAll    AudienceScope = "all"
+	AudienceScopeMember AudienceScope = "member"
+)
+
+// MemberScope — hanya relevan kalau AudienceScope == AudienceScopeMember.
+// BEDA dengan AppliesToScope: ini enum eksplisit, bukan disimpulkan dari isi
+// discount_customers kosong-atau-tidak (§30.3) — 'all_members' berarti
+// berlaku untuk SEMUA member aktif (discount_customers tidak dipakai sama
+// sekali, boleh kosong, itu normal); 'selected_members' berarti berlaku
+// HANYA untuk customer yang terdaftar di discount_customers, dan daftar
+// kosong TIDAK PERNAH berarti "berlaku untuk semua" (lihat discountapi
+// ErrDiscountMemberScopeEmpty).
+type MemberScope string
+
+const (
+	MemberScopeAllMembers MemberScope = "all_members"
+	MemberScopeSelected   MemberScope = "selected_members"
+)
+
 // Discount — satu baris = satu program diskon (§28.1). TIDAK PERNAH
 // di-hard-delete — soft delete via DeletedAt/DeletedBy/DeleteReason, pola
 // sama seperti order.model.Order (migration 000025).
@@ -58,6 +85,8 @@ type Discount struct {
 	Quota             *int           `gorm:"column:quota"                                    json:"quota"`
 	ChannelScope      ChannelScope   `gorm:"size:20;not null;default:all;column:channel_scope" json:"channel_scope"`
 	AppliesTo         AppliesToScope `gorm:"size:20;not null;default:all;column:applies_to"  json:"applies_to"`
+	AudienceScope     AudienceScope  `gorm:"size:20;not null;default:all;column:audience_scope" json:"audience_scope"`
+	MemberScope       *MemberScope   `gorm:"size:20;column:member_scope"                     json:"member_scope"`
 	IsActive          bool           `gorm:"not null;default:true;column:is_active"          json:"is_active"`
 
 	DeletedAt    *time.Time `gorm:"column:deleted_at"    json:"deleted_at,omitempty"`

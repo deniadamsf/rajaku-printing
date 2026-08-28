@@ -111,6 +111,10 @@ type CustomerSearchResult struct {
 	ID    uuid.UUID `json:"id"`
 	Name  string    `json:"name"`
 	Phone string    `json:"phone"`
+	// MembershipStatus — proyeksi authapi.Identity.MembershipStatus (§30.4),
+	// dipakai layar kasir untuk menampilkan badge "Member" tanpa round-trip
+	// terpisah ke modul membership. "none"|"pending"|"active"|"rejected"|"revoked".
+	MembershipStatus string `json:"membership_status"`
 }
 
 // ReceiptConfig — konfigurasi lebar kertas struk yang boleh dibaca staff

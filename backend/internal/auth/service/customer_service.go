@@ -24,6 +24,10 @@ type customerUserStore interface {
 	Create(ctx context.Context, u *model.User) error
 	FindByID(ctx context.Context, id uuid.UUID) (*model.User, error)
 	SearchCustomers(ctx context.Context, q string, limit int) ([]model.User, error)
+	// UpdateMembershipStatus/ListByMembershipStatus (§30) — narrowed to what
+	// CustomerService needs, satisfied by repository.UserRepository.
+	UpdateMembershipStatus(ctx context.Context, p repository.MembershipStatusUpdate) (bool, error)
+	ListByMembershipStatus(ctx context.Context, f repository.ListMembershipFilter) (*repository.ListMembershipResult, error)
 }
 
 // CustomerService implements authapi.CustomerService. Terpisah dari Service
@@ -135,11 +139,92 @@ func (s *CustomerService) SearchCustomers(ctx context.Context, query string, lim
 	return out, nil
 }
 
+// --- Membership (§30 CLAUDE.md) ---
+
+// GetMembershipInfo implements authapi.CustomerService.
+func (s *CustomerService) GetMembershipInfo(ctx context.Context, customerID uuid.UUID) (*authapi.MembershipInfo, error) {
+	u, err := s.users.FindByID(ctx, customerID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, authapi.ErrCustomerNotFound
+		}
+		return nil, fmt.Errorf("get membership info for customer %s: %w", customerID, err)
+	}
+	return userToMembershipInfo(u), nil
+}
+
+// UpdateMembershipStatus implements authapi.CustomerService — CAS transition,
+// see repository.UserRepository.UpdateMembershipStatus for the race-safety
+// mechanism.
+func (s *CustomerService) UpdateMembershipStatus(ctx context.Context, in authapi.UpdateMembershipStatusInput) error {
+	ok, err := s.users.UpdateMembershipStatus(ctx, repository.MembershipStatusUpdate{
+		CustomerID:    in.CustomerID,
+		FromStatus:    in.FromStatus,
+		ToStatus:      in.ToStatus,
+		RequestedAt:   in.RequestedAt,
+		DecidedAt:     in.DecidedAt,
+		DecidedBy:     in.DecidedBy,
+		Note:          in.Note,
+		ClearDecision: in.ClearDecision,
+	})
+	if err != nil {
+		return fmt.Errorf("update membership status for customer %s: %w", in.CustomerID, err)
+	}
+	if !ok {
+		return authapi.ErrMembershipStatusConflict
+	}
+	return nil
+}
+
+// ListMembers implements authapi.CustomerService — GET /admin/membership (§30.2).
+func (s *CustomerService) ListMembers(ctx context.Context, f authapi.ListMembershipFilter) (*authapi.ListMembershipResult, error) {
+	res, err := s.users.ListByMembershipStatus(ctx, repository.ListMembershipFilter{
+		Status:   f.Status,
+		Page:     f.Page,
+		PageSize: f.PerPage,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list members: %w", err)
+	}
+	items := make([]authapi.MembershipInfo, len(res.Items))
+	for i := range res.Items {
+		items[i] = *userToMembershipInfo(&res.Items[i])
+	}
+	return &authapi.ListMembershipResult{
+		Items:   items,
+		Total:   res.Total,
+		Page:    res.Page,
+		PerPage: res.PageSize,
+	}, nil
+}
+
+func userToMembershipInfo(u *model.User) *authapi.MembershipInfo {
+	info := &authapi.MembershipInfo{
+		CustomerID:  u.ID,
+		Name:        u.Name,
+		Status:      string(u.MembershipStatus),
+		RequestedAt: u.MembershipRequestedAt,
+		DecidedAt:   u.MembershipDecidedAt,
+		DecidedBy:   u.MembershipDecidedBy,
+	}
+	if u.Phone != nil {
+		info.Phone = *u.Phone
+	}
+	if u.CustomerType != nil {
+		info.CustomerType = authapi.CustomerType(*u.CustomerType)
+	}
+	if u.MembershipDecisionNote != nil {
+		info.DecisionNote = *u.MembershipDecisionNote
+	}
+	return info
+}
+
 func userToIdentity(u *model.User) *authapi.Identity {
 	id := &authapi.Identity{
-		UserID:   u.ID,
-		UserType: authapi.UserType(u.UserType),
-		Name:     u.Name,
+		UserID:           u.ID,
+		UserType:         authapi.UserType(u.UserType),
+		Name:             u.Name,
+		MembershipStatus: string(u.MembershipStatus),
 	}
 	if u.Phone != nil {
 		id.Phone = *u.Phone

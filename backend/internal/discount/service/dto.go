@@ -23,6 +23,10 @@ type CreateInput struct {
 
 	AppliesTo  string      // "all" | "selected"; "" = default "all" (§28.9)
 	ProductIDs []uuid.UUID // wajib non-kosong kalau AppliesTo == "selected"
+
+	AudienceScope string      // "all" | "member"; "" = default "all" (§30.3)
+	MemberScope   string      // "all_members" | "selected_members"; wajib diisi kalau AudienceScope == "member", wajib kosong kalau tidak
+	CustomerIDs   []uuid.UUID // wajib non-kosong kalau MemberScope == "selected_members"
 }
 
 // UpdateInput — payload untuk PATCH master diskon. Field pointer biasa = nil
@@ -60,6 +64,15 @@ type UpdateInput struct {
 	// (non-nil, termasuk kalau isinya slice kosong — divalidasi di service,
 	// bukan di sini, karena butuh tahu AppliesTo final dulu).
 	ProductIDs *[]uuid.UUID
+
+	AudienceScope *string // "all" | "member" (§30.3)
+	// MemberScope — "" (string kosong tapi field DIKIRIM, dibedakan dari nil
+	// "tidak dikirim" oleh handler) berarti "kosongkan member_scope" —
+	// hanya valid kalau AudienceScope final berakhir "all". "all_members" |
+	// "selected_members" untuk nilai sungguhan.
+	MemberScope *string
+	// CustomerIDs — pointer-to-slice, pola sama dengan ProductIDs.
+	CustomerIDs *[]uuid.UUID
 }
 
 // ListFilter — filter untuk GET /admin/discounts.
@@ -90,6 +103,9 @@ type DiscountView struct {
 	ChannelScope      string      `json:"channel_scope"`
 	AppliesTo         string      `json:"applies_to"`
 	ProductIDs        []uuid.UUID `json:"product_ids"`
+	AudienceScope     string      `json:"audience_scope"`
+	MemberScope       string      `json:"member_scope"`
+	CustomerIDs       []uuid.UUID `json:"customer_ids"`
 	IsActive          bool        `json:"is_active"`
 	Status            string      `json:"status"`
 	CreatedAt         time.Time   `json:"created_at"`

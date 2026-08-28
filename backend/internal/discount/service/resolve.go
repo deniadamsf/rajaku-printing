@@ -12,6 +12,7 @@ import (
 	"github.com/rajaku-printing/backend/internal/discount/discountapi"
 	"github.com/rajaku-printing/backend/internal/discount/model"
 	"github.com/rajaku-printing/backend/internal/discount/repository"
+	"github.com/rajaku-printing/backend/internal/settings/settingsapi"
 )
 
 // ResolveForOrder implements discountapi.Resolver — dipanggil order module
@@ -81,7 +82,37 @@ func (s *Service) resolveMasterDiscount(ctx context.Context, in discountapi.Reso
 		}
 		scopedProductIDs = scoped[d.ID]
 	}
-	if err := validateForUse(d, in.Subtotal, in.Channel, usage, time.Now(), in.ProductID, scopedProductIDs); err != nil {
+
+	// Membership (§30.3) hanya perlu dimuat kalau audience_scope="member" —
+	// diskon "all" (mayoritas kasus) tidak butuh query tambahan ini sama
+	// sekali, mirror pola cakupan produk di atas.
+	var isActiveMember, membershipEnabled bool
+	var scopedCustomerIDs []uuid.UUID
+	if d.AudienceScope == model.AudienceScopeMember {
+		if s.members == nil || s.settings == nil {
+			return nil, discountapi.ErrDiscountMembershipUnavailable
+		}
+		var err error
+		membershipEnabled, err = s.settings.GetBool(ctx, settingsapi.KeyMembershipEnabled)
+		if err != nil {
+			return nil, fmt.Errorf("resolve discount for order: read membership_enabled: %w", err)
+		}
+		isActiveMember, err = s.members.IsActiveMember(ctx, in.CustomerID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve discount for order: check active member: %w", err)
+		}
+		if d.MemberScope != nil && *d.MemberScope == model.MemberScopeSelected {
+			scoped, err := s.discounts.CustomerIDs(ctx, []uuid.UUID{d.ID})
+			if err != nil {
+				return nil, fmt.Errorf("resolve discount for order: member scope: %w", err)
+			}
+			scopedCustomerIDs = scoped[d.ID]
+		}
+	}
+
+	if err := validateForUse(d, in.Subtotal, in.Channel, usage, time.Now(),
+		in.ProductID, scopedProductIDs,
+		in.CustomerID, isActiveMember, membershipEnabled, scopedCustomerIDs); err != nil {
 		return nil, err
 	}
 

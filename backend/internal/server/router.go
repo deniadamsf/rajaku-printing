@@ -35,6 +35,9 @@ import (
 	"github.com/rajaku-printing/backend/internal/invoice/pdfrender"
 	invoicerepo "github.com/rajaku-printing/backend/internal/invoice/repository"
 	invoiceservice "github.com/rajaku-printing/backend/internal/invoice/service"
+	membershiphandler "github.com/rajaku-printing/backend/internal/membership/handler"
+	membershiprepo "github.com/rajaku-printing/backend/internal/membership/repository"
+	membershipservice "github.com/rajaku-printing/backend/internal/membership/service"
 	notifhandler "github.com/rajaku-printing/backend/internal/notification/handler"
 	notifrepo "github.com/rajaku-printing/backend/internal/notification/repository"
 	notifservice "github.com/rajaku-printing/backend/internal/notification/service"
@@ -340,6 +343,26 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	designSvc.SetInternalAlerter(notifSvc)
 	notifH := notifhandler.New(notifSvc, d.Config.Notification.InternalSecret)
 
+	// --- Wiring modul membership (§30) ---
+	// Dibuat SETELAH settings & notification (butuh keduanya via setter,
+	// pola sama seperti posSvc/designSvc di atas). Status keanggotaan hidup
+	// di tabel users (modul auth) — diakses lewat customerSvc
+	// (authapi.CustomerService), bukan repository sendiri; satu-satunya
+	// storage milik modul ini adalah audit trail membership_status_logs.
+	membershipLogRepo := membershiprepo.NewLogRepository(d.DB)
+	membershipSvc := membershipservice.New(customerSvc, membershipLogRepo)
+	membershipSvc.SetSettingsReader(settingsSvc)
+	membershipSvc.SetNotifier(notifSvc)
+	membershipH := membershiphandler.New(membershipSvc)
+
+	// discountSvc butuh membershipSvc (via membershipapi.Checker) & settingsSvc
+	// (via settingsapi.Reader) untuk validasi diskon audience_scope="member"
+	// (§30.3) — di-wire di sini, SETELAH keduanya ada, bukan di titik
+	// konstruksi discountSvc (baris ~249) karena membershipSvc belum dibuat
+	// waktu itu (pola setter yang sama dengan posSvc/designSvc di atas).
+	discountSvc.SetSettingsReader(settingsSvc)
+	discountSvc.SetMembershipChecker(membershipSvc)
+
 	// --- Wiring pairing WhatsApp admin panel (§13, permission notification.manage,
 	// migration 000021) ---
 	// workerclient adalah CALLER ke notification-worker (arah kebalikan dari
@@ -395,6 +418,8 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 		catalogH.RegisterAdminRoutes(v1, authSvc)
 		// Admin discount: kelola master diskon + GET /applicable dipakai kasir (§28).
 		discountH.RegisterRoutes(v1, authSvc)
+		// Membership: POST /account/membership/apply (customer) + admin CRUD (§30).
+		membershipH.RegisterRoutes(v1, authSvc)
 
 		// Public endpoints (no auth) — rate limited to prevent scraping/bruteforce.
 		public := v1.Group("")

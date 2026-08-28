@@ -71,7 +71,7 @@ func baseDiscount(now time.Time) *model.Discount {
 func TestValidateForUse_HappyPath(t *testing.T) {
 	now := time.Now()
 	d := baseDiscount(now)
-	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil); err != nil {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil, uuid.Nil, false, false, nil); err != nil {
 		t.Fatalf("validateForUse() error = %v, want nil", err)
 	}
 }
@@ -80,7 +80,7 @@ func TestValidateForUse_Inactive(t *testing.T) {
 	now := time.Now()
 	d := baseDiscount(now)
 	d.IsActive = false
-	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil); err != discountapi.ErrDiscountInactive {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil, uuid.Nil, false, false, nil); err != discountapi.ErrDiscountInactive {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountInactive", err)
 	}
 }
@@ -90,7 +90,7 @@ func TestValidateForUse_NotStarted(t *testing.T) {
 	d := baseDiscount(now)
 	future := now.Add(24 * time.Hour)
 	d.StartsAt = &future
-	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil); err != discountapi.ErrDiscountNotStarted {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil, uuid.Nil, false, false, nil); err != discountapi.ErrDiscountNotStarted {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountNotStarted", err)
 	}
 }
@@ -100,7 +100,7 @@ func TestValidateForUse_Expired(t *testing.T) {
 	d := baseDiscount(now)
 	past := now.Add(-24 * time.Hour)
 	d.EndsAt = &past
-	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil); err != discountapi.ErrDiscountExpired {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil, uuid.Nil, false, false, nil); err != discountapi.ErrDiscountExpired {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountExpired", err)
 	}
 }
@@ -109,7 +109,7 @@ func TestValidateForUse_ChannelMismatch(t *testing.T) {
 	now := time.Now()
 	d := baseDiscount(now)
 	d.ChannelScope = model.ChannelScopeOnline
-	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil); err != discountapi.ErrDiscountChannelMismatch {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil, uuid.Nil, false, false, nil); err != discountapi.ErrDiscountChannelMismatch {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountChannelMismatch", err)
 	}
 }
@@ -118,7 +118,7 @@ func TestValidateForUse_MinSubtotal(t *testing.T) {
 	now := time.Now()
 	d := baseDiscount(now)
 	d.MinSubtotal = 200_000
-	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil); err != discountapi.ErrDiscountMinSubtotal {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil, uuid.Nil, false, false, nil); err != discountapi.ErrDiscountMinSubtotal {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountMinSubtotal", err)
 	}
 }
@@ -127,11 +127,11 @@ func TestValidateForUse_QuotaExhausted(t *testing.T) {
 	now := time.Now()
 	d := baseDiscount(now)
 	d.Quota = intPtr(5)
-	if err := validateForUse(d, 100_000, "pos", 5, now, uuid.Nil, nil); err != discountapi.ErrDiscountQuotaExhausted {
+	if err := validateForUse(d, 100_000, "pos", 5, now, uuid.Nil, nil, uuid.Nil, false, false, nil); err != discountapi.ErrDiscountQuotaExhausted {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountQuotaExhausted", err)
 	}
 	// One below quota should still pass.
-	if err := validateForUse(d, 100_000, "pos", 4, now, uuid.Nil, nil); err != nil {
+	if err := validateForUse(d, 100_000, "pos", 4, now, uuid.Nil, nil, uuid.Nil, false, false, nil); err != nil {
 		t.Fatalf("validateForUse() error = %v, want nil (usage below quota)", err)
 	}
 }
@@ -143,7 +143,7 @@ func TestValidateForUse_SelectedScope_ProductMatches(t *testing.T) {
 	d := baseDiscount(now)
 	d.AppliesTo = model.AppliesToSelected
 	productID := uuid.New()
-	if err := validateForUse(d, 100_000, "pos", 0, now, productID, []uuid.UUID{productID}); err != nil {
+	if err := validateForUse(d, 100_000, "pos", 0, now, productID, []uuid.UUID{productID}, uuid.Nil, false, false, nil); err != nil {
 		t.Fatalf("validateForUse() error = %v, want nil", err)
 	}
 }
@@ -154,7 +154,7 @@ func TestValidateForUse_SelectedScope_ProductMismatch(t *testing.T) {
 	d.AppliesTo = model.AppliesToSelected
 	scopedID := uuid.New()
 	otherID := uuid.New()
-	if err := validateForUse(d, 100_000, "pos", 0, now, otherID, []uuid.UUID{scopedID}); err != discountapi.ErrDiscountProductMismatch {
+	if err := validateForUse(d, 100_000, "pos", 0, now, otherID, []uuid.UUID{scopedID}, uuid.Nil, false, false, nil); err != discountapi.ErrDiscountProductMismatch {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountProductMismatch", err)
 	}
 }
@@ -167,7 +167,7 @@ func TestValidateForUse_SelectedScope_EmptyListNeverMatchesAll(t *testing.T) {
 	now := time.Now()
 	d := baseDiscount(now)
 	d.AppliesTo = model.AppliesToSelected
-	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.New(), nil); err != discountapi.ErrDiscountScopeEmpty {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.New(), nil, uuid.Nil, false, false, nil); err != discountapi.ErrDiscountScopeEmpty {
 		t.Fatalf("validateForUse() error = %v, want ErrDiscountScopeEmpty", err)
 	}
 }
@@ -176,8 +176,101 @@ func TestValidateForUse_AppliesToAll_IgnoresProductID(t *testing.T) {
 	now := time.Now()
 	d := baseDiscount(now)
 	d.AppliesTo = model.AppliesToAll
-	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.New(), nil); err != nil {
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.New(), nil, uuid.Nil, false, false, nil); err != nil {
 		t.Fatalf("validateForUse() error = %v, want nil (applies_to=all ignores product_id)", err)
+	}
+}
+
+// ---- Diskon khusus member (§30.3) ----
+
+func memberScopePtr(ms model.MemberScope) *model.MemberScope { return &ms }
+
+func TestValidateForUse_Member_HappyPath_AllMembers(t *testing.T) {
+	now := time.Now()
+	d := baseDiscount(now)
+	d.AudienceScope = model.AudienceScopeMember
+	d.MemberScope = memberScopePtr(model.MemberScopeAllMembers)
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil,
+		uuid.New(), true, true, nil); err != nil {
+		t.Fatalf("validateForUse() error = %v, want nil", err)
+	}
+}
+
+// TestValidateForUse_Member_MembershipDisabled — §30.1: ditolak SAAT
+// DIPAKAI kalau membership_enabled=false, terlepas dari status member
+// customer-nya.
+func TestValidateForUse_Member_MembershipDisabled(t *testing.T) {
+	now := time.Now()
+	d := baseDiscount(now)
+	d.AudienceScope = model.AudienceScopeMember
+	d.MemberScope = memberScopePtr(model.MemberScopeAllMembers)
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil,
+		uuid.New(), true, false, nil); err != discountapi.ErrDiscountMembershipDisabled {
+		t.Fatalf("validateForUse() error = %v, want ErrDiscountMembershipDisabled", err)
+	}
+}
+
+// TestValidateForUse_Member_NotActiveMember — kasus gagal wajib: customer
+// bukan member aktif (termasuk guest tanpa customer_id, direpresentasikan
+// isActiveMember=false).
+func TestValidateForUse_Member_NotActiveMember(t *testing.T) {
+	now := time.Now()
+	d := baseDiscount(now)
+	d.AudienceScope = model.AudienceScopeMember
+	d.MemberScope = memberScopePtr(model.MemberScopeAllMembers)
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil,
+		uuid.New(), false, true, nil); err != discountapi.ErrDiscountMembershipRequired {
+		t.Fatalf("validateForUse() error = %v, want ErrDiscountMembershipRequired", err)
+	}
+}
+
+func TestValidateForUse_Member_SelectedScope_Matches(t *testing.T) {
+	now := time.Now()
+	d := baseDiscount(now)
+	d.AudienceScope = model.AudienceScopeMember
+	d.MemberScope = memberScopePtr(model.MemberScopeSelected)
+	customerID := uuid.New()
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil,
+		customerID, true, true, []uuid.UUID{customerID}); err != nil {
+		t.Fatalf("validateForUse() error = %v, want nil", err)
+	}
+}
+
+func TestValidateForUse_Member_SelectedScope_Mismatch(t *testing.T) {
+	now := time.Now()
+	d := baseDiscount(now)
+	d.AudienceScope = model.AudienceScopeMember
+	d.MemberScope = memberScopePtr(model.MemberScopeSelected)
+	scopedID := uuid.New()
+	otherID := uuid.New()
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil,
+		otherID, true, true, []uuid.UUID{scopedID}); err != discountapi.ErrDiscountMemberMismatch {
+		t.Fatalf("validateForUse() error = %v, want ErrDiscountMemberMismatch", err)
+	}
+}
+
+// TestValidateForUse_Member_SelectedScope_EmptyListNeverMatchesAll — mirror
+// §28.9's empty-list rule: member_scope="selected_members" dengan
+// discount_customers kosong TIDAK PERNAH berarti "berlaku untuk semua
+// member", walau customer-nya sungguhan member aktif.
+func TestValidateForUse_Member_SelectedScope_EmptyListNeverMatchesAll(t *testing.T) {
+	now := time.Now()
+	d := baseDiscount(now)
+	d.AudienceScope = model.AudienceScopeMember
+	d.MemberScope = memberScopePtr(model.MemberScopeSelected)
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil,
+		uuid.New(), true, true, nil); err != discountapi.ErrDiscountMemberScopeEmpty {
+		t.Fatalf("validateForUse() error = %v, want ErrDiscountMemberScopeEmpty", err)
+	}
+}
+
+func TestValidateForUse_AudienceAll_IgnoresMembershipArgs(t *testing.T) {
+	now := time.Now()
+	d := baseDiscount(now)
+	d.AudienceScope = model.AudienceScopeAll
+	if err := validateForUse(d, 100_000, "pos", 0, now, uuid.Nil, nil,
+		uuid.Nil, false, false, nil); err != nil {
+		t.Fatalf("validateForUse() error = %v, want nil (audience_scope=all ignores membership args)", err)
 	}
 }
 

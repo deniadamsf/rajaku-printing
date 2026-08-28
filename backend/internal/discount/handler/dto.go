@@ -33,6 +33,15 @@ type createDiscountRequest struct {
 	// per baris (insertDiscountProducts) yang bisa melampaui batas 65.535
 	// parameter protokol Postgres, meledak jadi 500 alih-alih 400 yang jelas.
 	ProductIDs []uuid.UUID `json:"product_ids" binding:"omitempty,max=500"`
+
+	AudienceScope string `json:"audience_scope" binding:"omitempty,oneof=all member"`
+	// MemberScope tidak pakai binding:"oneof" — "" (tidak dikirim) valid
+	// kalau audience_scope != member, jadi validasinya dikerjakan service
+	// (butuh tahu audience_scope final dulu, mirror applies_to/product_ids).
+	MemberScope string `json:"member_scope"`
+	// CustomerIDs — batas sama seperti ProductIDs, alasan sama (temuan
+	// review #6).
+	CustomerIDs []uuid.UUID `json:"customer_ids" binding:"omitempty,max=500"`
 }
 
 type deleteDiscountRequest struct {
@@ -156,6 +165,45 @@ func parseUpdateInput(raw map[string]json.RawMessage) (*service.UpdateInput, err
 			return nil, fmt.Errorf("product_ids maksimal 500 item")
 		}
 		in.ProductIDs = &ids
+	}
+	if v, ok := raw["audience_scope"]; ok {
+		if isJSONNull(v) {
+			return nil, fmt.Errorf("audience_scope tidak boleh null")
+		}
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return nil, fmt.Errorf("audience_scope: %w", err)
+		}
+		in.AudienceScope = &s
+	}
+	if v, ok := raw["member_scope"]; ok {
+		// BEDA dengan audience_scope/applies_to — null DIPERBOLEHKAN di sini,
+		// diperlakukan sama dengan "" (keduanya berarti "kosongkan
+		// member_scope", divalidasi ulang di service/reconcileMemberScope
+		// terhadap audience_scope final).
+		if isJSONNull(v) {
+			s := ""
+			in.MemberScope = &s
+		} else {
+			var s string
+			if err := json.Unmarshal(v, &s); err != nil {
+				return nil, fmt.Errorf("member_scope: %w", err)
+			}
+			in.MemberScope = &s
+		}
+	}
+	if v, ok := raw["customer_ids"]; ok {
+		if isJSONNull(v) {
+			return nil, fmt.Errorf("customer_ids tidak boleh null")
+		}
+		var ids []uuid.UUID
+		if err := json.Unmarshal(v, &ids); err != nil {
+			return nil, fmt.Errorf("customer_ids: %w", err)
+		}
+		if len(ids) > 500 {
+			return nil, fmt.Errorf("customer_ids maksimal 500 item")
+		}
+		in.CustomerIDs = &ids
 	}
 
 	if v, ok := raw["max_discount_amount"]; ok {

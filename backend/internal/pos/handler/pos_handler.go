@@ -37,7 +37,9 @@ func mapDomainErr(c *gin.Context, err error) {
 		errors.Is(err, discountapi.ErrManualDiscountInvalidAmount),
 		errors.Is(err, discountapi.ErrDiscountMinSubtotal),
 		errors.Is(err, discountapi.ErrDiscountScopeEmpty),
-		errors.Is(err, discountapi.ErrDiscountProductMismatch):
+		errors.Is(err, discountapi.ErrDiscountProductMismatch),
+		errors.Is(err, discountapi.ErrDiscountMemberScopeEmpty),
+		errors.Is(err, discountapi.ErrDiscountMemberMismatch):
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, err.Error())
 	case errors.Is(err, discountapi.ErrDiscountNotFound):
 		httpx.Error(c, http.StatusNotFound, httpx.CodeNotFound, err.Error())
@@ -45,11 +47,14 @@ func mapDomainErr(c *gin.Context, err error) {
 		errors.Is(err, discountapi.ErrDiscountNotStarted),
 		errors.Is(err, discountapi.ErrDiscountExpired),
 		errors.Is(err, discountapi.ErrDiscountChannelMismatch),
-		errors.Is(err, discountapi.ErrDiscountQuotaExhausted):
+		errors.Is(err, discountapi.ErrDiscountQuotaExhausted),
+		errors.Is(err, discountapi.ErrDiscountMembershipDisabled),
+		errors.Is(err, discountapi.ErrDiscountMembershipRequired):
 		httpx.Error(c, http.StatusUnprocessableEntity, httpx.CodeUnprocessable, err.Error())
 	case errors.Is(err, posapi.ErrCustomerResolve):
 		httpx.Error(c, http.StatusUnprocessableEntity, httpx.CodeUnprocessable, err.Error())
-	case errors.Is(err, orderapi.ErrDiscountUnavailable):
+	case errors.Is(err, orderapi.ErrDiscountUnavailable),
+		errors.Is(err, discountapi.ErrDiscountMembershipUnavailable):
 		httpx.Error(c, http.StatusInternalServerError, httpx.CodeInternal, err.Error())
 	case errors.Is(err, posapi.ErrOrderCreate),
 		errors.Is(err, orderapi.ErrResiCollisionGaveUp):

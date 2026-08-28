@@ -56,6 +56,13 @@ const (
 	// modul auth (pendaftaran via Google OAuth). Tidak terikat order/customer
 	// manapun (dikirim SEBELUM user row dibuat) — lihat OTPSender di bawah.
 	KindOTPVerification Kind = "otp_verification"
+
+	// Membership (§30 CLAUDE.md) — terikat CUSTOMER langsung, bukan order
+	// (lihat CustomerEventEnqueuer di bawah).
+	KindMembershipApproved   Kind = "membership_approved"   // pengajuan disetujui admin
+	KindMembershipRejected   Kind = "membership_rejected"   // pengajuan ditolak admin, wajib alasan
+	KindMembershipRevoked    Kind = "membership_revoked"    // status member dicabut admin, wajib alasan
+	KindMembershipReinstated Kind = "membership_reinstated" // status member dipulihkan admin dari revoked, wajib alasan
 )
 
 // Enqueuer — kontrak untuk trigger notifikasi terkait order. Implementasi
@@ -116,6 +123,23 @@ type InternalAlerter interface {
 	// dedupKey wajib diisi caller (mis. "design_retention_warning:<file_id>")
 	// supaya reminder yang sama tidak dikirim dua kali saat job jalan ulang.
 	EnqueueInternalAlert(ctx context.Context, kind Kind, orderID *uuid.UUID, extras map[string]any, dedupKey string) error
+}
+
+// CustomerEventEnqueuer — kontrak untuk trigger notifikasi yang terikat ke
+// CUSTOMER langsung (bukan order) — dipakai modul membership (§30) untuk
+// notif status approved/rejected/revoked, yang tidak melekat ke satu order
+// tertentu (customer bisa punya banyak order, atau tidak punya sama sekali).
+// Beda dari Enqueuer.EnqueueOrderEvent yang me-resolve recipient dari
+// order.customer_id — di sini customerID diberikan langsung oleh caller.
+//
+// Kontrak untuk caller — sama seperti Enqueuer: NON-BLOCKING (INSERT ke DB
+// saja), best-effort (jangan gagalkan operasi bisnis kalau enqueue gagal).
+// dedupKey wajib diisi caller (§30 status membership bisa siklus — mis.
+// active→revoked→pending→active lagi — jadi TIDAK bisa dedup statis per
+// kind+customerID seperti EnqueueOrderEvent, yang mengasumsikan kind hanya
+// terjadi sekali per order).
+type CustomerEventEnqueuer interface {
+	EnqueueCustomerEvent(ctx context.Context, kind Kind, customerID uuid.UUID, extras map[string]any, dedupKey string) error
 }
 
 // OTPSender — kontrak khusus untuk mengirim kode verifikasi kepemilikan

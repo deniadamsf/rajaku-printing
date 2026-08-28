@@ -25,6 +25,7 @@ useSeoMeta({
 
 const auth = useAuthStore()
 const orderApi = useOrder()
+const membershipApi = useMembership()
 
 // -------------------- state --------------------
 const orders = ref<Order[]>([])
@@ -57,6 +58,26 @@ async function fetchOrders() {
 onMounted(fetchOrders)
 watch([page, statusFilter], () => {
   fetchOrders()
+})
+
+// -------------------- membership shortcut (§30.1/§30.4) --------------------
+// Kartu shortcut di bawah cuma boleh muncul kalau ada gunanya diklik:
+// fiturnya aktif (bisa ajukan), ATAU customer ini sudah pernah berstatus
+// member (perlu tetap lihat status/riwayatnya walau toggle-nya sudah
+// dimatikan admin belakangan — data member tidak ikut disembunyikan §30.1).
+// Kalau nonaktif DAN belum pernah apply sama sekali, sembunyikan total —
+// jangan iming-imingi customer sesuatu yang backend pasti tolak.
+const showMembershipShortcut = ref(false)
+onMounted(async () => {
+  try {
+    const m = await membershipApi.getOwn()
+    showMembershipShortcut.value = m.membership_enabled || m.status !== 'none'
+  } catch {
+    // Gagal baca status membership (mis. jaringan) bukan alasan memblokir
+    // seluruh halaman akun — cukup sembunyikan shortcut-nya saja, sisanya
+    // (daftar pesanan dst) tetap jalan normal.
+    showMembershipShortcut.value = false
+  }
 })
 
 // -------------------- helpers --------------------
@@ -154,8 +175,10 @@ function needsAction(status: string): boolean {
       <AccountPhonePanel @merged="fetchOrders" />
     </div>
 
-    <!-- Membership shortcut (§30.4) -->
+    <!-- Membership shortcut (§30.1/§30.4) — disembunyikan kalau fitur nonaktif
+         dan customer belum pernah punya status member sama sekali. -->
     <NuxtLink
+      v-if="showMembershipShortcut"
       to="/akun/membership"
       class="mt-4 group flex items-center gap-3 rounded-lg border border-hairline bg-canvas p-4 hover:border-gold-300 hover:bg-gold-50/40 transition-colors"
     >

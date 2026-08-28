@@ -13,6 +13,8 @@ export interface Membership {
   name: string
   phone: string
   status: MembershipStatus
+  /** Snapshot setting `membership_enabled` (§30.1) saat response ini dibuat — pakai untuk sembunyikan CTA "Ajukan jadi Member" saat fitur nonaktif. */
+  membership_enabled: boolean
   requested_at?: string | null
   decided_at?: string | null
   decided_by?: string | null

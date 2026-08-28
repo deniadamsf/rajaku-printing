@@ -496,6 +496,28 @@ func TestGet_HappyPath(t *testing.T) {
 	if view.Status != string(membershipapi.StatusActive) {
 		t.Fatalf("Get() status = %q, want active", view.Status)
 	}
+	if !view.MembershipEnabled {
+		t.Fatalf("Get() MembershipEnabled = false, want true (setting is enabled in this fixture)")
+	}
+}
+
+// TestGet_ReflectsMembershipEnabledFlag — frontend (akun/index.vue,
+// akun/membership.vue) memakai MembershipEnabled untuk sembunyikan CTA
+// "Ajukan jadi Member" saat fitur nonaktif, jadi flag ini WAJIB ikut nilai
+// setting saat itu juga, termasuk saat false — bukan cuma "selalu true kalau
+// service berhasil jalan".
+func TestGet_ReflectsMembershipEnabledFlag(t *testing.T) {
+	svc, customers, _, _ := newTestService(t, false)
+	id := uuid.New()
+	seedCustomer(customers, id, authapi.CustomerTypeRegistered, membershipapi.StatusActive)
+
+	view, err := svc.Get(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Get() error = %v, want nil", err)
+	}
+	if view.MembershipEnabled {
+		t.Fatalf("Get() MembershipEnabled = true, want false (setting is disabled in this fixture)")
+	}
 }
 
 func TestGet_CustomerNotFound(t *testing.T) {

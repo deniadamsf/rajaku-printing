@@ -9,7 +9,7 @@
  * Design: patuh CLAUDE.md §26. Badge aktif pakai aksen gold.500 (§26.1 —
  * membership memang konteks premium yang cocok dengan token emas).
  */
-import { Crown, Sparkles, Clock, ShieldOff, Loader2, ArrowLeft } from '@lucide/vue'
+import { Crown, Sparkles, Clock, ShieldOff, Loader2, ArrowLeft, Lock } from '@lucide/vue'
 import { ApiError } from '~/composables/useApi'
 import type { Membership } from '~/types/membership'
 
@@ -93,8 +93,22 @@ function fmtDate(s?: string | null): string {
     </div>
 
     <div v-else-if="membership" class="mt-6 rounded-lg border border-hairline bg-canvas p-6 md:p-8">
+      <!-- none / rejected, tapi fitur sedang dimatikan admin (§30.1) — jangan
+           tawarkan tombol yang pasti ditolak backend (ErrMembershipDisabled). -->
+      <template v-if="(membership.status === 'none' || membership.status === 'rejected') && !membership.membership_enabled">
+        <div class="flex items-start gap-3">
+          <Lock class="h-6 w-6 text-ink-400 flex-none" :stroke-width="1.5" />
+          <div class="flex-1">
+            <h2 class="font-serif text-lg font-semibold text-ink-950">Program membership belum tersedia</h2>
+            <p class="mt-1 text-sm text-ink-500 leading-relaxed">
+              Pendaftaran member sedang tidak dibuka untuk sementara. Coba lagi lain waktu.
+            </p>
+          </div>
+        </div>
+      </template>
+
       <!-- none / rejected → bisa ajukan -->
-      <template v-if="membership.status === 'none' || membership.status === 'rejected'">
+      <template v-else-if="membership.status === 'none' || membership.status === 'rejected'">
         <div class="flex items-start gap-3">
           <Sparkles class="h-6 w-6 text-brand-500 flex-none" :stroke-width="1.5" />
           <div class="flex-1">

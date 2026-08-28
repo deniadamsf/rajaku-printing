@@ -284,7 +284,17 @@ func (s *Service) viewOf(ctx context.Context, customerID uuid.UUID) (*Membership
 	if err != nil {
 		return nil, err
 	}
-	return toView(info), nil
+	// Setiap view yang keluar dari service ini menyertakan status saklar
+	// membership_enabled saat itu juga — frontend customer pakai ini untuk
+	// menyembunyikan CTA "Ajukan jadi Member" saat fitur nonaktif (§30.1),
+	// bukan cuma bereaksi setelah backend menolak Apply.
+	enabled, err := s.isEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+	view := toView(info)
+	view.MembershipEnabled = enabled
+	return view, nil
 }
 
 func toView(info *authapi.MembershipInfo) *MembershipView {

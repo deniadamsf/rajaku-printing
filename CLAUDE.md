@@ -243,6 +243,71 @@ Selain skill yang sudah kamu punya (`ui-ux-pro-max`, sudah disesuaikan ke Vue), 
 - ESC/POS native printing.
 - Role granular tambahan jika perlu.
 
+### 21.1. Rencana App Flutter untuk Customer & Member (DRAFT — 28 Agustus 2026, belum dieksekusi)
+
+> **Status: catatan diskusi, bukan keputusan final.** Beda dari section lain
+> di dokumen ini (§24 "tidak ada TBD terbuka") — bagian ini sengaja masih
+> terbuka sampai pemilik proyek memutuskan untuk mulai. Jangan mulai
+> implementasi apa pun di bagian ini tanpa konfirmasi eksplisit.
+
+Ide: web yang ada (customer-facing: akun, pesanan, membership) dijadikan app
+Flutter khusus customer & member — **beda** dari App Android di roadmap §21
+di atas yang untuk operasional cetak/produksi.
+
+**Sudah siap untuk ini** (tidak perlu dirombak): auth backend sudah
+Bearer JWT ([authapi/middleware.go](backend/internal/auth/authapi/middleware.go)),
+bukan session-cookie — modular monolith Go-nya memang API-first sejak awal
+(§21 di atas), jadi order/katalog/membership/tracking tinggal dipanggil app.
+
+**Dua gap yang wajib dibereskan di backend SEBELUM app Flutter mulai dibangun**
+(retrofit auth di tengah jalan pengerjaan app jauh lebih menyakitkan daripada
+membereskannya dulu):
+
+**A. Refresh token** — token akses sekarang cuma hidup 24 jam tanpa cara
+diperpanjang ([token/jwt.go](backend/internal/auth/token/jwt.go)), memaksa
+login ulang tiap hari; tidak masalah untuk web tapi mengganggu untuk app.
+
+- Tabel baru `refresh_tokens` (`id`, `user_id`, `token_hash`, `device_label`,
+  `issued_at`, `expires_at`, `revoked_at`, `replaced_by`).
+- **Token mentah tidak pernah disimpan di DB** — hanya hash (pola sama
+  seperti hash password di `password.go`).
+- **Rotasi wajib**: tiap pemakaian, token lama di-revoke & diganti baru.
+  Token yang sudah revoked dicoba dipakai lagi = sinyal pencurian → **semua**
+  refresh token milik user itu langsung direvoke, bukan cuma yang dicoba.
+  Menolak diam-diam tanpa revoke massal = kegagalan senyap yang dilarang §22.
+- TTL 30-60 hari. Endpoint `POST /api/v1/auth/refresh` wajib rate-limited
+  (pola §23.6).
+- Logout (`POST /api/v1/auth/logout`) wajib merevoke token di server, bukan
+  cuma dihapus di app.
+- Sisi Flutter: refresh token disimpan di secure storage (Keychain/Keystore
+  via `flutter_secure_storage`), bukan `SharedPreferences` polos.
+
+**B. Login Google native** — flow `Start`/`Callback` yang ada
+([handler/google_oauth_handler.go](backend/internal/auth/handler/google_oauth_handler.go))
+murni navigasi browser (redirect + `HttpOnly` cookie state), tidak bisa
+dipakai app yang login lewat Google Sign-In SDK native (langsung dapat
+`id_token`, tanpa redirect).
+
+- Endpoint baru `POST /api/v1/auth/google/native { id_token }`.
+- Verifikasi `id_token` pakai public key Google (`google.golang.org/api/idtoken`),
+  jangan trust mentah dari client.
+- Validasi klaim `aud` cocok Client ID Android/iOS (beda dari Client ID web).
+  Config baru `GOOGLE_OAUTH_ANDROID_CLIENT_ID` / `..._IOS_CLIENT_ID`, wajib
+  fail-fast saat startup kalau kosong (§22, pola sama `APP_BASE_URL`).
+- **Tidak boleh duplikasi business logic**: setelah `id_token` diverifikasi,
+  hasilnya (email/nama/email_verified) diserahkan ke method service yang
+  sama dengan flow web (`RequestOTP`/`Complete`) — termasuk **tetap wajib
+  OTP WA** untuk user baru. Native login melewati OTP karena "datang dari
+  app" akan membuka kembali celah keamanan yang sudah ditutup untuk web
+  (lihat komentar security fix di handler ini).
+- Flow web (`Start`/`Callback`/`Exchange`) tidak berubah sama sekali — ini
+  murni penambahan jalur baru.
+
+**Sengaja belum dibreakdown** (keputusan terpisah nanti): push notification
+(FCM — sekarang notifikasi cuma lewat WA/Baileys §13), dan UI "kelola
+perangkat login" (struktur tabel `refresh_tokens` sudah menampung lewat
+`device_label`, tapi belum ada rencana UI-nya).
+
 ## 22. Aturan Coding — Anti Spaghetti Code (Golang)
 
 **Struktur & separation of concern**

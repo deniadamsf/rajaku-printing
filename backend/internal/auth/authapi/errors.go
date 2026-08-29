@@ -19,6 +19,19 @@ var (
 	// Lookup
 	ErrCustomerNotFound = errors.New("authapi: customer not found")
 
+	// ErrCustomerBlocked — the customer identity matched by phone (§11) has
+	// been deactivated by an admin (Manajemen Pelanggan, is_active=false).
+	// Returned by ResolveOrCreateGuest so guest checkout (order/service) and
+	// POS (pos/service) both refuse to attach a NEW order to a blocked
+	// identity — a blocked customer must not be able to keep transacting
+	// just because their WhatsApp number still matches an existing row.
+	// Deliberately NOT returned for tombstoned rows produced by
+	// PhoneClaimService's guest absorption (phone_claim_service.go) — those
+	// rows have their `phone` column released to NULL BEFORE is_active is
+	// set to false, so FindByPhone can never match them in the first place;
+	// this sentinel only ever fires for a genuinely admin-blocked customer.
+	ErrCustomerBlocked = errors.New("authapi: customer account is blocked")
+
 	// Membership (§30 CLAUDE.md) — CAS transition conflict: membership_status
 	// berubah di antara caller membaca status lama dan menulis status baru
 	// (mis. dua approve konkuren). Caller (membership/service) memetakan ini

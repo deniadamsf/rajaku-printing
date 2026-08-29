@@ -51,6 +51,9 @@ func mapDomainErr(c *gin.Context, err error) {
 		errors.Is(err, discountapi.ErrDiscountMembershipDisabled),
 		errors.Is(err, discountapi.ErrDiscountMembershipRequired):
 		httpx.Error(c, http.StatusUnprocessableEntity, httpx.CodeUnprocessable, err.Error())
+	case errors.Is(err, authapi.ErrCustomerBlocked):
+		httpx.Error(c, http.StatusForbidden, httpx.CodeForbidden,
+			"pelanggan ini diblokir, tidak bisa membuat order baru — aktifkan dulu di Manajemen Pelanggan")
 	case errors.Is(err, posapi.ErrCustomerResolve):
 		httpx.Error(c, http.StatusUnprocessableEntity, httpx.CodeUnprocessable, err.Error())
 	case errors.Is(err, orderapi.ErrDiscountUnavailable),

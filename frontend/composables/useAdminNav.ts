@@ -26,6 +26,7 @@ import {
   TicketPercent,
   ClipboardList,
   UserCheck,
+  Contact,
 } from '@lucide/vue'
 
 export interface AdminNavItem {
@@ -131,6 +132,14 @@ export function useAdminNav() {
       description: 'Approve/tolak/cabut pengajuan member',
       icon: UserCheck,
       permission: 'membership.view',
+      group: 'kelola',
+    },
+    {
+      label: 'Pelanggan',
+      to: '/admin/pelanggan',
+      description: 'Data pelanggan, riwayat order, blokir akun',
+      icon: Contact,
+      permission: 'customer.view',
       group: 'kelola',
     },
     {

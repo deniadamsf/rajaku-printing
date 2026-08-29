@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -424,6 +425,293 @@ func (r *UserRepository) SetPassword(ctx context.Context, id uuid.UUID, hash str
 		})
 	if res.Error != nil {
 		return fmt.Errorf("set password: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ---- Customer admin (Manajemen Pelanggan) ----
+//
+// SEMUA query & update di bawah ini WAJIB menyaring user_type='customer' —
+// tanpa filter itu, pemegang permission customer.manage bisa mengedit/
+// menonaktifkan akun staff atau super admin lewat endpoint pelanggan (§22
+// review keamanan fitur ini). Jangan pernah pakai SetActive/UpdateStaffBasic
+// di atas untuk fitur ini — keduanya sengaja tidak menyaring tipe user.
+
+// ListCustomerFilter — filter+paginasi untuk ListCustomers/StreamCustomers.
+type ListCustomerFilter struct {
+	// Q — substring case-insensitive pada name/email/phone. Untuk phone,
+	// dicocokkan lewat phone.NormalizeForSearch(Q) (pola sama SearchCustomers
+	// di atas) supaya admin yang mengetik format lokal ("0812...") tetap
+	// ketemu baris tersimpan kanonik ("62812...", §13).
+	Q                string
+	CustomerType     string // "" | "guest" | "registered"
+	IsActive         *bool  // nil = keduanya
+	MembershipStatus string // "" | none|pending|active|rejected|revoked
+	Page, PageSize   int
+}
+
+type ListCustomerResult struct {
+	Items    []model.User
+	Total    int64
+	Page     int
+	PageSize int
+}
+
+// applyCustomerFilter is the shared WHERE-builder for ListCustomers dan
+// StreamCustomers, factored out so both stay in sync (pola sama
+// recapBaseQuery di order/repository/recap_repository.go).
+//
+// BEDA SENGAJA dari SearchCustomers di atas: listing admin ini TIDAK
+// menyaring is_active maupun "phone IS NOT NULL" — admin justru perlu
+// melihat pelanggan yang sudah diblokir (untuk bisa mengaktifkannya
+// kembali) dan pelanggan terdaftar via Google yang belum pernah mengisi
+// nomor WA (§13), bukan hanya baris yang "siap dipakai" seperti di layar
+// kasir.
+func applyCustomerFilter(q *gorm.DB, f ListCustomerFilter) *gorm.DB {
+	q = q.Where("user_type = ?", model.UserTypeCustomer)
+	if trimmed := strings.TrimSpace(f.Q); trimmed != "" {
+		nameLike := "%" + escapeLike(trimmed) + "%"
+		emailLike := "%" + escapeLike(trimmed) + "%"
+		phoneLike := "%" + escapeLike(phone.NormalizeForSearch(trimmed)) + "%"
+		q = q.Where(
+			"(name ILIKE ? ESCAPE '\\' OR email ILIKE ? ESCAPE '\\' OR phone ILIKE ? ESCAPE '\\')",
+			nameLike, emailLike, phoneLike,
+		)
+	}
+	if f.CustomerType != "" {
+		q = q.Where("customer_type = ?", f.CustomerType)
+	}
+	if f.IsActive != nil {
+		q = q.Where("is_active = ?", *f.IsActive)
+	}
+	if f.MembershipStatus != "" {
+		q = q.Where("membership_status = ?", f.MembershipStatus)
+	}
+	return q
+}
+
+// ListCustomers paginated. Order created_at DESC, page size dijepit 1..100
+// default 20 (pola sama ListStaff).
+func (r *UserRepository) ListCustomers(ctx context.Context, f ListCustomerFilter) (*ListCustomerResult, error) {
+	if f.Page < 1 {
+		f.Page = 1
+	}
+	if f.PageSize < 1 || f.PageSize > 100 {
+		f.PageSize = 20
+	}
+	q := applyCustomerFilter(r.db.WithContext(ctx).Model(&model.User{}), f)
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, fmt.Errorf("count customers: %w", err)
+	}
+	var items []model.User
+	if err := q.
+		Order("created_at DESC").
+		Offset((f.Page - 1) * f.PageSize).
+		Limit(f.PageSize).
+		Find(&items).Error; err != nil {
+		return nil, fmt.Errorf("list customers: %w", err)
+	}
+	return &ListCustomerResult{Items: items, Total: total, Page: f.Page, PageSize: f.PageSize}, nil
+}
+
+// StreamCustomers iterates EVERY row matching f in bounded batches, calling
+// fn once per batch — dipakai ekspor CSV (§28.5 pola streaming) supaya satu
+// request tidak pernah menahan seluruh hasil filter sekaligus di memori
+// (§19: VPS Hostinger tunggal, tanpa auto-scale). Stops as soon as fn
+// returns an error.
+//
+// DELIBERATELY NOT GORM's FindInBatches (temuan review #1) — FindInBatches
+// paginates by primary key (`WHERE id > <last row's id>`) and appends ITS
+// OWN ORDER BY id ASC on top of whatever the caller already ordered by. Here
+// the caller orders by created_at DESC and `id` is a random UUID (no
+// relation to insertion order), so FindInBatches' key and the caller's sort
+// order disagree — past batch 1, rows can be silently skipped (their id
+// happened to sort before the last id already consumed under id-order, even
+// though under created_at order they hadn't been emitted yet) or repeated
+// (the reverse), with NO error raised. That is exactly the CSV
+// missing/duplicate-rows bug this comment exists to prevent from
+// reappearing — DO NOT "clean this up" back to FindInBatches.
+//
+// Instead: a plain offset/limit loop, ordered `created_at DESC, id DESC`.
+// The `id` tiebreaker is mandatory, not decorative — two rows can share the
+// exact same created_at (e.g. bulk-imported or created within the same
+// clock tick), and without a deterministic secondary key Postgres is free to
+// reorder them differently between the OFFSET-N and OFFSET-N+batchSize
+// queries, which reproduces the very missing/duplicate-row bug this
+// function was rewritten to fix.
+func (r *UserRepository) StreamCustomers(ctx context.Context, f ListCustomerFilter, batchSize int, fn func([]model.User) error) error {
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	offset := 0
+	for {
+		var batch []model.User
+		err := applyCustomerFilter(r.db.WithContext(ctx).Model(&model.User{}), f).
+			Order("created_at DESC, id DESC").
+			Offset(offset).
+			Limit(batchSize).
+			Find(&batch).Error
+		if err != nil {
+			return fmt.Errorf("stream customers: batch offset=%d: %w", offset, err)
+		}
+		if len(batch) == 0 {
+			return nil
+		}
+		if err := fn(batch); err != nil {
+			return err
+		}
+		if len(batch) < batchSize {
+			return nil // last (partial) page — no need for one more round-trip
+		}
+		offset += batchSize
+	}
+}
+
+// FindCustomerByID is FindByID's user_type-scoped counterpart — returns
+// ErrNotFound not only when the row doesn't exist but also when it exists
+// and ISN'T a customer (mis. staff id), so callers can't accidentally act on
+// a staff row via a customer-only endpoint.
+func (r *UserRepository) FindCustomerByID(ctx context.Context, id uuid.UUID) (*model.User, error) {
+	var u model.User
+	err := r.db.WithContext(ctx).
+		Where("id = ? AND user_type = ?", id, model.UserTypeCustomer).
+		First(&u).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("find customer by id %s: %w", id, err)
+	}
+	return &u, nil
+}
+
+// ExistsByEmailExcluding returns true if a user OTHER than excludeID already
+// has this email — dipakai pre-check UpdateCustomer sebelum menulis (§ aturan
+// keamanan #4, uniqueness berlaku global lintas customer/staff karena satu
+// tabel `users`).
+func (r *UserRepository) ExistsByEmailExcluding(ctx context.Context, email string, excludeID uuid.UUID) (bool, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&model.User{}).
+		Where("email = ? AND id <> ?", email, excludeID).
+		Count(&n).Error
+	if err != nil {
+		return false, fmt.Errorf("count user by email excluding %s: %w", excludeID, err)
+	}
+	return n > 0, nil
+}
+
+// ExistsByPhoneExcluding is ExistsByEmailExcluding's phone counterpart.
+func (r *UserRepository) ExistsByPhoneExcluding(ctx context.Context, phone string, excludeID uuid.UUID) (bool, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&model.User{}).
+		Where("phone = ? AND id <> ?", phone, excludeID).
+		Count(&n).Error
+	if err != nil {
+		return false, fmt.Errorf("count user by phone excluding %s: %w", excludeID, err)
+	}
+	return n > 0, nil
+}
+
+// ErrCustomerPhoneConflict/ErrCustomerEmailConflict — race-safety backstop
+// sentinel untuk UpdateCustomerBasic: dua request PATCH konkuren bisa lolos
+// dari pre-check ExistsBy*Excluding di service layer (klasik TOCTOU), jadi
+// unique-constraint violation dari DB TETAP wajib ditangani di sini, bukan
+// cuma dianggap "tidak mungkin terjadi" (§22 setiap err wajib ditangani).
+var (
+	ErrCustomerPhoneConflict = errors.New("repository: phone already used by another user")
+	ErrCustomerEmailConflict = errors.New("repository: email already used by another user")
+	// ErrCustomerCheckViolation — backstop sentinel untuk UpdateCustomerBasic:
+	// SQLSTATE 23514 (CHECK constraint violation) dari `users`
+	// (users_email_required / users_customer_type_only_for_customer, migration
+	// 000001). Normalnya service layer sudah menolak input yang melanggar ini
+	// SEBELUM sampai kemari (ErrEmailRequiredForRegistered/
+	// ErrPhoneRequiredForGuest, customer_admin_service.go) — ini lapis
+	// terakhir untuk race/kasus yang belum dikenal, supaya jatuh ke 400,
+	// bukan 500 (temuan review #5, §22 setiap err wajib ditangani).
+	ErrCustomerCheckViolation = errors.New("repository: customer update violates a database constraint")
+)
+
+// pgCheckViolationCode — SQLSTATE Postgres untuk CHECK constraint violation.
+const pgCheckViolationCode = "23514"
+
+// classifyCustomerConstraintViolation maps a Postgres constraint-violation
+// error (unique OR check) from an UpdateCustomerBasic write to the specific
+// sentinel it should surface, using the constraint/index names from
+// migrations 000001 (users_email_key, users_email_required,
+// users_customer_type_only_for_customer) and 000017 (users_phone_unique_idx).
+func classifyCustomerConstraintViolation(err error) (error, bool) {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return nil, false
+	}
+	switch pgErr.Code {
+	case pgUniqueViolationCode:
+		switch pgErr.ConstraintName {
+		case "users_phone_unique_idx":
+			return ErrCustomerPhoneConflict, true
+		case "users_email_key":
+			return ErrCustomerEmailConflict, true
+		}
+	case pgCheckViolationCode:
+		return ErrCustomerCheckViolation, true
+	}
+	return nil, false
+}
+
+// UpdateCustomerBasic writes the FINAL desired state of name/email/phone —
+// pointer nil untuk email/phone berarti "tulis NULL" (kosongkan), BUKAN
+// "biarkan apa adanya" (beda dari UpdateStaffBasic di atas). Caller
+// (service layer) yang bertanggung jawab menerjemahkan semantik PATCH
+// "field absen = tidak diubah" jadi nilai akhir definitif ini — repository
+// ini murni overwrite tanpa logic delta.
+//
+// phoneVerifiedAt SELALU ditulis eksplisit (§ aturan keamanan #3 — admin
+// mengetik nomor artinya "diklaim", bukan "terbukti dimiliki"; setiap
+// pemanggil WAJIB memutuskan nilainya, tidak boleh membiarkan stempel
+// verifikasi lama menempel di nomor yang sudah berubah).
+//
+// Hanya menyaring user_type='customer' — baris staff tidak akan pernah
+// ter-update lewat method ini (RowsAffected=0 → ErrNotFound), inilah
+// pertahanan utama terhadap privilege escalation lewat endpoint pelanggan.
+func (r *UserRepository) UpdateCustomerBasic(ctx context.Context, id uuid.UUID, name string, email, phoneNum *string, phoneVerifiedAt *time.Time) error {
+	res := r.db.WithContext(ctx).
+		Model(&model.User{}).
+		Where("id = ? AND user_type = ?", id, model.UserTypeCustomer).
+		Updates(map[string]any{
+			"name":              name,
+			"email":             email,
+			"phone":             phoneNum,
+			"phone_verified_at": phoneVerifiedAt,
+		})
+	if res.Error != nil {
+		if sentinel, ok := classifyCustomerConstraintViolation(res.Error); ok {
+			return sentinel
+		}
+		return fmt.Errorf("update customer basic for %s: %w", id, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetCustomerActive is SetActive's user_type-scoped counterpart — hanya
+// menyaring user_type='customer', jadi tidak bisa dipakai memblokir staff
+// (§ aturan keamanan #1). Idempotent di level DB; no-op detection (menolak
+// mengaktifkan yang sudah aktif) adalah tanggung jawab service layer, bukan
+// repository ini.
+func (r *UserRepository) SetCustomerActive(ctx context.Context, id uuid.UUID, active bool) error {
+	res := r.db.WithContext(ctx).
+		Model(&model.User{}).
+		Where("id = ? AND user_type = ?", id, model.UserTypeCustomer).
+		UpdateColumn("is_active", active)
+	if res.Error != nil {
+		return fmt.Errorf("set customer active: %w", res.Error)
 	}
 	if res.RowsAffected == 0 {
 		return ErrNotFound

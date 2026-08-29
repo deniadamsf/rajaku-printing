@@ -24,6 +24,18 @@ const props = defineProps<{
   rowKey: keyof T | string
   /** Pesan saat items kosong & tidak loading. */
   emptyMessage?: string
+  /**
+   * Opsional: seluruh baris jadi klikable (cursor pointer + emit `row-click`),
+   * dipakai halaman yang navigasi ke detail dari mana pun di baris diklik
+   * (mis. `/admin/pelanggan`) — bukan cuma satu sel jadi link. Sel yang punya
+   * elemen interaktifnya sendiri (tombol/link) wajib `@click.stop` supaya
+   * tidak ikut memicu navigasi baris.
+   */
+  rowClickable?: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'row-click', row: T): void
 }>()
 
 function rowKeyOf(row: T): string | number {
@@ -62,7 +74,8 @@ function rowKeyOf(row: T): string | number {
           v-for="row in items"
           v-else
           :key="rowKeyOf(row)"
-          class="hover:bg-canvas-alt/60 transition-colors"
+          :class="['hover:bg-canvas-alt/60 transition-colors', rowClickable && 'cursor-pointer']"
+          @click="rowClickable && emit('row-click', row)"
         >
           <td
             v-for="col in columns"

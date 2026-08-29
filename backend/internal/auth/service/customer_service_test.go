@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/rajaku-printing/backend/internal/auth/authapi"
 	"github.com/rajaku-printing/backend/internal/auth/model"
 	"github.com/rajaku-printing/backend/internal/auth/repository"
 )
@@ -26,14 +27,35 @@ type fakeCustomerUserStore struct {
 
 	searchResult []model.User
 	searchErr    error
+
+	// findByPhoneUser/findByPhoneErr — configures FindByPhone for
+	// ResolveOrCreateGuest tests (§ temuan review #2). Nil/nil falls back to
+	// the "not used by these tests" placeholder below.
+	findByPhoneUser *model.User
+	findByPhoneErr  error
+
+	createCalls int
+	lastCreated *model.User
+	createErr   error
 }
 
 func (f *fakeCustomerUserStore) FindByPhone(_ context.Context, _ string) (*model.User, error) {
+	if f.findByPhoneErr != nil {
+		return nil, f.findByPhoneErr
+	}
+	if f.findByPhoneUser != nil {
+		return f.findByPhoneUser, nil
+	}
 	return nil, errors.New("fakeCustomerUserStore.FindByPhone: not used by these tests")
 }
 
-func (f *fakeCustomerUserStore) Create(_ context.Context, _ *model.User) error {
-	return errors.New("fakeCustomerUserStore.Create: not used by these tests")
+func (f *fakeCustomerUserStore) Create(_ context.Context, u *model.User) error {
+	f.createCalls++
+	f.lastCreated = u
+	if f.createErr != nil {
+		return f.createErr
+	}
+	return nil
 }
 
 func (f *fakeCustomerUserStore) FindByID(_ context.Context, _ uuid.UUID) (*model.User, error) {
@@ -172,5 +194,47 @@ func TestCustomerService_SearchCustomers_RepositoryError_WrappedAndPropagated(t 
 	}
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected the repository's error to be wrapped (%%w) into the returned error, got %v", err)
+	}
+}
+
+// --- ResolveOrCreateGuest (§ temuan review #2 — blokir pelanggan) ---
+
+// (5) Happy path: nomor WA cocok baris customer yang MASIH AKTIF → resolve
+// ke identitas itu, TIDAK membuat baris baru.
+func TestCustomerService_ResolveOrCreateGuest_ActiveCustomer_Resolves(t *testing.T) {
+	custID := uuid.New()
+	store := &fakeCustomerUserStore{
+		findByPhoneUser: &model.User{ID: custID, Name: "Budi", UserType: model.UserTypeCustomer, IsActive: true},
+	}
+	svc := &CustomerService{users: store}
+
+	identity, err := svc.ResolveOrCreateGuest(context.Background(), "081234567890", "Budi")
+	if err != nil {
+		t.Fatalf("ResolveOrCreateGuest: unexpected err: %v", err)
+	}
+	if identity.UserID != custID {
+		t.Fatalf("expected resolved identity %s, got %s", custID, identity.UserID)
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("expected no new customer created when phone already matches an active row, got %d Create calls", store.createCalls)
+	}
+}
+
+// (6) Kasus gagal: nomor WA cocok baris customer yang SUDAH DIBLOKIR admin
+// (is_active=false) → ErrCustomerBlocked, dan TIDAK diam-diam membuat
+// identitas baru maupun mengembalikan identitas terblokir itu.
+func TestCustomerService_ResolveOrCreateGuest_BlockedCustomer_ReturnsErrCustomerBlocked(t *testing.T) {
+	custID := uuid.New()
+	store := &fakeCustomerUserStore{
+		findByPhoneUser: &model.User{ID: custID, Name: "Budi", UserType: model.UserTypeCustomer, IsActive: false},
+	}
+	svc := &CustomerService{users: store}
+
+	_, err := svc.ResolveOrCreateGuest(context.Background(), "081234567890", "Budi")
+	if !errors.Is(err, authapi.ErrCustomerBlocked) {
+		t.Fatalf("expected authapi.ErrCustomerBlocked, got %v", err)
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("expected no new customer created for a blocked phone match, got %d Create calls", store.createCalls)
 	}
 }

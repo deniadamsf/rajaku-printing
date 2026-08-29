@@ -15,6 +15,7 @@ import (
 	"github.com/rajaku-printing/backend/internal/httpx"
 	"github.com/rajaku-printing/backend/internal/order/orderapi"
 	"github.com/rajaku-printing/backend/internal/order/service"
+	"github.com/rajaku-printing/backend/internal/pkg/csvsafe"
 )
 
 // GET /admin/order-recap — laporan rekap order (§28.5).
@@ -51,7 +52,10 @@ func recapRowToCSVRecord(r service.RecapRow) []string {
 	return []string{
 		r.CreatedAt,
 		r.Resi,
-		r.CustomerName,
+		// csvsafe.Field — nama pelanggan sepenuhnya diisi pihak luar (sama
+		// celah dengan customer_csv.go, temuan review #6): dinetralkan dari
+		// formula injection sebelum ditulis sebagai sel CSV.
+		csvsafe.Field(r.CustomerName),
 		r.ProductName,
 		r.Channel,
 		r.Status,

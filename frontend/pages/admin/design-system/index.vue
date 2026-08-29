@@ -648,7 +648,8 @@ function onDemoOtpInput(e: Event) {
       <p class="mt-4 max-w-2xl text-sm text-ink-500 leading-relaxed">
         Badge <strong class="text-ink-900">Member</strong> (§30.4) BUKAN preset <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">&lt;AdminStatusBadge&gt;</code> —
         markup manual dengan <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">bg-gold-50 text-gold-900 ring-gold-200</code>, dipakai di
-        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/pos</code> (hasil pencarian pelanggan) &amp;
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/pos</code> (hasil pencarian pelanggan),
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/pelanggan</code> (daftar &amp; detail pelanggan) &amp;
         <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/akun/membership</code> (badge "Member Aktif") — emas dipilih karena konteksnya
         memang premium (§26.1), bukan status semantic biasa.
       </p>
@@ -683,6 +684,15 @@ function onDemoOtpInput(e: Event) {
           <p class="mt-1 text-xs text-ink-300 leading-relaxed">Untuk highlight premium — kombinasi dengan aksen <span class="text-gold-400">gold-400</span>.</p>
         </div>
       </div>
+
+      <p class="mt-4 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">&lt;AdminDataTable&gt;</code> punya prop opsional
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">row-clickable</code> + event
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">@row-click</code> — seluruh baris jadi klikable
+        (bukan cuma satu sel jadi link), dipakai <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/pelanggan</code>
+        untuk navigasi ke halaman detail. Sel yang punya elemen interaktifnya sendiri (tombol/link) wajib
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">@click.stop</code> supaya tidak ikut memicu navigasi baris.
+      </p>
     </section>
 
     <!-- ================================= Media upload card ================================= -->
@@ -694,7 +704,12 @@ function onDemoOtpInput(e: Event) {
         4:3 dengan placeholder monoline saat kosong, label input file (bukan tombol terpisah — klik area
         label langsung buka file picker, pola sama dengan cover upload artikel), tombol ikon "kembalikan ke
         bawaan" yang butuh <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">&lt;AdminConfirmDialog&gt;</code>
-        karena destruktif.
+        karena destruktif. Dialog itu sendiri punya prop opsional
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">confirm-disabled</code> — dipakai
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/pelanggan</code> untuk menonaktifkan
+        tombol konfirmasi blokir/aktifkan sampai input alasan wajib cukup panjang (≥10 karakter), terpisah dari
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">loading</code> supaya spinner tidak ikut muncul
+        saat cuma menunggu input.
       </p>
       <div class="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <div class="rounded-lg border border-hairline bg-canvas p-6">

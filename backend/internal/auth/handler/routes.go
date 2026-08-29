@@ -87,3 +87,26 @@ func (h *AdminHandler) RegisterRoutes(v1 *gin.RouterGroup, svc authapi.Service) 
 	admin.GET("/permissions",
 		authapi.RequirePermission("role.manage"), h.ListPermissions)
 }
+
+// RegisterRoutes mounts /admin/customers dan /admin/customers-export (fitur
+// "Manajemen Pelanggan"). /admin/customers-export dipasang sebagai grup
+// TERPISAH (bukan sub-path /admin/customers/export) dengan alasan yang PERSIS
+// sama dengan order/handler/recap_handler.go (§28.5): grup /admin/customers
+// sudah punya path wildcard GET /:id, dan menaruh path statis "export"
+// bersebelahan dengan wildcard di level yang sama mengundang bentrok routing
+// (gin akan menganggap "export" sebagai nilai :id kalau di-nest di bawahnya).
+func (h *CustomerAdminHandler) RegisterRoutes(v1 *gin.RouterGroup, svc authapi.Service) {
+	admin := v1.Group("/admin")
+	admin.Use(authapi.RequireAuth(svc), authapi.RequireUserType(authapi.UserTypeStaff))
+
+	customers := admin.Group("/customers")
+	{
+		customers.GET("", authapi.RequirePermission("customer.view"), h.ListCustomers)
+		customers.GET("/:id", authapi.RequirePermission("customer.view"), h.GetCustomer)
+		customers.PATCH("/:id", authapi.RequirePermission("customer.manage"), h.UpdateCustomer)
+		customers.POST("/:id/deactivate", authapi.RequirePermission("customer.manage"), h.DeactivateCustomer)
+		customers.POST("/:id/activate", authapi.RequirePermission("customer.manage"), h.ActivateCustomer)
+	}
+
+	admin.GET("/customers-export", authapi.RequirePermission("customer.view"), h.ExportCustomers)
+}

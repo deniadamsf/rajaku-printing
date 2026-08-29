@@ -345,7 +345,13 @@ perangkat login" (struktur tabel `refresh_tokens` sudah menampung lewat
 ## 24. Status Keputusan
 Tidak ada lagi item TBD terbuka. Seluruh keputusan arsitektur & fitur (section 1-23) sudah final per tanggal dokumen ini disepakati. Spec ini siap dijadikan acuan penuh untuk mulai development.
 
-> **Addendum (2026-08-28):** Section 30 (Modul Membership) ditambahkan. Diskon
+> **Addendum (2026-08-29):** Section 31 (Manajemen Pelanggan) ditambahkan.
+> Dua aturan di §31 **binding**: setiap query pelanggan wajib menyaring
+> `user_type='customer'` (§31.2), dan mengubah nomor WA lewat admin wajib
+> mengosongkan `phone_verified_at` (§31.3). Keduanya bukan preferensi gaya —
+> alasannya ada di sub-sectionnya masing-masing.
+>
+> > **Addendum (2026-08-28):** Section 30 (Modul Membership) ditambahkan. Diskon
 > khusus member **menumpang** di tabel `discounts` (§28) lewat `audience_scope`,
 > bukan sistem diskon kedua — kalau ada yang tergoda bikin tabel harga override
 > terpisah untuk member, baca alasan penolakannya di §30.3 dulu.
@@ -1237,3 +1243,135 @@ Seperti permission lain (§10), keduanya bisa di-toggle ke role manapun lewat
   cuma cek nomor WA valid. Ini sengaja manual dulu untuk MVP; auto-approve
   bisa jadi keputusan lanjutan kalau volume pengajuan sudah bikin admin
   kewalahan.
+
+
+## 31. Manajemen Pelanggan (29 Agustus 2026)
+
+Layar admin untuk mengelola pelanggan: `/admin/pelanggan` (daftar) &
+`/admin/pelanggan/[id]` (detail). Ditambahkan setelah §30.
+
+**Tinggal di modul `auth`, bukan modul baru.** "Pelanggan" secara fisik
+adalah baris `users` dengan `user_type='customer'` (§30.2 sudah mencatat
+ini) — modul `auth` yang memiliki tabelnya, jadi layar ini menumpang di
+sana persis seperti pengelolaan staff (§10). Membuat modul `customer`
+terpisah akan memaksa cross-module read ke internal `auth`, yang dilarang
+§22.
+
+### 31.1. Cakupan
+
+Daftar + cari (nama/WA/email) + filter (tipe, status akun, status member);
+detail berisi profil, statistik order, 5 order terakhir, dan riwayat
+perubahan; ubah nama/WA/email; blokir & aktifkan beralasan wajib; ekspor CSV.
+
+**Gabung duplikat pelanggan sengaja TIDAK dibuat** (keputusan pemilik proyek
+saat memilih cakupan). Kalau nanti dibutuhkan, jalurnya sudah ada:
+`orderapi.CustomerMerger` + tabel `customer_merges` (§11, dipakai
+phone-claim) — bukan menulis mekanisme kedua.
+
+### 31.2. Aturan keras: setiap query wajib menyaring `user_type='customer'`
+
+Berlaku untuk **semua** jalur baca maupun tulis di fitur ini —
+`ListCustomers`, `StreamCustomers`, `FindCustomerByID`,
+`UpdateCustomerBasic`, `SetCustomerActive`. Satu jalur yang lolos berarti
+pemegang `customer.manage` bisa mengedit atau menonaktifkan akun staff,
+termasuk super admin, lewat endpoint pelanggan. Method lama yang TIDAK
+menyaring (`SetActive`, `UpdateStaffBasic`) tidak boleh dipakai dari sini.
+
+Kolom yang boleh diubah hanya `name`, `email`, `phone`. `password_hash`,
+`user_type`, `customer_type`, roles, `membership_status`, dan
+`oauth_provider/subject` tidak boleh tersentuh dari jalur ini.
+
+### 31.3. Mengubah nomor WA mengosongkan status verifikasi
+
+Nomor yang diketik admin berstatus **diklaim**, bukan **terbukti dimiliki** —
+jadi setiap perubahan `phone` wajib menulis `phone_verified_at = NULL`
+secara eksplisit (bukan membiarkan stempel lama menempel), sejalan dengan
+komentar kolom itu di `auth/model/user.go`.
+
+Dua pengosongan yang **ditolak**, masing-masing dengan sentinel sendiri:
+- Email pelanggan `registered` — melanggar CHECK `users_email_required` di DB.
+- Nomor WA pelanggan `guest` — nomor itu satu-satunya matching key
+  identitasnya (§11), dan `SearchCustomers` menyaring `phone IS NOT NULL`,
+  jadi mengosongkannya membuat pelanggan itu beserta seluruh riwayat
+  ordernya lenyap dari pencarian kasir tanpa jalan balik.
+
+Email selalu disimpan **lowercase**, sama dengan seluruh jalur auth lain —
+kalau tidak, pelanggan tidak bisa login lagi dengan emailnya sendiri.
+
+### 31.4. Blokir pelanggan — apa yang ditegakkan & apa yang tidak
+
+`is_active=false` menegakkan dua hal: login ditolak, dan
+`ResolveOrCreateGuest` menolak nomor WA itu (`authapi.ErrCustomerBlocked`)
+sehingga order baru — online maupun lewat kasir POS — ikut ditolak.
+
+**Yang TIDAK ditegakkan:** sesi yang sudah berjalan. `VerifyToken` stateless
+(tidak query DB), jadi access token yang terlanjur terbit tetap sah sampai
+TTL-nya habis (maks 24 jam, §21.1). Ini ditulis apa adanya di doc-comment
+service dan di modal blokir — **jangan** mengklaim pemblokiran berlaku
+seketika selama batas ini masih ada (§22: dilarang menjanjikan jaminan yang
+tidak ditegakkan di mana pun). Menutupnya berarti lookup DB tiap request;
+itu keputusan terpisah.
+
+### 31.5. Audit trail
+
+Tabel `customer_admin_logs` (migration `000032`) mencatat **semua** aksi
+admin di fitur ini: `block`/`unblock` (kolom `reason`, wajib min. 10
+karakter, divalidasi service bukan DB) dan `profile_update` (kolom
+`changes`, ringkasan **nilai lama → baru** untuk field yang benar-benar
+berubah). Nilai lama wajib ikut — tanpa itu jejaknya tidak berguna untuk
+menelusuri order yang salah tempel gara-gara nomor WA diubah.
+
+Penulisan log dan perubahan barisnya **satu transaksi**. Kalau dipisah,
+kegagalan insert log meninggalkan pelanggan terblokir tanpa alasan
+tercatat, lalu percobaan ulang ditolak sebagai no-op — persis jaminan yang
+jadi alasan tabel ini ada. Tabel ini audit trail MURNI: sumber kebenaran
+tetap kolom `users` sendiri (pola sama `membership_status_logs`, §30.2).
+
+### 31.6. Ekspor CSV
+
+`GET /api/v1/admin/customers-export`, filter identik dengan layar daftar.
+Path-nya sengaja **bukan** `/admin/customers/export` — alasan sama §28.5:
+jangan menaruh path statis bersebelahan dengan wildcard `/:id`.
+
+Tiga hal yang tidak boleh dilanggar:
+- **Batching pakai offset/limit dengan `ORDER BY created_at DESC, id DESC`**,
+  BUKAN `FindInBatches` GORM. `FindInBatches` mempaginasi pakai primary key
+  (UUID acak) sambil menambahkan ORDER BY-nya sendiri; digabung dengan
+  urutan `created_at`, hasil di atas satu batch akan kehilangan sebagian
+  baris dan menduplikasi sebagian lain — tanpa error apa pun. Ada test
+  sqlmock yang menjaga ini; jangan "merapikannya" balik.
+- **Header respons dipasang saat byte pertama ditulis**, bukan sebelum
+  service dipanggil — kalau tidak, penolakan (mis. rentang terlalu besar)
+  terunduh sebagai berkas `pelanggan.csv` berisi envelope JSON.
+- **Setiap sel lewat `pkg/csvsafe`** — nama pelanggan diisi pihak luar, dan
+  sel diawali `=`/`+`/`-`/`@` dieksekusi Excel sebagai formula. Helper yang
+  sama dipakai ekspor Rekap Order (§28.5).
+
+Statistik order per baris sengaja TIDAK ada di CSV — itu berarti satu query
+per pelanggan melewati batas modul.
+
+### 31.7. Statistik order (lintas modul)
+
+Diambil lewat `orderapi.CustomerOrderReader` — modul `auth` tidak pernah
+menyentuh internal modul `order` (§22).
+
+`TotalSpend` hanya menjumlahkan order yang uangnya benar-benar sudah masuk:
+mengecualikan `dibatalkan` **dan** semua status pre-dibayar. Daftar
+statusnya **diturunkan dari package `state`** (`state.All()` disaring
+`state.IsPreDibayar`), bukan ditulis ulang sebagai literal di SQL — daftar
+status yang diketik ulang di satu tempat persis cara angka rekap melenceng
+diam-diam (§4). Tanpa pengecualian ini, pelanggan dengan order mangkrak di
+`menunggu_pembayaran` tampil punya "total belanja" besar padahal belum
+membayar — angka yang dipakai admin menimbang approval membership (§30.2).
+
+### 31.8. Permission
+
+| Kode | Untuk apa | Default |
+|---|---|---|
+| `customer.view` | Lihat daftar, detail, riwayat order pelanggan; ekspor CSV | `super_admin` |
+| `customer.manage` | Ubah nama/email/nomor WA, blokir/aktifkan akun | `super_admin` |
+
+Seperti permission lain (§10), keduanya bisa di-toggle ke role manapun lewat
+"Kelola Role". Yang perlu disadari sebelum memberikan `customer.manage`:
+pemegangnya bisa mengubah nomor WA pelanggan, yaitu matching key identitas
+lintas channel (§11).

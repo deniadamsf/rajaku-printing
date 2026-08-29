@@ -63,6 +63,16 @@ func (s *CustomerService) ResolveOrCreateGuest(ctx context.Context, phoneRaw, na
 
 	existing, err := s.users.FindByPhone(ctx, normalized)
 	if err == nil {
+		// § aturan keamanan blokir pelanggan — is_active=false berarti admin
+		// sudah memutuskan pelanggan ini TIDAK BOLEH membuat order baru lewat
+		// jalur manapun (checkout online maupun POS), bukan cuma tidak boleh
+		// login. Diam-diam mengembalikan identitas terblokir (atau lebih
+		// buruk, diam-diam membuat identitas baru) di sini akan membuat
+		// pemblokiran tidak berarti apa-apa — kedua jalur ini SATU-SATUNYA
+		// tempat identitas customer di-resolve untuk order baru.
+		if !existing.IsActive {
+			return nil, authapi.ErrCustomerBlocked
+		}
 		return userToIdentity(existing), nil
 	}
 	if !errors.Is(err, repository.ErrNotFound) {

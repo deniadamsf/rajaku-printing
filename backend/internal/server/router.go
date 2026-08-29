@@ -240,6 +240,14 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 	adminAuditRepo := orderrepo.NewAdminAuditLogRepository(d.DB)
 	orderSvc.SetAuditStore(adminAuditRepo)
 
+	// --- Wiring fitur "Manajemen Pelanggan" (modul auth) ---
+	// Dibuat SETELAH orderSvc (butuh orderapi.CustomerOrderReader, yang
+	// orderSvc satisfy langsung — lihat order/service/customer_overview.go)
+	// — pola urutan yang sama alasannya dengan discountSvc di bawah.
+	customerAdminLogRepo := authrepo.NewCustomerAdminLogRepository(d.DB)
+	customerAdminSvc := authservice.NewCustomerAdminService(userRepo, customerAdminLogRepo, orderSvc, d.DB)
+	customerAdminH := authhandler.NewCustomerAdminHandler(customerAdminSvc)
+
 	// --- Wiring modul discount (§28) ---
 	// Dibuat SETELAH order (discountSvc tidak butuh orderSvc — resolusi
 	// kuota query langsung ke tabel orders, §28.4), lalu di-inject BALIK ke
@@ -414,6 +422,8 @@ func NewRouter(d Deps) (*gin.Engine, *Background, error) {
 
 		// Admin: kelola staff, role, permissions + invite accept (§10).
 		adminH.RegisterRoutes(v1, authSvc)
+		// Admin: Manajemen Pelanggan — GET/PATCH /admin/customers, GET /admin/customers-export.
+		customerAdminH.RegisterRoutes(v1, authSvc)
 		// Admin catalog: kelola bahan/produk/pricing (§9/§10).
 		catalogH.RegisterAdminRoutes(v1, authSvc)
 		// Admin discount: kelola master diskon + GET /applicable dipakai kasir (§28).

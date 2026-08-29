@@ -54,6 +54,10 @@ type OrderStore interface {
 	UpdateFields(ctx context.Context, p repository.UpdateFieldsParams) error
 	OverrideStatus(ctx context.Context, p repository.OverrideStatusParams) (string, error)
 	SoftDelete(ctx context.Context, p repository.SoftDeleteParams) error
+
+	// --- Customer admin (orderapi.CustomerOrderReader, modul auth) ---
+	CustomerOrderStats(ctx context.Context, customerID uuid.UUID) (*repository.CustomerOrderStatsRow, error)
+	RecentOrdersByCustomer(ctx context.Context, customerID uuid.UUID, limit int) ([]repository.CustomerOrderBriefRow, error)
 }
 
 // AuditStore is the narrow read contract for admin_audit_log — kept separate

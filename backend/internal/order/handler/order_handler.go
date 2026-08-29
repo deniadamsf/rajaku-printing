@@ -151,6 +151,9 @@ func (h *Handler) PublicTracking(c *gin.Context) {
 
 func (h *Handler) mapErr(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, authapi.ErrCustomerBlocked):
+		httpx.Error(c, http.StatusForbidden, httpx.CodeForbidden,
+			"akun pelanggan ini diblokir, tidak bisa membuat order baru")
 	case errors.Is(err, orderapi.ErrOrderNotFound):
 		httpx.Error(c, http.StatusNotFound, httpx.CodeNotFound, "order tidak ditemukan")
 	case errors.Is(err, orderapi.ErrNotOwner):

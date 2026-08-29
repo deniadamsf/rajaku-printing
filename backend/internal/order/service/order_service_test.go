@@ -242,6 +242,18 @@ func (f *fakeStore) SoftDelete(_ context.Context, p repository.SoftDeleteParams)
 	return f.softDeleteErr
 }
 
+// CustomerOrderStats/RecentOrdersByCustomer — not exercised by any test in
+// this file (covered by auth/service.CustomerAdminService tests via a
+// separate narrow fake); stubbed here only so fakeStore keeps satisfying the
+// OrderStore interface.
+func (f *fakeStore) CustomerOrderStats(_ context.Context, _ uuid.UUID) (*repository.CustomerOrderStatsRow, error) {
+	return &repository.CustomerOrderStatsRow{}, nil
+}
+
+func (f *fakeStore) RecentOrdersByCustomer(_ context.Context, _ uuid.UUID, _ int) ([]repository.CustomerOrderBriefRow, error) {
+	return nil, nil
+}
+
 // fakeAuditStore implements AuditStore for ListAuditLog tests.
 type fakeAuditStore struct {
 	rows   []model.AdminAuditLog

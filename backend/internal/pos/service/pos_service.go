@@ -74,7 +74,11 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (*Create
 	// 2. Resolve/create customer (matching key nomor WA — §11).
 	identity, err := s.customers.ResolveOrCreateGuest(ctx, phoneNorm, in.CustomerName)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", posapi.ErrCustomerResolve, err)
+		// %w DUA kali (bukan %v) — kasir HARUS bisa tahu kenapa order
+		// ditolak, bukan dapat 500 generic. authapi.ErrCustomerBlocked
+		// khususnya wajib tetap bisa dicek errors.Is() sampai ke handler
+		// (mapDomainErr), yang %v di sini dulu memutus (temuan review #2).
+		return nil, fmt.Errorf("%w: %w", posapi.ErrCustomerResolve, err)
 	}
 
 	// 3. Create order via orderapi (atomic; skip menunggu_pembayaran).

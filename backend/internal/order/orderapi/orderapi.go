@@ -303,3 +303,52 @@ type OrderCommandService interface {
 type CustomerMerger interface {
 	ReassignCustomer(ctx context.Context, fromCustomerID, toCustomerID uuid.UUID) ([]uuid.UUID, error)
 }
+
+// --- Customer admin (Manajemen Pelanggan) ---
+//
+// Fitur "Manajemen Pelanggan" secara fisik tinggal di modul auth (pelanggan =
+// baris `users` dengan user_type='customer'), tapi butuh menampilkan
+// statistik/riwayat order singkat per pelanggan tanpa modul auth pernah
+// mengimport package internal order (§22). CustomerOrderReader adalah
+// satu-satunya jembatan itu.
+
+// CustomerOrderStats — agregat ringkas riwayat order satu pelanggan. Setiap
+// query di baliknya WAJIB mengecualikan order yang sudah soft-deleted
+// (`deleted_at IS NOT NULL`, §super admin order tools) — order yang dihapus
+// bukan bagian dari riwayat nyata pelanggan. TotalSpend mengecualikan status
+// `dibatalkan` (state.Dibatalkan) — uang yang batal bukan belanja pelanggan.
+type CustomerOrderStats struct {
+	TotalOrders     int64
+	CompletedOrders int64
+	CancelledOrders int64
+	TotalSpend      int64
+	LastOrderAt     *time.Time
+}
+
+// CustomerOrderBrief — satu baris ringkas untuk daftar "order terakhir" di
+// halaman detail pelanggan (admin). Sengaja sedikit field — konsumen ini
+// hanya perlu menampilkan daftar, bukan detail lengkap (pakai
+// OrderInvoiceView/OrderSummary kalau butuh itu).
+type CustomerOrderBrief struct {
+	Resi      string
+	Status    string
+	Channel   string
+	Total     int64
+	CreatedAt time.Time
+}
+
+// CustomerOrderOverview — payload gabungan GET /admin/customers/:id (modul
+// auth) — statistik + N order terakhir dalam satu round-trip ke modul order.
+type CustomerOrderOverview struct {
+	Stats  CustomerOrderStats
+	Recent []CustomerOrderBrief
+}
+
+// CustomerOrderReader — kontrak baca-saja yang dipakai modul auth
+// (customer_admin_service.go) untuk merender statistik order di halaman
+// detail pelanggan admin. Implementasi WAJIB mengecualikan order yang
+// deleted_at IS NOT NULL dari SEMUA angka (Stats maupun Recent) — order yang
+// sudah dihapus bukan bagian dari riwayat yang ditampilkan ke admin.
+type CustomerOrderReader interface {
+	CustomerOrderOverview(ctx context.Context, customerID uuid.UUID, recentLimit int) (*CustomerOrderOverview, error)
+}

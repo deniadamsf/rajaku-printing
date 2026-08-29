@@ -29,6 +29,12 @@ const props = withDefaults(
      * dan jadi tidak terlihat sampai dialog ditutup manual.
      */
     error?: string | null
+    /**
+     * Disable tombol confirm karena validasi belum terpenuhi (mis. input
+     * alasan wajib belum cukup panjang) — terpisah dari `loading` supaya
+     * spinner tidak ikut muncul saat sekadar menunggu input user.
+     */
+    confirmDisabled?: boolean
   }>(),
   {
     confirmLabel: 'Konfirmasi',
@@ -37,6 +43,7 @@ const props = withDefaults(
     variant: 'default',
     loading: false,
     error: null,
+    confirmDisabled: false,
   },
 )
 
@@ -79,7 +86,7 @@ const confirmClass = computed(() =>
           <div class="mt-5 flex justify-end gap-2">
             <button
               type="button"
-              class="rounded-md border border-hairline bg-canvas px-3 py-1.5 text-sm font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors disabled:opacity-50"
+              class="rounded-md border border-hairline bg-canvas px-3 py-1.5 text-sm font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
               :disabled="loading"
               @click="close"
             >
@@ -88,7 +95,7 @@ const confirmClass = computed(() =>
             <button
               type="button"
               :class="['inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-semibold text-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors disabled:opacity-60', confirmClass]"
-              :disabled="loading"
+              :disabled="loading || confirmDisabled"
               @click="confirm"
             >
               <span

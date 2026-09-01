@@ -39,17 +39,29 @@ import { renderSVG } from 'uqr'
 
 import { business, fullAddress } from '~/utils/business'
 
+/**
+ * Satu baris produk untuk struk multi-item (§32 Order Multi-Item). Dipakai
+ * lewat prop `items` di bawah — satu-satunya jalur tampilan item struk sejak
+ * POS bermigrasi penuh ke multi-item (batch 2).
+ */
+export interface ReceiptItemRow {
+  line_no: number
+  product_name: string
+  material_name: string
+  width_cm: number
+  height_cm: number
+  quantity: number
+  unit_price: number
+  subtotal: number
+}
+
 export interface ReceiptStrukProps {
   resi: string
   createdAt: string
   customerName: string
   customerPhone: string
-  productName: string
-  materialName: string
-  widthCm: number
-  heightCm: number
-  quantity: number
-  unitPrice: number
+  /** Baris item order (§32) — 1..20 baris, terurut line_no ASC. POS (§11) sudah multi-item sejak batch 2, jadi ini satu-satunya jalur (tidak ada lagi fallback single-item). */
+  items: ReceiptItemRow[]
   subtotal: number
   /** null/undefined = pickup atau ongkir belum di-set (§8) — baris disembunyikan kecuali metodeAmbil "kirim". */
   shippingCost?: number | null
@@ -357,15 +369,22 @@ defineExpose({ printNow })
 
       <div class="border-t-2 border-ink-950" />
 
-      <!-- Item — baris penuh per atribut, bukan pasangan label-nilai -->
-      <div class="space-y-0.5">
-        <p class="break-words font-semibold">{{ productName }}</p>
-        <p class="break-words text-ink-700">{{ materialName }}</p>
-        <p class="text-ink-700">{{ widthCm }} x {{ heightCm }} cm</p>
-        <div class="flex flex-wrap justify-between gap-x-2 gap-y-0.5 pt-0.5">
-          <span class="min-w-0 break-words text-ink-700">{{ quantity }} pcs x {{ fmtIDR(unitPrice) }}</span>
-          <span class="shrink-0 tabular-nums">{{ fmtIDR(subtotal) }}</span>
-        </div>
+      <!-- Item — baris penuh per atribut, bukan pasangan label-nilai. Order
+           multi-item (§32) cetak SATU blok begini per item, dipisah garis
+           putus-putus supaya tetap terbaca di kertas sempit 58mm. -->
+      <div class="space-y-1.5">
+        <template v-for="(it, idx) in items" :key="it.line_no">
+          <div v-if="idx > 0" class="border-t border-dotted border-ink-300" />
+          <div class="space-y-0.5">
+            <p class="break-words font-semibold">{{ it.product_name }}</p>
+            <p class="break-words text-ink-700">{{ it.material_name }}</p>
+            <p class="text-ink-700">{{ it.width_cm }} x {{ it.height_cm }} cm</p>
+            <div class="flex flex-wrap justify-between gap-x-2 gap-y-0.5 pt-0.5">
+              <span class="min-w-0 break-words text-ink-700">{{ it.quantity }} pcs x {{ fmtIDR(it.unit_price) }}</span>
+              <span class="shrink-0 tabular-nums">{{ fmtIDR(it.subtotal) }}</span>
+            </div>
+          </div>
+        </template>
       </div>
 
       <div class="border-t border-dashed border-ink-400" />

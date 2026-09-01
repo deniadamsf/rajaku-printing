@@ -7,6 +7,7 @@
  */
 import {
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CreditCard,
@@ -14,14 +15,53 @@ import {
   ImageOff as ImageOffIcon,
   Package,
   Palette as PaletteIcon,
+  Plus,
   RotateCcw,
   Sparkles,
+  Trash2,
   Upload,
 } from '@lucide/vue'
 import { motion } from 'motion-v'
+import type { OrderItem } from '~/types/order'
 
 // Demo sorotan kursor (lihat section #spotlight).
 const { onPointerMove } = useSpotlight()
+
+// Demo baris keranjang dapat dilipat (§32, /admin/pos) — lihat section #collapsible-cart-row.
+const demoCartRowCollapsed = ref(false)
+
+// Demo tabel item pesanan (§32 Order Multi-Item) — lihat section #order-items-table.
+const demoOrderItems: OrderItem[] = [
+  {
+    id: 'demo-item-1',
+    line_no: 1,
+    product_name: 'Banner Flexi 280gsm',
+    material_name: 'Flexi China',
+    pricing_type: 'per_m2',
+    width_cm: 300,
+    height_cm: 100,
+    quantity: 1,
+    unit_price: 165000,
+    subtotal: 165000,
+    discount_amount: 0,
+    design_source: 'upload',
+  },
+  {
+    id: 'demo-item-2',
+    line_no: 2,
+    product_name: 'X-Banner 60x160',
+    material_name: 'Albatros',
+    pricing_type: 'paket',
+    width_cm: 60,
+    height_cm: 160,
+    quantity: 2,
+    unit_price: 85000,
+    subtotal: 170000,
+    discount_amount: 0,
+    design_source: 'request',
+    design_brief: 'Warna dominan emas, logo di kiri atas.',
+  },
+]
 
 
 definePageMeta({
@@ -219,6 +259,9 @@ function onDemoOtpInput(e: Event) {
       <a href="#member-multiselect" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Pemilih member</a>
       <a href="#badges" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Badges</a>
       <a href="#cards" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Cards</a>
+      <a href="#order-items-table" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Tabel item pesanan</a>
+      <a href="#item-editor" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Editor baris item</a>
+      <a href="#collapsible-cart-row" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Baris keranjang</a>
       <a href="#media-upload" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Media upload</a>
       <a href="#icons" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Icons</a>
       <a href="#motion" class="rounded-md border border-hairline bg-canvas px-3 py-2 text-ink-700 hover:border-ink-300 hover:text-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors">Motion</a>
@@ -693,6 +736,115 @@ function onDemoOtpInput(e: Event) {
         untuk navigasi ke halaman detail. Sel yang punya elemen interaktifnya sendiri (tombol/link) wajib
         <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">@click.stop</code> supaya tidak ikut memicu navigasi baris.
       </p>
+    </section>
+
+    <!-- ================================= Tabel item pesanan ================================= -->
+    <section id="order-items-table" class="mb-16 scroll-mt-20">
+      <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Tabel item pesanan</h2>
+      <p class="mt-2 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">&lt;OrderItemsTable&gt;</code> (§32 Order
+        Multi-Item) — dipakai bersama oleh <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/order/[resi]</code>
+        &amp; <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/akun/pesanan/[resi]</code> untuk
+        menampilkan baris produk (produk, bahan, ukuran, qty, harga satuan, subtotal). Sengaja
+        <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">overflow-x-auto</code>, bukan kartu
+        bertumpuk — ini tabel BACA-SAJA di admin/akun, beda dari form order publik yang wajib kartu di HP (§18).
+        Angka uang level order (Subtotal → Diskon → Ongkir → TOTAL, §28.7) TIDAK PERNAH dihitung dari tabel ini —
+        selalu dari field <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">Order</code> langsung (§32.2).
+      </p>
+      <div class="mt-6">
+        <OrderItemsTable :items="demoOrderItems" />
+      </div>
+    </section>
+
+    <!-- ================================= Editor baris item (§32.9) ================================= -->
+    <section id="item-editor" class="mb-16 scroll-mt-20">
+      <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Editor baris item pesanan</h2>
+      <p class="mt-2 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        Dipakai modal "Edit pesanan" di <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/order/[resi]</code>
+        (§32.9, super admin koreksi item). Beda dari "Tabel item pesanan" di atas — ini FORM EDITABLE, bukan
+        baca-saja. Dua bentuk kartu baris: baris EXISTING (identitas produk/bahan tampil read-only + hint "hapus
+        lalu tambah baru" — ganti produk sebuah baris memang tidak mungkin, itu keputusan sadar §32.9, bukan
+        keterbatasan UI) dan baris BARU (pemilih produk/bahan + estimasi harga live dari <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/catalog/quote</code>,
+        pola sama dengan <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/order</code>). Badge
+        emerald kecil <span class="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">Baru</span>
+        menandai baris baru. Angka subtotal per baris &amp; total di footer editor SELALU berlabel "perkiraan" —
+        angka final datang dari respons backend setelah simpan (§32.9), bukan dihitung ulang total dari nol lewat
+        endpoint quote.
+      </p>
+      <div class="mt-6 max-w-lg space-y-3">
+        <div class="rounded-md border border-hairline bg-canvas-alt/40 p-3">
+          <div class="flex items-center justify-between gap-2">
+            <p class="text-xs font-medium text-ink-900">Baris 1</p>
+            <button type="button" class="rounded p-1 text-ink-500 hover:text-brand-600 transition-colors" aria-label="Hapus baris">
+              <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </button>
+          </div>
+          <p class="mt-1.5 text-sm text-ink-900">Banner Flexi 280gsm <span class="text-ink-500">· Flexi China</span></p>
+          <p class="text-[11px] text-ink-400">Ganti produk/bahan? Hapus baris ini, lalu tambah baris baru.</p>
+          <div class="mt-2 flex justify-between border-t border-hairline pt-2 text-xs">
+            <span class="text-ink-500">Subtotal baris</span>
+            <span class="font-medium text-ink-900">Rp165.000</span>
+          </div>
+        </div>
+        <div class="rounded-md border border-hairline bg-canvas-alt/40 p-3">
+          <div class="flex items-center justify-between gap-2">
+            <p class="text-xs font-medium text-ink-900">
+              Baris 2
+              <span class="ml-1.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">Baru</span>
+            </p>
+            <button type="button" class="rounded p-1 text-ink-500 hover:text-brand-600 transition-colors" aria-label="Hapus baris">
+              <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </button>
+          </div>
+          <p class="mt-1.5 text-xs text-ink-500">Estimasi Rp85.000 / pcs (dihitung ulang backend)</p>
+        </div>
+        <button type="button" class="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors">
+          <Plus class="h-3.5 w-3.5" :stroke-width="1.75" />
+          Tambah baris (2/20)
+        </button>
+      </div>
+    </section>
+
+    <!-- ================================= Baris keranjang (dapat dilipat) ================================= -->
+    <section id="collapsible-cart-row" class="mb-16 scroll-mt-20">
+      <h2 class="font-serif text-xl md:text-2xl font-semibold tracking-tight text-ink-950">Baris keranjang (dapat dilipat)</h2>
+      <p class="mt-2 max-w-2xl text-sm text-ink-500 leading-relaxed">
+        Dipakai <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">/admin/pos</code> (§32 Order
+        Multi-Item, ergonomi kasir) — beda tujuan dari "Tabel item pesanan" di atas: ini kartu FORM EDITABLE
+        per baris keranjang (produk, bahan, ukuran, desain), bukan tabel baca-saja. Header baris (chevron +
+        ringkasan + subtotal + hapus) selalu terlihat; isi form disembunyikan lewat <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">v-show</code>
+        (bukan <code class="font-mono text-xs bg-canvas-alt px-1 py-0.5 rounded">v-if</code>, supaya state input
+        tidak reset saat dilipat) — dipilih supaya layar tetap ringkas saat kasir melayani banyak barang
+        sekaligus di depan konter, tanpa kehilangan konteks baris mana yang sedang dikerjakan. Baris pertama
+        tidak pernah punya tombol hapus (order selalu butuh minimal 1 item, §32.4).
+      </p>
+      <div class="mt-6 max-w-xl rounded-md border border-hairline overflow-hidden">
+        <div class="flex items-center gap-2 bg-canvas-alt px-3 py-2">
+          <button
+            type="button"
+            class="flex-none rounded-md p-1 text-ink-500 hover:text-ink-900 hover:bg-canvas transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-alt"
+            :aria-label="demoCartRowCollapsed ? 'Buka baris' : 'Lipat baris'"
+            @click="demoCartRowCollapsed = !demoCartRowCollapsed"
+          >
+            <ChevronDown class="h-4 w-4 transition-transform" :class="demoCartRowCollapsed ? '-rotate-90' : ''" :stroke-width="1.75" />
+          </button>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm font-semibold text-ink-900">1. Banner Flexi 280gsm</p>
+            <p class="truncate text-xs text-ink-500"><span class="font-mono">300×100cm</span> · 1 pcs</p>
+          </div>
+          <span class="flex-none text-sm font-medium tabular-nums text-ink-900">Rp165.000</span>
+          <button
+            type="button"
+            class="flex-none rounded-md p-1.5 text-ink-500 hover:text-brand-600 hover:bg-brand-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-alt"
+            aria-label="Hapus baris"
+          >
+            <Trash2 class="h-4 w-4" :stroke-width="1.75" />
+          </button>
+        </div>
+        <div v-show="!demoCartRowCollapsed" class="space-y-3 p-4 text-sm text-ink-500">
+          <p>Isi form (produk, bahan, ukuran, sumber desain, catatan item) tampil di sini saat baris dibuka.</p>
+        </div>
+      </div>
     </section>
 
     <!-- ================================= Media upload card ================================= -->

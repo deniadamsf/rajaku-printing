@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Order, OrderStatus } from '~/types/order'
+import { orderPrimaryProductLabel, type Order, type OrderStatus } from '~/types/order'
 import type { DataTableColumn } from '~/components/admin/DataTable.vue'
 import { ApiError } from '~/composables/useApi'
 import { Printer, CheckCircle2, PackageCheck, Truck, Flag } from '@lucide/vue'
@@ -275,10 +275,14 @@ function fmtDate(s: string): string {
         </NuxtLink>
       </template>
       <template #cell-product="{ row }">
-        <p class="text-sm text-ink-900">{{ (row as Order).product_name }}</p>
-        <p class="text-xs text-ink-500">
-          {{ (row as Order).width_cm }}×{{ (row as Order).height_cm }}cm · {{ (row as Order).material_name }} · {{ (row as Order).quantity }} pcs
-        </p>
+        <!-- Staf produksi wajib tahu SEMUA baris/ukuran yang perlu dicetak
+             untuk order ini, bukan cuma item pertama (§32.8). -->
+        <p class="text-sm text-ink-900">{{ orderPrimaryProductLabel(row as Order) }}</p>
+        <ul class="mt-0.5 space-y-0.5">
+          <li v-for="it in (row as Order).items" :key="it.line_no" class="text-xs text-ink-500">
+            {{ it.product_name }} · {{ it.width_cm }}×{{ it.height_cm }}cm · {{ it.material_name }} · {{ it.quantity }} pcs
+          </li>
+        </ul>
       </template>
       <template #cell-metode_ambil="{ row }">
         <span class="text-xs uppercase text-ink-600">{{ (row as Order).metode_ambil }}</span>

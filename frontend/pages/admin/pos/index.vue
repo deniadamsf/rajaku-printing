@@ -1,17 +1,28 @@
 <script setup lang="ts">
 /**
- * /admin/pos — Form kasir walk-in (§11).
+ * /admin/pos — Form kasir walk-in (§11, §32 Order Multi-Item).
  *
  * Flow ringkas:
  *   1. Kasir input nama + WA pelanggan (auto-normalize ke 62xxx di backend).
- *   2. Pilih produk & bahan → dimensi (per_m2 custom / paket fixed).
- *   3. Kalkulator harga live via /catalog/quote (debounced).
- *   4. Pilih metode ambil (pickup/kirim) + metode bayar (cash/qris_pos).
+ *   2. Isi keranjang — 1..20 baris barang (§32.4), tiap baris: produk, bahan,
+ *      dimensi (per_m2 custom / paket fixed), kuantitas, sumber desain +
+ *      brief, catatan item. Kalkulator harga live per baris via /catalog/quote
+ *      (debounced) — total keranjang = penjumlahan quote tiap baris, TIDAK
+ *      dihitung ulang di frontend.
+ *   3. Pilih metode ambil (pickup/kirim) + metode bayar (cash/qris_pos).
+ *   4. (Opsional) diskon — promo master atau manual, dihitung dari SELURUH
+ *      baris keranjang (§32.3).
  *   5. Submit → backend resolve/create customer, buat order status "dibayar",
- *      trigger WA + invoice async, kembalikan resi + tracking URL.
- *   6. Panel sukses: cetak struk (window.print) + link invoice + reset form.
+ *      trigger WA + invoice async, kembalikan resi + tracking URL + rincian
+ *      per item untuk struk.
+ *   6. Panel sukses: cetak struk (Print Agent §29, fallback window.print) +
+ *      link invoice + reset form.
  *
  * Design: patuh CLAUDE.md §26 (brand crimson + ink warm neutral + Lucide monoline).
+ * Ergonomi kasir (§32 batch 2 brief): tiap baris keranjang bisa
+ * dilipat/dibuka supaya layar tetap terbaca tanpa banyak menggulir saat
+ * melayani pelanggan di depan konter; ringkasan total + tombol "Buat
+ * pesanan" tetap sticky di kolom kanan.
  */
 import {
   User,
@@ -29,6 +40,9 @@ import {
   TicketPercent,
   Search,
   Crown,
+  Plus,
+  Trash2,
+  ChevronDown,
 } from '@lucide/vue'
 import { onClickOutside } from '@vueuse/core'
 import type { CatalogProduct, CatalogProductDetail, CatalogQuote } from '~/types/catalog'
@@ -38,9 +52,12 @@ import type {
   PosDesignSource,
   PosMetodeAmbil,
   PosMetodeBayar,
+  PosReceiptItem,
 } from '~/types/pos'
 import type { PosCustomerSearchResult } from '~/composables/usePos'
+import type { ApplicableCartItem } from '~/composables/useDiscount'
 import type { ApplicableDiscount } from '~/types/discount'
+import type { ReceiptItemRow } from '~/components/admin/ReceiptStruk.vue'
 import { ApiError } from '~/composables/useApi'
 
 definePageMeta({
@@ -60,33 +77,88 @@ const canApplyDiscount = computed(() => auth.hasPermission('discount.apply'))
 
 // -------------------- state --------------------
 const products = ref<CatalogProduct[]>([])
-const productDetail = ref<CatalogProductDetail | null>(null)
 const loadingProducts = ref(false)
-const loadingDetail = ref(false)
 
 const form = reactive({
   customerName: '',
   customerPhone: '',
-  productId: '',
-  materialId: '',
-  widthCm: 0,
-  heightCm: 0,
-  quantity: 1,
   metodeAmbil: 'pickup' as PosMetodeAmbil,
   shippingAddress: '',
   shippingRecipientName: '',
   shippingRecipientPhone: '',
   shippingCost: 0,
   metodeBayar: 'cash' as PosMetodeBayar,
-  designSource: 'upload' as PosDesignSource,
   designApprovalMode: 'instant_walkin' as PosDesignApprovalMode,
-  designBrief: '',
   notes: '',
 })
 
-const quote = ref<CatalogQuote | null>(null)
-const quoteLoading = ref(false)
-const quoteError = ref<string | null>(null)
+// -------------------- keranjang (§32) --------------------
+const MAX_ITEMS = 20
+
+interface PosCartRow {
+  /** ID lokal stabil untuk :key & timer debounce — TIDAK dikirim ke backend. */
+  key: number
+  productId: string
+  materialId: string
+  widthCm: number
+  heightCm: number
+  quantity: number
+  designSource: PosDesignSource
+  designBrief: string
+  itemNotes: string
+  productDetail: CatalogProductDetail | null
+  loadingDetail: boolean
+  quote: CatalogQuote | null
+  quoteLoading: boolean
+  quoteError: string | null
+  /** Ergonomi kasir — baris yang sudah lengkap bisa dilipat supaya layar tetap ringkas. */
+  collapsed: boolean
+}
+
+let rowKeySeq = 0
+function makeRow(): PosCartRow {
+  rowKeySeq += 1
+  return {
+    key: rowKeySeq,
+    productId: '',
+    materialId: '',
+    widthCm: 0,
+    heightCm: 0,
+    quantity: 1,
+    designSource: 'upload',
+    designBrief: '',
+    itemNotes: '',
+    productDetail: null,
+    loadingDetail: false,
+    quote: null,
+    quoteLoading: false,
+    quoteError: null,
+    collapsed: false,
+  }
+}
+
+const cart = ref<PosCartRow[]>([makeRow()])
+const atMaxItems = computed(() => cart.value.length >= MAX_ITEMS)
+
+function addRow() {
+  if (atMaxItems.value) return
+  cart.value.push(makeRow())
+}
+
+function removeRow(key: number) {
+  // Baris pertama tidak bisa dihapus — order selalu butuh minimal 1 item.
+  if (cart.value.length <= 1) return
+  const timer = quoteTimers.get(key)
+  if (timer) {
+    clearTimeout(timer)
+    quoteTimers.delete(key)
+  }
+  cart.value = cart.value.filter((r) => r.key !== key)
+}
+
+function toggleCollapse(row: PosCartRow) {
+  row.collapsed = !row.collapsed
+}
 
 // -------------------- pencarian pelanggan (§11) --------------------
 // WA jadi matching key lintas channel — kasir cari pelanggan yang sudah
@@ -166,7 +238,7 @@ onClickOutside(customerSearchRoot, () => {
   customerSearchOpen.value = false
 })
 
-// -------------------- diskon (§28) --------------------
+// -------------------- diskon (§28, basis §32.3) --------------------
 type DiscountMode = 'none' | 'master' | 'manual'
 const discountMode = ref<DiscountMode>('none')
 const selectedDiscountId = ref('')
@@ -194,92 +266,116 @@ onMounted(async () => {
   }
 })
 
-watch(
-  () => form.productId,
-  async (slug) => {
-    productDetail.value = null
-    form.materialId = ''
-    form.widthCm = 0
-    form.heightCm = 0
-    quote.value = null
-    quoteError.value = null
-    if (!slug) return
-    // find product by id → fetch by slug (backend detail endpoint pakai slug)
-    const p = products.value.find((x) => x.id === slug)
-    if (!p) return
-    loadingDetail.value = true
-    try {
-      productDetail.value = await catalog.getProduct(p.slug)
-      // preselect first material if only one
-      if (productDetail.value.pricings.length === 1) {
-        form.materialId = productDetail.value.pricings[0].material_id
-      }
-      // for paket, dimensions locked from pricing row → set when material chosen
-    } catch (e: unknown) {
-      submitError.value = e instanceof ApiError ? e.message : 'Gagal memuat detail produk'
-    } finally {
-      loadingDetail.value = false
+// -------------------- per-baris: produk / bahan / quote --------------------
+async function onProductChange(row: PosCartRow) {
+  row.productDetail = null
+  row.materialId = ''
+  row.widthCm = 0
+  row.heightCm = 0
+  row.quote = null
+  row.quoteError = null
+  if (!row.productId) return
+  const p = products.value.find((x) => x.id === row.productId)
+  if (!p) return
+  row.loadingDetail = true
+  try {
+    row.productDetail = await catalog.getProduct(p.slug)
+    if (row.productDetail.pricings.length === 1) {
+      row.materialId = row.productDetail.pricings[0].material_id
+      onMaterialChange(row)
     }
-  },
-)
-
-// When material changes and pricing type is paket, lock dimensions from pricing row.
-watch(
-  () => form.materialId,
-  (matId) => {
-    const p = productDetail.value
-    if (!p || !matId) return
-    if (p.pricing_type === 'paket') {
-      const row = p.pricings.find((r) => r.material_id === matId)
-      if (row?.width_cm) form.widthCm = row.width_cm
-      if (row?.height_cm) form.heightCm = row.height_cm
-    }
-  },
-)
-
-// Quote debounce
-let quoteTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleQuote() {
-  if (quoteTimer) clearTimeout(quoteTimer)
-  quoteTimer = setTimeout(runQuote, 400)
+  } catch (e: unknown) {
+    submitError.value = e instanceof ApiError ? e.message : 'Gagal memuat detail produk'
+  } finally {
+    row.loadingDetail = false
+  }
 }
 
-async function runQuote() {
-  const p = productDetail.value
-  if (!p || !form.materialId || form.widthCm <= 0 || form.heightCm <= 0) {
-    quote.value = null
-    quoteError.value = null
+function onMaterialChange(row: PosCartRow) {
+  const p = row.productDetail
+  if (p && row.materialId && p.pricing_type === 'paket') {
+    const found = p.pricings.find((r) => r.material_id === row.materialId)
+    if (found?.width_cm) row.widthCm = found.width_cm
+    if (found?.height_cm) row.heightCm = found.height_cm
+  }
+  scheduleQuote(row)
+}
+
+const quoteTimers = new Map<number, ReturnType<typeof setTimeout>>()
+function scheduleQuote(row: PosCartRow) {
+  const existing = quoteTimers.get(row.key)
+  if (existing) clearTimeout(existing)
+  quoteTimers.set(
+    row.key,
+    setTimeout(() => runQuote(row), 400),
+  )
+}
+
+async function runQuote(row: PosCartRow) {
+  const p = row.productDetail
+  if (!p || !row.materialId || row.widthCm <= 0 || row.heightCm <= 0) {
+    row.quote = null
+    row.quoteError = null
     return
   }
-  quoteLoading.value = true
-  quoteError.value = null
+  row.quoteLoading = true
+  row.quoteError = null
   try {
-    quote.value = await catalog.quote({
+    row.quote = await catalog.quote({
       product_id: p.id,
-      material_id: form.materialId,
-      width_cm: form.widthCm,
-      height_cm: form.heightCm,
+      material_id: row.materialId,
+      width_cm: row.widthCm,
+      height_cm: row.heightCm,
     })
   } catch (e: unknown) {
-    quote.value = null
-    quoteError.value = e instanceof ApiError ? e.message : 'Gagal menghitung harga'
+    row.quote = null
+    row.quoteError = e instanceof ApiError ? e.message : 'Gagal menghitung harga'
   } finally {
-    quoteLoading.value = false
+    row.quoteLoading = false
   }
 }
 
-watch(
-  () => [form.materialId, form.widthCm, form.heightCm],
-  scheduleQuote,
-)
-
 // -------------------- derived --------------------
-const isPerM2 = computed(() => productDetail.value?.pricing_type === 'per_m2')
-const isPaket = computed(() => productDetail.value?.pricing_type === 'paket')
+function isPerM2(row: PosCartRow): boolean {
+  return row.productDetail?.pricing_type === 'per_m2'
+}
+function isPaket(row: PosCartRow): boolean {
+  return row.productDetail?.pricing_type === 'paket'
+}
 const isKirim = computed(() => form.metodeAmbil === 'kirim')
+/** Mode approval desain (§11/§32.5) hanya relevan kalau minimal satu baris minta dibuatkan. */
+const anyRequestDesign = computed(() => cart.value.some((r) => r.designSource === 'request'))
 
-const subtotal = computed(() => (quote.value ? quote.value.total_price * form.quantity : 0))
+function availableMaterials(row: PosCartRow) {
+  const p = row.productDetail
+  if (!p) return []
+  return p.pricings.map((r) => ({
+    id: r.material_id,
+    label:
+      p.pricing_type === 'paket'
+        ? `${r.material_name}${r.package_label ? ' · ' + r.package_label : ''}${r.price_total != null ? ' · ' + fmtIDR(r.price_total) : ''}`
+        : `${r.material_name}${r.price_per_m2 != null ? ' · ' + fmtIDR(r.price_per_m2) + '/m²' : ''}`,
+  }))
+}
+
+function rowSubtotal(row: PosCartRow): number {
+  return row.quote ? row.quote.total_price * row.quantity : 0
+}
+/** Basis hitung diskon & angka yang dikirim ke backend — SELALU penjumlahan quote per baris, tidak pernah dihitung ulang di frontend (§32.2). */
+const cartSubtotal = computed(() => cart.value.reduce((sum, r) => sum + rowSubtotal(r), 0))
 const shippingCost = computed(() => (isKirim.value ? form.shippingCost : 0))
+
+/**
+ * Satu entri per baris keranjang yang punya produk & harga terhitung (§32.3)
+ * — dikirim ke `discountSvc.applicable()` supaya diskon `applies_to='selected'`
+ * tersaring berdasarkan `eligible_subtotal` yang benar, dan supaya kasir tidak
+ * pernah melihat promo yang bakal ditolak backend saat submit.
+ */
+const cartDiscountItems = computed<ApplicableCartItem[]>(() =>
+  cart.value
+    .filter((r) => r.productId && rowSubtotal(r) > 0)
+    .map((r) => ({ product_id: r.productId, subtotal: rowSubtotal(r) })),
+)
 
 const selectedDiscount = computed(() =>
   applicableDiscounts.value.find((d) => d.id === selectedDiscountId.value) ?? null,
@@ -287,7 +383,7 @@ const selectedDiscount = computed(() =>
 const discountAmount = computed(() => {
   if (!canApplyDiscount.value) return 0
   if (discountMode.value === 'master') return selectedDiscount.value?.preview_amount ?? 0
-  if (discountMode.value === 'manual') return Math.min(manualDiscountAmount.value || 0, subtotal.value)
+  if (discountMode.value === 'manual') return Math.min(manualDiscountAmount.value || 0, cartSubtotal.value)
   return 0
 })
 const discountLabelPreview = computed(() => {
@@ -296,21 +392,20 @@ const discountLabelPreview = computed(() => {
   return ''
 })
 
-const grandTotal = computed(() => Math.max(0, subtotal.value - discountAmount.value) + shippingCost.value)
+const grandTotal = computed(() => Math.max(0, cartSubtotal.value - discountAmount.value) + shippingCost.value)
 
-// Ambil diskon yang berlaku setiap subtotal ATAU produk terpilih berubah
-// (debounced) — hanya kalau kasir punya izin & subtotal sudah > 0. `product_id`
-// dikirim supaya diskon yang cakupannya (§28.9) tidak mencakup produk ini
-// tidak pernah muncul di daftar. Reset pilihan diskon yang sedang aktif kalau
-// daftar baru tidak lagi memuatnya — jangan biarkan kasir menekan "Buat
-// Pesanan" dengan diskon yang akan ditolak backend.
+// Ambil diskon yang berlaku setiap isi keranjang (produk/subtotal per baris)
+// ATAU pelanggan terpilih berubah (debounced) — hanya kalau kasir punya izin
+// & ada minimal satu baris dengan subtotal > 0. Reset pilihan diskon yang
+// sedang aktif kalau daftar baru tidak lagi memuatnya — jangan biarkan kasir
+// menekan "Buat Pesanan" dengan diskon yang akan ditolak backend.
 let discountTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleDiscountFetch() {
   if (discountTimer) clearTimeout(discountTimer)
   discountTimer = setTimeout(fetchApplicableDiscounts, 400)
 }
 async function fetchApplicableDiscounts() {
-  if (!canApplyDiscount.value || subtotal.value <= 0) {
+  if (!canApplyDiscount.value || cartDiscountItems.value.length === 0) {
     applicableDiscounts.value = []
     if (discountMode.value === 'master') {
       selectedDiscountId.value = ''
@@ -323,8 +418,7 @@ async function fetchApplicableDiscounts() {
   try {
     applicableDiscounts.value = await discountSvc.applicable({
       channel: 'pos',
-      subtotal: subtotal.value,
-      product_id: form.productId || undefined,
+      items: cartDiscountItems.value,
       customer_id: selectedCustomerId.value || undefined,
     })
     if (selectedDiscountId.value && !applicableDiscounts.value.some((d) => d.id === selectedDiscountId.value)) {
@@ -338,41 +432,33 @@ async function fetchApplicableDiscounts() {
     discountsLoading.value = false
   }
 }
-watch([subtotal, () => form.productId, selectedCustomerId], scheduleDiscountFetch)
+watch([cartDiscountItems, selectedCustomerId], scheduleDiscountFetch, { deep: true })
+
+function rowValid(row: PosCartRow): boolean {
+  if (!row.productId || !row.materialId) return false
+  if (row.widthCm <= 0 || row.heightCm <= 0 || row.quantity < 1) return false
+  if (!row.quote) return false
+  if (row.designSource === 'request' && !row.designBrief.trim()) return false
+  return true
+}
 
 const canSubmit = computed(() => {
   if (submitting.value) return false
   if (!form.customerName.trim() || !form.customerPhone.trim()) return false
-  if (!form.productId || !form.materialId) return false
-  if (form.widthCm <= 0 || form.heightCm <= 0 || form.quantity < 1) return false
-  if (!quote.value) return false
+  if (cart.value.length === 0) return false
+  if (!cart.value.every(rowValid)) return false
   if (isKirim.value) {
     if (!form.shippingAddress.trim()) return false
     if (!form.shippingRecipientName.trim()) return false
     if (!form.shippingRecipientPhone.trim()) return false
     if (form.shippingCost <= 0) return false
   }
-  if (form.designSource === 'request' && !form.designBrief.trim()) return false
   if (discountMode.value === 'master' && !selectedDiscountId.value) return false
   if (discountMode.value === 'manual') {
     if (manualDiscountAmount.value <= 0) return false
     if (!discountNote.value.trim()) return false
   }
   return true
-})
-
-const availableMaterials = computed(() => {
-  const p = productDetail.value
-  if (!p) return []
-  return p.pricings.map((r) => ({
-    id: r.material_id,
-    name: r.material_name,
-    code: r.material_code,
-    label:
-      p.pricing_type === 'paket'
-        ? `${r.material_name}${r.package_label ? ' · ' + r.package_label : ''}${r.price_total != null ? ' · ' + fmtIDR(r.price_total) : ''}`
-        : `${r.material_name}${r.price_per_m2 != null ? ' · ' + fmtIDR(r.price_per_m2) + '/m²' : ''}`,
-  }))
 })
 
 // -------------------- helpers --------------------
@@ -394,20 +480,23 @@ async function onSubmit() {
     const res = await pos.createOrder({
       customer_name: form.customerName.trim(),
       customer_phone: form.customerPhone.trim(),
-      product_id: form.productId,
-      material_id: form.materialId,
-      width_cm: form.widthCm,
-      height_cm: form.heightCm,
-      quantity: form.quantity,
+      items: cart.value.map((r) => ({
+        product_id: r.productId,
+        material_id: r.materialId,
+        width_cm: r.widthCm,
+        height_cm: r.heightCm,
+        quantity: r.quantity,
+        design_source: r.designSource,
+        design_brief: r.designSource === 'request' ? r.designBrief.trim() || undefined : undefined,
+        item_notes: r.itemNotes.trim() || undefined,
+      })),
       metode_ambil: form.metodeAmbil,
       shipping_address: isKirim.value ? form.shippingAddress.trim() : undefined,
       shipping_recipient_name: isKirim.value ? form.shippingRecipientName.trim() : undefined,
       shipping_recipient_phone: isKirim.value ? form.shippingRecipientPhone.trim() : undefined,
       shipping_cost: isKirim.value ? form.shippingCost : undefined,
       metode_bayar: form.metodeBayar,
-      design_source: form.designSource,
-      design_approval_mode: form.designSource === 'request' ? form.designApprovalMode : undefined,
-      design_brief: form.designBrief.trim() || undefined,
+      design_approval_mode: anyRequestDesign.value ? form.designApprovalMode : undefined,
       notes: form.notes.trim() || undefined,
       discount_id: discountMode.value === 'master' ? selectedDiscountId.value : undefined,
       manual_discount_amount: discountMode.value === 'manual' ? discountAmount.value : undefined,
@@ -426,23 +515,15 @@ function resetForm() {
   form.customerName = ''
   form.customerPhone = ''
   resolvedCustomer.value = null
-  form.productId = ''
-  form.materialId = ''
-  form.widthCm = 0
-  form.heightCm = 0
-  form.quantity = 1
+  cart.value = [makeRow()]
   form.metodeAmbil = 'pickup'
   form.shippingAddress = ''
   form.shippingRecipientName = ''
   form.shippingRecipientPhone = ''
   form.shippingCost = 0
   form.metodeBayar = 'cash'
-  form.designSource = 'upload'
   form.designApprovalMode = 'instant_walkin'
-  form.designBrief = ''
   form.notes = ''
-  productDetail.value = null
-  quote.value = null
   discountMode.value = 'none'
   selectedDiscountId.value = ''
   manualDiscountAmount.value = 0
@@ -451,6 +532,19 @@ function resetForm() {
   discountsError.value = null
   submitError.value = null
 }
+
+/**
+ * Baris struk (§32.7) — backend `ReceiptItem` (`PosReceiptItem`) tidak
+ * membawa `line_no` eksplisit (urutan array-nya sendiri sudah final,
+ * line_no ASC), tapi `ReceiptStruk.vue` butuh field itu untuk `:key`. Diisi
+ * dari posisi array, bukan dikirim ulang ke backend.
+ */
+const receiptItems = computed<ReceiptItemRow[]>(() =>
+  (successResult.value?.items ?? []).map((it: PosReceiptItem, idx: number) => ({
+    line_no: idx + 1,
+    ...it,
+  })),
+)
 
 // Template ref ke ReceiptStruk — jalur cadangan (window.print()) WAJIB lewat
 // method yang diekspos komponen itu (`printNow()`), bukan `window.print()`
@@ -541,12 +635,7 @@ async function printStruk() {
         :created-at="successResult.created_at"
         :customer-name="successResult.customer_name"
         :customer-phone="successResult.customer_phone"
-        :product-name="successResult.product_name"
-        :material-name="successResult.material_name"
-        :width-cm="successResult.width_cm"
-        :height-cm="successResult.height_cm"
-        :quantity="successResult.quantity"
-        :unit-price="successResult.unit_price"
+        :items="receiptItems"
         :subtotal="successResult.subtotal"
         :shipping-cost="successResult.shipping_cost"
         :discount-amount="successResult.discount_amount"
@@ -710,106 +799,245 @@ async function printStruk() {
           </div>
         </fieldset>
 
-        <!-- Produk -->
+        <!-- Keranjang (§32) — kartu bertumpuk, bisa dilipat/dibuka per baris
+             supaya layar tetap ringkas sambil melayani pelanggan di konter. -->
         <fieldset class="rounded-lg border border-hairline bg-canvas p-6">
           <legend class="flex items-center gap-2 px-2 -ml-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
             <Package class="h-3.5 w-3.5" :stroke-width="1.75" />
-            Produk & Ukuran
+            Keranjang & Desain
           </legend>
 
-          <div class="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label for="pos-product" class="block text-sm font-medium text-ink-900">
-                Produk <span class="text-brand-500">*</span>
-              </label>
-              <select
-                id="pos-product"
-                v-model="form.productId"
-                required
-                :disabled="loadingProducts"
-                class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
-              >
-                <option value="">{{ loadingProducts ? 'Memuat…' : 'Pilih produk' }}</option>
-                <option v-for="p in products" :key="p.id" :value="p.id">
-                  {{ p.name }} <span v-if="p.category">· {{ p.category }}</span>
-                </option>
-              </select>
-            </div>
+          <div class="space-y-3">
+            <div
+              v-for="(row, idx) in cart"
+              :key="row.key"
+              class="rounded-md border border-hairline overflow-hidden"
+            >
+              <!-- Header baris — selalu terlihat, jadi kasir tetap tahu isi
+                   baris tanpa membuka semua form sekaligus. -->
+              <div class="flex items-center gap-2 bg-canvas-alt px-3 py-2">
+                <button
+                  type="button"
+                  class="flex-none rounded-md p-1 text-ink-500 hover:text-ink-900 hover:bg-canvas transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-alt"
+                  :aria-label="row.collapsed ? 'Buka baris' : 'Lipat baris'"
+                  @click="toggleCollapse(row)"
+                >
+                  <ChevronDown class="h-4 w-4 transition-transform" :class="row.collapsed ? '-rotate-90' : ''" :stroke-width="1.75" />
+                </button>
+                <div class="min-w-0 flex-1">
+                  <p class="truncate text-sm font-semibold text-ink-900">
+                    {{ idx + 1 }}. {{ row.productDetail?.name || 'Barang belum dipilih' }}
+                  </p>
+                  <p v-if="row.widthCm > 0 && row.heightCm > 0" class="truncate text-xs text-ink-500">
+                    <span class="font-mono">{{ row.widthCm }}×{{ row.heightCm }}cm</span> · {{ row.quantity }} pcs
+                  </p>
+                </div>
+                <span class="flex-none text-sm font-medium tabular-nums text-ink-900">
+                  <Loader2 v-if="row.quoteLoading" class="inline h-3.5 w-3.5 animate-spin align-[-2px] text-ink-400" :stroke-width="1.75" />
+                  <template v-else>{{ fmtIDR(rowSubtotal(row)) }}</template>
+                </span>
+                <button
+                  v-if="idx > 0"
+                  type="button"
+                  class="flex-none rounded-md p-1.5 text-ink-500 hover:text-brand-600 hover:bg-brand-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas-alt"
+                  aria-label="Hapus baris"
+                  @click="removeRow(row.key)"
+                >
+                  <Trash2 class="h-4 w-4" :stroke-width="1.75" />
+                </button>
+              </div>
 
-            <div>
-              <label for="pos-material" class="block text-sm font-medium text-ink-900">
-                Bahan <span class="text-brand-500">*</span>
-              </label>
-              <select
-                id="pos-material"
-                v-model="form.materialId"
-                required
-                :disabled="!productDetail || loadingDetail"
-                class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
-              >
-                <option value="">{{ loadingDetail ? 'Memuat…' : 'Pilih bahan' }}</option>
-                <option v-for="m in availableMaterials" :key="m.id" :value="m.id">
-                  {{ m.label }}
-                </option>
-              </select>
-              <p v-if="isPaket" class="mt-1 text-xs text-ink-500">Ukuran otomatis mengikuti paket terpilih.</p>
-              <p v-else-if="isPerM2 && productDetail" class="mt-1 text-xs text-ink-500">
-                Ukuran custom · rentang
-                <template v-if="productDetail.min_width_cm && productDetail.max_width_cm">
-                  {{ productDetail.min_width_cm }}–{{ productDetail.max_width_cm }} cm (W)
-                </template>
-                ×
-                <template v-if="productDetail.min_height_cm && productDetail.max_height_cm">
-                  {{ productDetail.min_height_cm }}–{{ productDetail.max_height_cm }} cm (H)
-                </template>
-              </p>
+              <!-- Isi baris -->
+              <div v-show="!row.collapsed" class="space-y-4 p-4">
+                <div class="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label :for="`pos-product-${row.key}`" class="block text-sm font-medium text-ink-900">
+                      Produk <span class="text-brand-500">*</span>
+                    </label>
+                    <select
+                      :id="`pos-product-${row.key}`"
+                      v-model="row.productId"
+                      required
+                      :disabled="loadingProducts"
+                      class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
+                      @change="onProductChange(row)"
+                    >
+                      <option value="">{{ loadingProducts ? 'Memuat…' : 'Pilih produk' }}</option>
+                      <option v-for="p in products" :key="p.id" :value="p.id">
+                        {{ p.name }} <span v-if="p.category">· {{ p.category }}</span>
+                      </option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label :for="`pos-material-${row.key}`" class="block text-sm font-medium text-ink-900">
+                      Bahan <span class="text-brand-500">*</span>
+                    </label>
+                    <select
+                      :id="`pos-material-${row.key}`"
+                      v-model="row.materialId"
+                      required
+                      :disabled="!row.productDetail || row.loadingDetail"
+                      class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
+                      @change="onMaterialChange(row)"
+                    >
+                      <option value="">{{ row.loadingDetail ? 'Memuat…' : 'Pilih bahan' }}</option>
+                      <option v-for="m in availableMaterials(row)" :key="m.id" :value="m.id">
+                        {{ m.label }}
+                      </option>
+                    </select>
+                    <p v-if="isPaket(row)" class="mt-1 text-xs text-ink-500">Ukuran otomatis mengikuti paket terpilih.</p>
+                    <p v-else-if="isPerM2(row) && row.productDetail" class="mt-1 text-xs text-ink-500">
+                      Ukuran custom · rentang
+                      <template v-if="row.productDetail.min_width_cm && row.productDetail.max_width_cm">
+                        {{ row.productDetail.min_width_cm }}–{{ row.productDetail.max_width_cm }} cm (W)
+                      </template>
+                      ×
+                      <template v-if="row.productDetail.min_height_cm && row.productDetail.max_height_cm">
+                        {{ row.productDetail.min_height_cm }}–{{ row.productDetail.max_height_cm }} cm (H)
+                      </template>
+                    </p>
+                  </div>
+                </div>
+
+                <div class="grid gap-4 sm:grid-cols-3">
+                  <div>
+                    <label :for="`pos-width-${row.key}`" class="block text-sm font-medium text-ink-900">
+                      Lebar (cm) <span class="text-brand-500">*</span>
+                    </label>
+                    <input
+                      :id="`pos-width-${row.key}`"
+                      v-model.number="row.widthCm"
+                      type="number"
+                      min="1"
+                      required
+                      :disabled="isPaket(row)"
+                      :placeholder="isPerM2(row) ? '100' : '—'"
+                      class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
+                      @input="scheduleQuote(row)"
+                    >
+                  </div>
+                  <div>
+                    <label :for="`pos-height-${row.key}`" class="block text-sm font-medium text-ink-900">
+                      Tinggi (cm) <span class="text-brand-500">*</span>
+                    </label>
+                    <input
+                      :id="`pos-height-${row.key}`"
+                      v-model.number="row.heightCm"
+                      type="number"
+                      min="1"
+                      required
+                      :disabled="isPaket(row)"
+                      :placeholder="isPerM2(row) ? '200' : '—'"
+                      class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
+                      @input="scheduleQuote(row)"
+                    >
+                  </div>
+                  <div>
+                    <label :for="`pos-qty-${row.key}`" class="block text-sm font-medium text-ink-900">
+                      Kuantitas <span class="text-brand-500">*</span>
+                    </label>
+                    <input
+                      :id="`pos-qty-${row.key}`"
+                      v-model.number="row.quantity"
+                      type="number"
+                      min="1"
+                      required
+                      class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                    >
+                  </div>
+                </div>
+
+                <!-- Desain per baris (§32.5) -->
+                <div>
+                  <p class="mb-2 text-sm font-medium text-ink-900">Sumber desain baris ini</p>
+                  <div class="grid gap-2 sm:grid-cols-2">
+                    <label
+                      :class="[
+                        'flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm transition-colors',
+                        row.designSource === 'upload'
+                          ? 'border-brand-500 bg-brand-50/50 text-ink-950'
+                          : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                      ]"
+                    >
+                      <input v-model="row.designSource" type="radio" :name="`pos-design-source-${row.key}`" value="upload" class="mt-0.5 accent-brand-500">
+                      <span>
+                        <span class="block font-semibold">Bawa desain siap cetak</span>
+                        <span class="mt-0.5 block text-xs text-ink-500">Kasir upload file ke order setelah dibuat.</span>
+                      </span>
+                    </label>
+                    <label
+                      :class="[
+                        'flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm transition-colors',
+                        row.designSource === 'request'
+                          ? 'border-brand-500 bg-brand-50/50 text-ink-950'
+                          : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                      ]"
+                    >
+                      <input v-model="row.designSource" type="radio" :name="`pos-design-source-${row.key}`" value="request" class="mt-0.5 accent-brand-500">
+                      <span>
+                        <span class="block font-semibold">Minta desain</span>
+                        <span class="mt-0.5 block text-xs text-ink-500">Desainer buat di tempat / follow-up nanti.</span>
+                      </span>
+                    </label>
+                  </div>
+
+                  <div v-if="row.designSource === 'request'" class="mt-3">
+                    <label :for="`pos-brief-${row.key}`" class="block text-sm font-medium text-ink-900">
+                      Brief singkat <span class="text-brand-500">*</span>
+                    </label>
+                    <textarea
+                      :id="`pos-brief-${row.key}`"
+                      v-model="row.designBrief"
+                      rows="2"
+                      required
+                      placeholder="Contoh: Banner ucapan syukuran, warna dominan biru, teks 'Aqiqah Naura'…"
+                      class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label :for="`pos-item-notes-${row.key}`" class="block text-sm font-medium text-ink-900">
+                    Catatan item (opsional)
+                  </label>
+                  <input
+                    :id="`pos-item-notes-${row.key}`"
+                    v-model="row.itemNotes"
+                    type="text"
+                    placeholder="Contoh: finishing mata ayam 4 pojok"
+                    class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                  >
+                </div>
+
+                <div class="flex items-center justify-between border-t border-hairline pt-3 text-sm">
+                  <span class="text-ink-500">
+                    <Loader2 v-if="row.quoteLoading" class="inline h-3 w-3 animate-spin align-[-1px]" :stroke-width="1.75" />
+                    <template v-else-if="row.quote">{{ fmtIDR(row.quote.total_price) }} / pcs</template>
+                    <template v-else>Lengkapi produk, bahan & ukuran</template>
+                  </span>
+                  <span class="font-serif text-base font-semibold text-ink-950">{{ fmtIDR(rowSubtotal(row)) }}</span>
+                </div>
+                <p v-if="row.quoteError" class="text-xs text-brand-700">{{ row.quoteError }}</p>
+              </div>
             </div>
           </div>
 
-          <div class="mt-4 grid gap-4 sm:grid-cols-3">
-            <div>
-              <label for="pos-width" class="block text-sm font-medium text-ink-900">
-                Lebar (cm) <span class="text-brand-500">*</span>
-              </label>
-              <input
-                id="pos-width"
-                v-model.number="form.widthCm"
-                type="number"
-                min="1"
-                required
-                :disabled="isPaket"
-                :placeholder="isPerM2 ? '100' : '—'"
-                class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
-              >
-            </div>
-            <div>
-              <label for="pos-height" class="block text-sm font-medium text-ink-900">
-                Tinggi (cm) <span class="text-brand-500">*</span>
-              </label>
-              <input
-                id="pos-height"
-                v-model.number="form.heightCm"
-                type="number"
-                min="1"
-                required
-                :disabled="isPaket"
-                :placeholder="isPerM2 ? '200' : '—'"
-                class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
-              >
-            </div>
-            <div>
-              <label for="pos-qty" class="block text-sm font-medium text-ink-900">
-                Kuantitas <span class="text-brand-500">*</span>
-              </label>
-              <input
-                id="pos-qty"
-                v-model.number="form.quantity"
-                type="number"
-                min="1"
-                required
-                class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-              >
-            </div>
+          <div class="mt-3">
+            <button
+              type="button"
+              :disabled="atMaxItems"
+              class="inline-flex items-center gap-2 rounded-md border border-hairline bg-canvas px-4 py-2 text-sm font-semibold text-ink-900 hover:bg-canvas-alt hover:border-ink-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+              @click="addRow"
+            >
+              <Plus class="h-4 w-4" :stroke-width="1.75" />
+              Tambah barang
+            </button>
+            <p class="mt-1.5 text-xs text-ink-500">
+              {{ atMaxItems
+                ? `Maksimal ${MAX_ITEMS} barang per pesanan sudah tercapai. Buat pesanan terpisah untuk barang tambahan.`
+                : `Bisa ditambah sampai ${MAX_ITEMS} barang dalam satu pesanan (${cart.length}/${MAX_ITEMS}).` }}
+            </p>
           </div>
         </fieldset>
 
@@ -903,98 +1131,44 @@ async function printStruk() {
           </div>
         </fieldset>
 
-        <!-- Design -->
-        <fieldset class="rounded-lg border border-hairline bg-canvas p-6">
+        <!-- Mode approval desain (§11, per order — tetap satu untuk seluruh keranjang) -->
+        <fieldset v-if="anyRequestDesign" class="rounded-lg border border-hairline bg-canvas p-6">
           <legend class="flex items-center gap-2 px-2 -ml-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
             <PaletteIcon class="h-3.5 w-3.5" :stroke-width="1.75" />
-            Desain
+            Mode approval desain
           </legend>
-
-          <div class="space-y-4">
-            <div>
-              <p class="mb-2 text-sm font-medium text-ink-900">Sumber desain</p>
-              <div class="grid gap-2 sm:grid-cols-2">
-                <label
-                  :class="[
-                    'flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm transition-colors',
-                    form.designSource === 'upload'
-                      ? 'border-brand-500 bg-brand-50/50 text-ink-950'
-                      : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
-                  ]"
-                >
-                  <input v-model="form.designSource" type="radio" value="upload" class="mt-0.5 accent-brand-500">
-                  <span>
-                    <span class="block font-semibold">Bawa desain siap cetak</span>
-                    <span class="mt-0.5 block text-xs text-ink-500">Kasir upload file ke order setelah dibuat.</span>
-                  </span>
-                </label>
-                <label
-                  :class="[
-                    'flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm transition-colors',
-                    form.designSource === 'request'
-                      ? 'border-brand-500 bg-brand-50/50 text-ink-950'
-                      : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
-                  ]"
-                >
-                  <input v-model="form.designSource" type="radio" value="request" class="mt-0.5 accent-brand-500">
-                  <span>
-                    <span class="block font-semibold">Minta desain</span>
-                    <span class="mt-0.5 block text-xs text-ink-500">Desainer buat di tempat / follow-up nanti.</span>
-                  </span>
-                </label>
-              </div>
-            </div>
-
-            <div v-if="form.designSource === 'request'">
-              <p class="mb-2 text-sm font-medium text-ink-900">Mode approval</p>
-              <p class="-mt-1 mb-2 text-xs text-ink-500">
-                Hanya berlaku untuk "Minta desain" — desain siap cetak langsung lanjut cetak tanpa approval (§11).
-              </p>
-              <div class="grid gap-2 sm:grid-cols-2">
-                <label
-                  :class="[
-                    'flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm transition-colors',
-                    form.designApprovalMode === 'instant_walkin'
-                      ? 'border-brand-500 bg-brand-50/50 text-ink-950'
-                      : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
-                  ]"
-                >
-                  <input v-model="form.designApprovalMode" type="radio" value="instant_walkin" class="mt-0.5 accent-brand-500">
-                  <span>
-                    <span class="block font-semibold">Approve di tempat</span>
-                    <span class="mt-0.5 block text-xs text-ink-500">Skip loop notifikasi — pelanggan setuju verbal.</span>
-                  </span>
-                </label>
-                <label
-                  :class="[
-                    'flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm transition-colors',
-                    form.designApprovalMode === 'async_notify'
-                      ? 'border-brand-500 bg-brand-50/50 text-ink-950'
-                      : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
-                  ]"
-                >
-                  <input v-model="form.designApprovalMode" type="radio" value="async_notify" class="mt-0.5 accent-brand-500">
-                  <span>
-                    <span class="block font-semibold">Follow-up via WA</span>
-                    <span class="mt-0.5 block text-xs text-ink-500">Kirim approval link kalau butuh waktu lebih.</span>
-                  </span>
-                </label>
-              </div>
-            </div>
-
-            <div v-if="form.designSource === 'request'">
-              <label for="pos-brief" class="block text-sm font-medium text-ink-900">
-                Brief singkat <span class="text-brand-500">*</span>
-              </label>
-              <textarea
-                id="pos-brief"
-                v-model="form.designBrief"
-                rows="3"
-                required
-                placeholder="Contoh: Banner ucapan syukuran, warna dominan biru, teks 'Aqiqah Naura'…"
-                class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-              />
-            </div>
+          <p class="-mt-1 mb-2 text-xs text-ink-500">
+            Berlaku untuk seluruh pesanan — minimal satu barang di keranjang minta dibuatkan desain (§11).
+          </p>
+          <div class="grid gap-2 sm:grid-cols-2">
+            <label
+              :class="[
+                'flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm transition-colors',
+                form.designApprovalMode === 'instant_walkin'
+                  ? 'border-brand-500 bg-brand-50/50 text-ink-950'
+                  : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+              ]"
+            >
+              <input v-model="form.designApprovalMode" type="radio" value="instant_walkin" class="mt-0.5 accent-brand-500">
+              <span>
+                <span class="block font-semibold">Approve di tempat</span>
+                <span class="mt-0.5 block text-xs text-ink-500">Skip loop notifikasi — pelanggan setuju verbal.</span>
+              </span>
+            </label>
+            <label
+              :class="[
+                'flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm transition-colors',
+                form.designApprovalMode === 'async_notify'
+                  ? 'border-brand-500 bg-brand-50/50 text-ink-950'
+                  : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+              ]"
+            >
+              <input v-model="form.designApprovalMode" type="radio" value="async_notify" class="mt-0.5 accent-brand-500">
+              <span>
+                <span class="block font-semibold">Follow-up via WA</span>
+                <span class="mt-0.5 block text-xs text-ink-500">Kirim approval link kalau butuh waktu lebih.</span>
+              </span>
+            </label>
           </div>
         </fieldset>
 
@@ -1033,7 +1207,7 @@ async function printStruk() {
           </div>
         </fieldset>
 
-        <!-- Diskon (§28) -->
+        <!-- Diskon (§28, §32.3) -->
         <fieldset v-if="canApplyDiscount" class="rounded-lg border border-hairline bg-canvas p-6">
           <legend class="flex items-center gap-2 px-2 -ml-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
             <TicketPercent class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -1076,8 +1250,8 @@ async function printStruk() {
             Memeriksa promo yang berlaku…
           </p>
           <p v-else-if="discountsError" class="mt-3 text-xs text-brand-700">{{ discountsError }}</p>
-          <p v-else-if="subtotal > 0 && applicableDiscounts.length === 0" class="mt-3 text-xs text-ink-500">
-            Tidak ada promo yang berlaku untuk subtotal ini.
+          <p v-else-if="cartSubtotal > 0 && applicableDiscounts.length === 0" class="mt-3 text-xs text-ink-500">
+            Tidak ada promo yang berlaku untuk keranjang ini.
           </p>
 
           <div v-if="discountMode === 'master'" class="mt-3 space-y-2">
@@ -1110,7 +1284,7 @@ async function printStruk() {
                 v-model.number="manualDiscountAmount"
                 type="number"
                 min="1"
-                :max="subtotal"
+                :max="cartSubtotal"
                 required
                 placeholder="10000"
                 class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
@@ -1136,12 +1310,12 @@ async function printStruk() {
         <fieldset class="rounded-lg border border-hairline bg-canvas p-6">
           <legend class="flex items-center gap-2 px-2 -ml-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
             <StickyNote class="h-3.5 w-3.5" :stroke-width="1.75" />
-            Catatan (opsional)
+            Catatan (opsional, untuk seluruh pesanan)
           </legend>
           <textarea
             v-model="form.notes"
             rows="2"
-            placeholder="Contoh: minta finishing mata ayam 4 pojok"
+            placeholder="Contoh: ambil sore hari"
             class="block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
           />
         </fieldset>
@@ -1152,68 +1326,29 @@ async function printStruk() {
         <div class="rounded-lg border border-hairline bg-canvas p-6">
           <div class="flex items-center gap-2">
             <Receipt class="h-4 w-4 text-ink-700" :stroke-width="1.75" />
-            <h2 class="text-sm font-semibold text-ink-900">Ringkasan</h2>
+            <h2 class="text-sm font-semibold text-ink-900">Ringkasan · {{ cart.length }} barang</h2>
           </div>
 
-          <dl class="mt-4 space-y-2 text-sm">
-            <div class="flex justify-between">
-              <dt class="text-ink-500">Produk</dt>
-              <dd class="text-ink-900 text-right max-w-[60%] truncate">
-                {{ productDetail?.name || '—' }}
-              </dd>
-            </div>
-            <div class="flex justify-between">
-              <dt class="text-ink-500">Bahan</dt>
-              <dd class="text-ink-900 text-right max-w-[60%] truncate">
-                {{ quote?.material_name || '—' }}
-              </dd>
-            </div>
-            <div class="flex justify-between">
-              <dt class="text-ink-500">Ukuran</dt>
-              <dd class="text-ink-900">
-                <template v-if="form.widthCm > 0 && form.heightCm > 0">
-                  {{ form.widthCm }} × {{ form.heightCm }} cm
+          <ul class="mt-4 max-h-56 space-y-3 divide-y divide-hairline overflow-y-auto pr-1">
+            <li v-for="(row, idx) in cart" :key="row.key" class="pt-3 first:pt-0 text-sm">
+              <div class="flex justify-between gap-2">
+                <span class="text-ink-500">Barang {{ idx + 1 }}</span>
+                <span class="text-ink-900 font-medium">{{ fmtIDR(rowSubtotal(row)) }}</span>
+              </div>
+              <p class="mt-0.5 truncate text-xs text-ink-500">
+                {{ row.productDetail?.name || 'Belum dipilih' }}
+                <template v-if="row.widthCm > 0 && row.heightCm > 0">
+                  <span class="text-ink-400">·</span> <span class="font-mono">{{ row.widthCm }}×{{ row.heightCm }}cm</span>
                 </template>
-                <template v-else>—</template>
-              </dd>
-            </div>
-            <div class="flex justify-between">
-              <dt class="text-ink-500">Kuantitas</dt>
-              <dd class="text-ink-900">{{ form.quantity }} pcs</dd>
-            </div>
-            <div v-if="quote?.area_m2 != null" class="flex justify-between">
-              <dt class="text-ink-500">Luas / pcs</dt>
-              <dd class="text-ink-900 font-mono text-xs">{{ quote.area_m2.toFixed(2) }} m²</dd>
-            </div>
-            <div
-              v-if="quote?.chargeable_m2 != null && quote?.area_m2 != null && quote.chargeable_m2 > quote.area_m2"
-              class="flex justify-between"
-            >
-              <dt class="text-ink-500">Luas dihitung (min. order)</dt>
-              <dd class="text-ink-900 font-mono text-xs">{{ quote.chargeable_m2.toFixed(2) }} m²</dd>
-            </div>
-            <p
-              v-if="quote?.chargeable_m2 != null && quote?.area_m2 != null && quote.chargeable_m2 > quote.area_m2"
-              class="text-xs text-ink-500 leading-relaxed"
-            >
-              Bahan ini punya minimum order {{ quote.chargeable_m2.toFixed(2) }} m² — harga pakai luas minimum, bukan luas aktual.
-            </p>
-            <div v-if="quote?.package_label" class="flex justify-between">
-              <dt class="text-ink-500">Paket</dt>
-              <dd class="text-ink-900">{{ quote.package_label }}</dd>
-            </div>
-            <div class="flex justify-between border-t border-hairline pt-2 mt-1">
-              <dt class="text-ink-500">Harga / pcs</dt>
-              <dd class="text-ink-900">
-                <span v-if="quoteLoading" class="inline-flex items-center gap-1 text-ink-500">
-                  <Loader2 class="h-3 w-3 animate-spin" :stroke-width="1.75" />
-                </span>
-                <span v-else>{{ fmtIDR(quote?.total_price) }}</span>
-              </dd>
-            </div>
+                <span class="text-ink-400">·</span> {{ row.quantity }} pcs
+              </p>
+            </li>
+          </ul>
+
+          <dl class="mt-4 space-y-2 border-t border-hairline pt-3 text-sm">
             <div class="flex justify-between">
               <dt class="text-ink-500">Subtotal</dt>
-              <dd class="text-ink-900">{{ fmtIDR(subtotal) }}</dd>
+              <dd class="text-ink-900">{{ fmtIDR(cartSubtotal) }}</dd>
             </div>
             <div v-if="discountAmount > 0" class="flex justify-between">
               <dt class="text-ink-500">
@@ -1231,8 +1366,6 @@ async function printStruk() {
               <dd class="font-serif text-lg font-semibold text-ink-950">{{ fmtIDR(grandTotal) }}</dd>
             </div>
           </dl>
-
-          <p v-if="quoteError" class="mt-3 text-xs text-brand-700">{{ quoteError }}</p>
 
           <button
             type="submit"

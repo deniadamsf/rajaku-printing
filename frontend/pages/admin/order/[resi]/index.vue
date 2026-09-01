@@ -15,11 +15,17 @@
  *
  * Design: patuh CLAUDE.md §26 (Fraunces + Inter + Lucide, brand/ink/hairline).
  */
-import type { Order, OrderStatus } from '~/types/order'
+import type { Order, OrderStatus, DesignSource } from '~/types/order'
 import type { PaymentProof } from '~/types/payment'
 import type { DesignFile } from '~/types/design'
 import type { AuditLogEntry } from '~/types/audit'
-import type { AdminOrderCustomer, AdminOrderHistoryRow, AdminOrderEditInput } from '~/composables/useOrder'
+import type { CatalogProduct, CatalogProductDetail, CatalogQuote } from '~/types/catalog'
+import type {
+  AdminOrderCustomer,
+  AdminOrderHistoryRow,
+  AdminOrderEditInput,
+  AdminOrderEditItemInput,
+} from '~/composables/useOrder'
 import { ApiError } from '~/composables/useApi'
 import {
   CreditCard,
@@ -44,6 +50,7 @@ import {
   Trash2,
   History,
   AlertTriangle,
+  Plus,
 } from '@lucide/vue'
 
 definePageMeta({
@@ -59,6 +66,7 @@ const paymentSvc = usePayment()
 const designSvc = useDesign()
 const pos = usePos()
 const auditSvc = useAuditLog()
+const catalog = useCatalog()
 
 const resi = computed(() => String(route.params.resi))
 
@@ -460,12 +468,14 @@ async function submitCancel() {
  * dikirim apa pun statusnya — itu data pengiriman KHUSUS pesanan ini, bukan
  * identitas global pelanggan (lihat catatan di `AdminOrderEditInput`).
  *
- * `subtotal`/`shipping_cost` juga selalu boleh diedit, TAPI begitu order
- * sudah `dibayar` (atau status sesudahnya, lihat `orderIsPaid`), backend
- * mewajibkan `reason` (min 10 karakter) kalau salah satu nominal itu berubah
- * — karena invoice yang sudah terkirim ke pelanggan bisa jadi tidak cocok
- * lagi. `total` TIDAK ADA di form — backend selalu menghitungnya sebagai
- * `subtotal + shipping_cost`, ditampilkan read-only di bawah.
+ * `shipping_cost` juga selalu boleh diedit, TAPI begitu order sudah
+ * `dibayar` (atau status sesudahnya, lihat `orderIsPaid`), backend
+ * mewajibkan `reason` (min 10 karakter) kalau nominal itu berubah — atau
+ * kalau baris item diubah lewat editor di bawah (§32.9) — karena invoice
+ * yang sudah terkirim ke pelanggan bisa jadi tidak cocok lagi. `total` dan
+ * `subtotal` TIDAK ADA di form — keduanya selalu dihitung backend
+ * (`subtotal` = Σ item, `total` = subtotal - diskon + ongkir), ditampilkan
+ * read-only/perkiraan di bawah.
  */
 const editOpen = ref(false)
 const editBusy = ref(false)
@@ -474,13 +484,9 @@ const editForm = reactive({
   shipping_recipient_phone: '',
   shipping_address: '',
   notes: '',
-  subtotal: 0,
   shipping_cost: 0,
   reason: '',
 })
-
-// Total dihitung ulang realtime — TIDAK bisa diketik langsung (§ kontrak baru).
-const editComputedTotal = computed(() => (editForm.subtotal || 0) + (editForm.shipping_cost || 0))
 
 function openEdit() {
   if (!order.value) return
@@ -488,23 +494,266 @@ function openEdit() {
   editForm.shipping_recipient_phone = order.value.shipping_recipient_phone ?? ''
   editForm.shipping_address = order.value.shipping_address ?? ''
   editForm.notes = order.value.notes ?? ''
-  editForm.subtotal = order.value.subtotal ?? 0
   editForm.shipping_cost = order.value.shipping_cost ?? 0
   editForm.reason = ''
+  closeItemsEditor()
   modalError.value = null
   editOpen.value = true
 }
 
+// ---- Koreksi baris item (§32.9) ----
+// Editor di bawah mengandalkan `item.id` asli (order_items.id, dipetakan
+// backend sejak 1 September 2026 — lihat doc comment `OrderItem.id` di
+// `types/order.ts`) supaya baris "existing" bisa dikirim balik ke
+// `PATCH /admin/orders/:resi` sebagai EDIT, bukan disalahartikan backend
+// sebagai baris BARU (yang bisa menduplikasi item).
+interface EditItemRow {
+  key: number
+  /** Terisi = baris existing (id order_items asli). Kosong = baris baru. */
+  id?: string
+  productName: string
+  materialName: string
+  widthCm: number
+  heightCm: number
+  quantity: number
+  unitPrice: number
+  itemNotes: string
+  // Baris baru saja:
+  productId: string
+  materialId: string
+  designSource: DesignSource | ''
+  designBrief: string
+  productDetail: CatalogProductDetail | null
+  loadingDetail: boolean
+  quote: CatalogQuote | null
+  quoteLoading: boolean
+  quoteError: string | null
+}
+
+let editItemKeySeq = 0
+function makeNewEditRow(): EditItemRow {
+  editItemKeySeq += 1
+  return {
+    key: editItemKeySeq,
+    productName: '',
+    materialName: '',
+    widthCm: 0,
+    heightCm: 0,
+    quantity: 1,
+    unitPrice: 0,
+    itemNotes: '',
+    productId: '',
+    materialId: '',
+    designSource: '',
+    designBrief: '',
+    productDetail: null,
+    loadingDetail: false,
+    quote: null,
+    quoteLoading: false,
+    quoteError: null,
+  }
+}
+
+const itemsEditMode = ref(false)
+const editItems = ref<EditItemRow[]>([])
+const editProducts = ref<CatalogProduct[]>([])
+const editProductsLoading = ref(false)
+
+async function openItemsEditor() {
+  if (!order.value) return
+  editItemKeySeq = 0
+  editItems.value = order.value.items.map((it) => ({
+    ...makeNewEditRow(),
+    id: it.id,
+    productName: it.product_name,
+    materialName: it.material_name,
+    widthCm: it.width_cm,
+    heightCm: it.height_cm,
+    quantity: it.quantity,
+    unitPrice: it.unit_price,
+    itemNotes: it.item_notes ?? '',
+  }))
+  itemsEditMode.value = true
+  if (editProducts.value.length === 0) {
+    editProductsLoading.value = true
+    try {
+      const res = await catalog.listProducts()
+      editProducts.value = res.products
+    } catch (e) {
+      modalError.value = toApiError(e, 'Gagal memuat daftar produk')
+    } finally {
+      editProductsLoading.value = false
+    }
+  }
+}
+
+function closeItemsEditor() {
+  itemsEditMode.value = false
+  editItems.value = []
+}
+
+const MAX_EDIT_ITEMS = 20
+function addEditItemRow() {
+  if (editItems.value.length >= MAX_EDIT_ITEMS) return
+  editItems.value.push(makeNewEditRow())
+}
+function removeEditItemRow(key: number) {
+  if (editItems.value.length <= 1) return
+  editItems.value = editItems.value.filter((r) => r.key !== key)
+}
+
+async function onEditRowProductChange(row: EditItemRow) {
+  row.productDetail = null
+  row.materialId = ''
+  row.widthCm = 0
+  row.heightCm = 0
+  row.quote = null
+  row.quoteError = null
+  if (!row.productId) return
+  const p = editProducts.value.find((x) => x.id === row.productId)
+  if (!p) return
+  row.loadingDetail = true
+  try {
+    row.productDetail = await catalog.getProduct(p.slug)
+    if (row.productDetail.pricings.length === 1) {
+      row.materialId = row.productDetail.pricings[0].material_id
+      onEditRowMaterialChange(row)
+    }
+  } catch (e) {
+    modalError.value = toApiError(e, 'Gagal memuat detail produk')
+  } finally {
+    row.loadingDetail = false
+  }
+}
+
+function onEditRowMaterialChange(row: EditItemRow) {
+  const p = row.productDetail
+  if (p && row.materialId && p.pricing_type === 'paket') {
+    const found = p.pricings.find((r) => r.material_id === row.materialId)
+    if (found?.width_cm) row.widthCm = found.width_cm
+    if (found?.height_cm) row.heightCm = found.height_cm
+  }
+  scheduleEditRowQuote(row)
+}
+
+const editQuoteTimers = new Map<number, ReturnType<typeof setTimeout>>()
+function scheduleEditRowQuote(row: EditItemRow) {
+  const existing = editQuoteTimers.get(row.key)
+  if (existing) clearTimeout(existing)
+  editQuoteTimers.set(
+    row.key,
+    setTimeout(() => runEditRowQuote(row), 400),
+  )
+}
+
+async function runEditRowQuote(row: EditItemRow) {
+  const p = row.productDetail
+  if (!p || !row.materialId || row.widthCm <= 0 || row.heightCm <= 0) {
+    row.quote = null
+    row.quoteError = null
+    return
+  }
+  row.quoteLoading = true
+  row.quoteError = null
+  try {
+    row.quote = await catalog.quote({
+      product_id: p.id,
+      material_id: row.materialId,
+      width_cm: row.widthCm,
+      height_cm: row.heightCm,
+    })
+  } catch (e) {
+    row.quote = null
+    row.quoteError = toApiError(e, 'Gagal menghitung harga')
+  } finally {
+    row.quoteLoading = false
+  }
+}
+
+function editRowIsPaket(row: EditItemRow): boolean {
+  return row.productDetail?.pricing_type === 'paket'
+}
+function editRowMaterials(row: EditItemRow) {
+  const p = row.productDetail
+  if (!p) return []
+  return p.pricings.map((r) => ({
+    id: r.material_id,
+    label:
+      p.pricing_type === 'paket'
+        ? `${r.material_name}${r.package_label ? ' · ' + r.package_label : ''}`
+        : r.material_name,
+  }))
+}
+
+/** Subtotal baris — existing pakai harga yang diketik admin; baru pakai quote katalog (final tetap dihitung ulang backend). */
+function editRowSubtotal(row: EditItemRow): number {
+  if (row.id) return (row.unitPrice || 0) * (row.quantity || 0)
+  return row.quote ? row.quote.total_price * (row.quantity || 0) : 0
+}
+
+function editItemRowValid(row: EditItemRow): boolean {
+  if (row.widthCm <= 0 || row.heightCm <= 0 || row.quantity < 1) return false
+  if (row.id) return row.unitPrice >= 0
+  if (!row.productId || !row.materialId || !row.designSource) return false
+  if (row.designSource === 'request' && !row.designBrief.trim()) return false
+  return true
+}
+
+const editItemsValid = computed(
+  () =>
+    editItems.value.length >= 1 &&
+    editItems.value.length <= MAX_EDIT_ITEMS &&
+    editItems.value.every(editItemRowValid),
+)
+
+// ---- Nominal (perkiraan — angka final dari respons backend, §32.9) ----
+const estimatedSubtotal = computed(() => {
+  if (!order.value) return 0
+  if (!itemsEditMode.value) return order.value.subtotal
+  return editItems.value.reduce((sum, row) => sum + editRowSubtotal(row), 0)
+})
+const currentDiscountAmount = computed(() => order.value?.discount_amount ?? 0)
+const discountExceedsSubtotal = computed(() => currentDiscountAmount.value > estimatedSubtotal.value)
+const editComputedTotal = computed(
+  () => estimatedSubtotal.value - currentDiscountAmount.value + (editForm.shipping_cost || 0),
+)
+
 const editFinancialChanged = computed(() => {
   if (!order.value) return false
-  return (
-    editForm.subtotal !== (order.value.subtotal ?? 0) ||
-    editForm.shipping_cost !== (order.value.shipping_cost ?? 0)
-  )
+  const shippingChanged = editForm.shipping_cost !== (order.value.shipping_cost ?? 0)
+  return shippingChanged || itemsEditMode.value
 })
-// Alasan wajib hanya kalau order sudah lunas DAN nominal (subtotal/ongkir) diubah.
+// Alasan wajib hanya kalau order sudah lunas DAN nominal (ongkir/item) diubah.
 const editReasonRequired = computed(() => orderIsPaid.value && editFinancialChanged.value)
-const editCanSubmit = computed(() => !editReasonRequired.value || editForm.reason.trim().length >= 10)
+const editCanSubmit = computed(() => {
+  if (itemsEditMode.value && (!editItemsValid.value || discountExceedsSubtotal.value)) return false
+  return !editReasonRequired.value || editForm.reason.trim().length >= 10
+})
+
+function buildEditItemsPayload(): AdminOrderEditItemInput[] {
+  return editItems.value.map((row) => {
+    if (row.id) {
+      return {
+        id: row.id,
+        width_cm: row.widthCm,
+        height_cm: row.heightCm,
+        quantity: row.quantity,
+        unit_price: row.unitPrice,
+        item_notes: row.itemNotes.trim() || undefined,
+      }
+    }
+    return {
+      product_id: row.productId,
+      material_id: row.materialId,
+      width_cm: row.widthCm,
+      height_cm: row.heightCm,
+      quantity: row.quantity,
+      design_source: row.designSource || undefined,
+      design_brief: row.designSource === 'request' ? row.designBrief.trim() || undefined : undefined,
+      item_notes: row.itemNotes.trim() || undefined,
+    }
+  })
+}
 
 async function submitEdit() {
   if (!order.value || !editCanSubmit.value) return
@@ -516,14 +765,17 @@ async function submitEdit() {
       shipping_recipient_phone: editForm.shipping_recipient_phone.trim(),
       shipping_address: editForm.shipping_address.trim(),
       notes: editForm.notes.trim(),
-      subtotal: editForm.subtotal,
       shipping_cost: editForm.shipping_cost,
+    }
+    if (itemsEditMode.value) {
+      body.items = buildEditItemsPayload()
     }
     if (editReasonRequired.value) {
       body.reason = editForm.reason.trim()
     }
     order.value = await orderSvc.adminEditOrder(resi.value, body)
     editOpen.value = false
+    closeItemsEditor()
     showSuccess('Perubahan pesanan tersimpan.')
     await loadDetail()
     await loadAuditLog()
@@ -882,20 +1134,16 @@ function waLink(phone: string): string {
           <p v-else class="text-sm text-ink-500">Belum ada history.</p>
         </div>
 
-        <!-- Detail produk -->
+        <!-- Detail produk (§32 — tabel multi-item) -->
         <div class="rounded-lg border border-hairline bg-canvas p-6">
-          <div class="flex items-center gap-2 mb-3">
-            <PackageIcon class="h-4 w-4 text-ink-500" :stroke-width="1.75" />
-            <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Detail produk</p>
+          <div class="flex items-center justify-between gap-2 mb-3">
+            <div class="flex items-center gap-2">
+              <PackageIcon class="h-4 w-4 text-ink-500" :stroke-width="1.75" />
+              <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Detail produk</p>
+            </div>
+            <span class="text-xs text-ink-500">{{ order.items.length }} item</span>
           </div>
-          <p class="font-serif text-xl font-semibold tracking-tight text-ink-950">{{ order.product_name }}</p>
-          <p class="mt-1 text-sm text-ink-500">
-            {{ order.material_name }}
-            <span class="text-ink-400">·</span>
-            <span class="font-mono text-xs text-ink-700">{{ order.width_cm }} × {{ order.height_cm }} cm</span>
-            <span class="text-ink-400">·</span>
-            {{ order.quantity }} pcs
-          </p>
+          <OrderItemsTable :items="order.items" />
           <p v-if="order.notes" class="mt-3 text-sm text-ink-700 leading-relaxed border-l-2 border-gold-300 pl-3">
             "{{ order.notes }}"
           </p>
@@ -908,10 +1156,6 @@ function waLink(phone: string): string {
             <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Nominal</p>
           </div>
           <dl class="space-y-2 text-sm">
-            <div class="flex justify-between">
-              <dt class="text-ink-500">Harga satuan</dt>
-              <dd class="text-ink-900">{{ fmtIDR(order.unit_price) }}</dd>
-            </div>
             <div class="flex justify-between">
               <dt class="text-ink-500">Subtotal</dt>
               <dd class="text-ink-900">{{ fmtIDR(order.subtotal) }}</dd>
@@ -1020,11 +1264,38 @@ function waLink(phone: string): string {
           <p class="text-sm">
             <span class="uppercase font-medium text-ink-900">{{ order.design_source }}</span>
             <span class="ml-2 text-ink-500 text-xs">
-              {{ order.design_source === 'upload' ? '(customer upload sendiri)' : '(customer minta jasa desain)' }}
+              {{
+                order.design_source === 'upload'
+                  ? '(customer upload sendiri)'
+                  : order.design_source === 'request'
+                    ? '(customer minta jasa desain)'
+                    : '(campuran — beberapa item upload sendiri, sebagian minta jasa desain)'
+              }}
             </span>
           </p>
-          <p v-if="order.design_brief" class="mt-2 text-sm text-ink-700 leading-relaxed border-l-2 border-gold-300 pl-3">
-            "{{ order.design_brief }}"
+          <!-- Per item (§32.5) — sumber desain & brief sekarang menempel di
+               baris item, bukan order. Cuma tampilkan item yang punya brief
+               atau order-nya multi-item (satu item cukup pakai baris di atas). -->
+          <ul v-if="order.items.length > 1" class="mt-3 space-y-2">
+            <li
+              v-for="it in order.items"
+              :key="it.line_no"
+              class="rounded-md border border-hairline bg-canvas-alt/60 px-3 py-2"
+            >
+              <p class="text-xs text-ink-900">
+                <span class="font-medium">{{ it.product_name }}</span>
+                <span class="ml-2 uppercase text-[10px] text-ink-500">{{ it.design_source }}</span>
+              </p>
+              <p v-if="it.design_brief" class="mt-1 text-xs text-ink-700 leading-relaxed border-l-2 border-gold-300 pl-2">
+                "{{ it.design_brief }}"
+              </p>
+            </li>
+          </ul>
+          <p
+            v-else-if="order.items[0]?.design_brief"
+            class="mt-2 text-sm text-ink-700 leading-relaxed border-l-2 border-gold-300 pl-3"
+          >
+            "{{ order.items[0].design_brief }}"
           </p>
 
           <div v-if="designLoading" class="mt-4 text-xs text-ink-500 flex items-center gap-2">
@@ -1302,12 +1573,7 @@ function waLink(phone: string): string {
         :created-at="order.created_at"
         :customer-name="customer?.name ?? '—'"
         :customer-phone="customer?.phone ?? '—'"
-        :product-name="order.product_name"
-        :material-name="order.material_name"
-        :width-cm="order.width_cm"
-        :height-cm="order.height_cm"
-        :quantity="order.quantity"
-        :unit-price="order.unit_price"
+        :items="order.items"
         :subtotal="order.subtotal"
         :shipping-cost="order.shipping_cost"
         :discount-amount="order.discount_amount"
@@ -1424,46 +1690,227 @@ function waLink(phone: string): string {
                   class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
                 />
               </div>
-              <div class="grid grid-cols-2 gap-3">
-                <div>
-                  <label for="edit-subtotal" class="block text-xs font-medium text-ink-700">Subtotal (Rp)</label>
-                  <input
-                    id="edit-subtotal"
-                    v-model.number="editForm.subtotal"
-                    type="number"
-                    min="0"
-                    step="1000"
-                    class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+              <!-- Baris item pesanan (§32.9) -->
+              <div class="rounded-md border border-hairline p-3">
+                <div class="flex items-center justify-between gap-2">
+                  <label class="block text-xs font-medium text-ink-700">Baris item pesanan</label>
+                  <button
+                    v-if="!itemsEditMode"
+                    type="button"
+                    class="text-xs font-medium text-brand-600 hover:text-brand-700 underline underline-offset-2 transition-colors"
+                    @click="openItemsEditor"
                   >
+                    Ubah baris item
+                  </button>
+                  <button
+                    v-else
+                    type="button"
+                    class="text-xs font-medium text-ink-500 hover:text-ink-700 transition-colors"
+                    @click="closeItemsEditor"
+                  >
+                    Batalkan perubahan item
+                  </button>
                 </div>
-                <div>
-                  <label for="edit-shipping-cost" class="block text-xs font-medium text-ink-700">Ongkir (Rp)</label>
-                  <input
-                    id="edit-shipping-cost"
-                    v-model.number="editForm.shipping_cost"
-                    type="number"
-                    min="0"
-                    step="1000"
-                    class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+
+                <!-- Read-only view -->
+                <div v-if="!itemsEditMode" class="mt-2">
+                  <OrderItemsTable :items="order?.items ?? []" />
+                </div>
+
+                <!-- Editor -->
+                <div v-else class="mt-2 space-y-3">
+                  <p v-if="editProductsLoading" class="text-xs text-ink-500">Memuat daftar produk…</p>
+                  <div
+                    v-for="(row, idx) in editItems"
+                    :key="row.key"
+                    class="rounded-md border border-hairline bg-canvas-alt/40 p-3"
                   >
+                    <div class="flex items-center justify-between gap-2">
+                      <p class="text-xs font-medium text-ink-900">
+                        Baris {{ idx + 1 }}
+                        <span
+                          v-if="!row.id"
+                          class="ml-1.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200"
+                        >Baru</span>
+                      </p>
+                      <button
+                        type="button"
+                        :disabled="editItems.length <= 1"
+                        class="rounded p-1 text-ink-500 hover:text-brand-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        aria-label="Hapus baris"
+                        @click="removeEditItemRow(row.key)"
+                      >
+                        <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      </button>
+                    </div>
+
+                    <!-- Baris existing: identitas read-only -->
+                    <template v-if="row.id">
+                      <p class="mt-1.5 text-sm text-ink-900">
+                        {{ row.productName }} <span class="text-ink-500">· {{ row.materialName }}</span>
+                      </p>
+                      <p class="text-[11px] text-ink-400">Ganti produk/bahan? Hapus baris ini, lalu tambah baris baru.</p>
+                    </template>
+
+                    <!-- Baris baru: pemilih produk/bahan -->
+                    <template v-else>
+                      <div class="mt-1.5 grid gap-2 sm:grid-cols-2">
+                        <select
+                          v-model="row.productId"
+                          class="rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                          @change="onEditRowProductChange(row)"
+                        >
+                          <option value="">Pilih produk</option>
+                          <option v-for="p in editProducts" :key="p.id" :value="p.id">{{ p.name }}</option>
+                        </select>
+                        <select
+                          v-model="row.materialId"
+                          :disabled="!row.productDetail || row.loadingDetail"
+                          class="rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
+                          @change="onEditRowMaterialChange(row)"
+                        >
+                          <option value="">{{ row.loadingDetail ? 'Memuat…' : 'Pilih bahan' }}</option>
+                          <option v-for="m in editRowMaterials(row)" :key="m.id" :value="m.id">{{ m.label }}</option>
+                        </select>
+                      </div>
+                    </template>
+
+                    <div class="mt-2 grid grid-cols-3 gap-2">
+                      <input
+                        v-model.number="row.widthCm"
+                        type="number"
+                        min="1"
+                        placeholder="Lebar cm"
+                        :disabled="!row.id && editRowIsPaket(row)"
+                        class="rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
+                        @input="!row.id && scheduleEditRowQuote(row)"
+                      >
+                      <input
+                        v-model.number="row.heightCm"
+                        type="number"
+                        min="1"
+                        placeholder="Tinggi cm"
+                        :disabled="!row.id && editRowIsPaket(row)"
+                        class="rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
+                        @input="!row.id && scheduleEditRowQuote(row)"
+                      >
+                      <input
+                        v-model.number="row.quantity"
+                        type="number"
+                        min="1"
+                        placeholder="Qty"
+                        class="rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                      >
+                    </div>
+
+                    <div v-if="row.id" class="mt-2">
+                      <label class="text-[11px] text-ink-500">Harga satuan (Rp)</label>
+                      <input
+                        v-model.number="row.unitPrice"
+                        type="number"
+                        min="0"
+                        step="1000"
+                        class="mt-0.5 block w-full rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                      >
+                    </div>
+                    <div v-else class="mt-2 text-xs text-ink-500">
+                      <Loader2 v-if="row.quoteLoading" class="inline h-3 w-3 animate-spin align-[-1px]" :stroke-width="1.75" />
+                      <template v-else-if="row.quote">Estimasi {{ fmtIDR(row.quote.total_price) }} / pcs (dihitung ulang backend)</template>
+                      <template v-else>Lengkapi produk, bahan &amp; ukuran untuk estimasi harga</template>
+                      <p v-if="row.quoteError" class="mt-0.5 text-brand-700">{{ row.quoteError }}</p>
+
+                      <div class="mt-2">
+                        <p class="text-[11px] font-medium text-ink-700">Sumber desain</p>
+                        <div class="mt-1 flex gap-3 text-xs text-ink-700">
+                          <label class="flex items-center gap-1.5">
+                            <input v-model="row.designSource" type="radio" value="upload" class="accent-brand-500">
+                            Upload sendiri
+                          </label>
+                          <label class="flex items-center gap-1.5">
+                            <input v-model="row.designSource" type="radio" value="request" class="accent-brand-500">
+                            Minta jasa desain
+                          </label>
+                        </div>
+                        <textarea
+                          v-if="row.designSource === 'request'"
+                          v-model="row.designBrief"
+                          rows="2"
+                          placeholder="Brief singkat"
+                          class="mt-1.5 block w-full rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs text-ink-900 placeholder-ink-400 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                        />
+                      </div>
+                    </div>
+
+                    <input
+                      v-model="row.itemNotes"
+                      type="text"
+                      maxlength="1000"
+                      placeholder="Catatan baris (opsional)"
+                      class="mt-2 block w-full rounded-md border border-hairline bg-canvas px-2.5 py-1.5 text-xs text-ink-900 placeholder-ink-400 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                    >
+
+                    <div class="mt-2 flex justify-between border-t border-hairline pt-2 text-xs">
+                      <span class="text-ink-500">Subtotal baris</span>
+                      <span class="font-medium text-ink-900">{{ fmtIDR(editRowSubtotal(row)) }}</span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    :disabled="editItems.length >= MAX_EDIT_ITEMS"
+                    class="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-canvas-alt hover:border-ink-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    @click="addEditItemRow"
+                  >
+                    <Plus class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    Tambah baris ({{ editItems.length }}/{{ MAX_EDIT_ITEMS }})
+                  </button>
                 </div>
               </div>
 
+              <div>
+                <label for="edit-shipping-cost" class="block text-xs font-medium text-ink-700">Ongkir (Rp)</label>
+                <input
+                  id="edit-shipping-cost"
+                  v-model.number="editForm.shipping_cost"
+                  type="number"
+                  min="0"
+                  step="1000"
+                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                >
+              </div>
+
               <div class="rounded-md border border-hairline bg-canvas-alt/60 px-3 py-2.5">
-                <div class="flex items-center justify-between">
-                  <p class="text-xs font-medium text-ink-700">Total (dihitung otomatis)</p>
-                  <p class="font-serif text-base font-semibold text-ink-950">{{ fmtIDR(editComputedTotal) }}</p>
-                </div>
-                <p class="mt-0.5 text-[11px] text-ink-400 leading-relaxed">
-                  Subtotal + ongkir. Total tidak bisa diketik langsung — ubah salah satu angka di atas.
+                <dl class="space-y-1 text-xs">
+                  <div class="flex justify-between">
+                    <dt class="text-ink-500">Subtotal{{ itemsEditMode ? ' (perkiraan)' : '' }}</dt>
+                    <dd class="text-ink-900">{{ fmtIDR(estimatedSubtotal) }}</dd>
+                  </div>
+                  <div v-if="currentDiscountAmount > 0" class="flex justify-between">
+                    <dt class="text-ink-500">Diskon</dt>
+                    <dd class="text-ink-900">-{{ fmtIDR(currentDiscountAmount) }}</dd>
+                  </div>
+                  <div class="flex justify-between border-t border-hairline pt-1 mt-1">
+                    <dt class="font-medium text-ink-700">Total (perkiraan)</dt>
+                    <dd class="font-serif text-base font-semibold text-ink-950">{{ fmtIDR(editComputedTotal) }}</dd>
+                  </div>
+                </dl>
+                <p class="mt-1.5 text-[11px] text-ink-400 leading-relaxed">
+                  Angka final dihitung ulang backend setelah disimpan — ini cuma bantuan pratinjau.
                 </p>
               </div>
+
+              <p v-if="itemsEditMode && discountExceedsSubtotal" class="flex items-start gap-2 rounded-md border border-brand-200 bg-brand-50 p-3 text-xs text-brand-800 leading-relaxed">
+                <AlertTriangle class="h-3.5 w-3.5 flex-none mt-0.5" :stroke-width="1.75" />
+                Potongan diskon ({{ fmtIDR(currentDiscountAmount) }}) jadi melebihi nilai barang hasil edit ini
+                ({{ fmtIDR(estimatedSubtotal) }}). Kurangi jumlah baris yang dihapus atau naikkan harga/qty
+                sebelum menyimpan.
+              </p>
 
               <div v-if="editReasonRequired" class="rounded-md border border-brand-200 bg-brand-50 p-3">
                 <p class="flex items-start gap-2 text-xs text-brand-800 leading-relaxed">
                   <AlertTriangle class="h-3.5 w-3.5 flex-none mt-0.5" :stroke-width="1.75" />
                   Pesanan ini sudah berstatus <strong>{{ statusLabel(order?.status ?? '') }}</strong> — invoice mungkin
-                  sudah terkirim ke pelanggan. Mengubah subtotal/ongkir di sini TIDAK mengirim invoice baru, jadi bisa
+                  sudah terkirim ke pelanggan. Mengubah ongkir/item di sini TIDAK mengirim invoice baru, jadi bisa
                   jadi tidak cocok lagi dengan yang diterima pelanggan. Jelaskan alasannya di bawah.
                 </p>
                 <label for="edit-reason" class="mt-2 block text-xs font-medium text-brand-800">

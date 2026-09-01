@@ -123,16 +123,20 @@ func Render(company CompanyInfo, meta Meta, order *orderapi.OrderInvoiceView, cu
 	pdf.CellFormat(30, 8, "Harga", "1", 0, "R", true, 0, "")
 	pdf.CellFormat(30, 8, "Subtotal", "1", 1, "R", true, 0, "")
 
+	// §32.7 — satu baris per item (order boleh multi-produk sejak §32);
+	// baris diskon TETAP satu baris agregat di bagian total di bawah, bukan
+	// dipecah per item di sini.
 	pdf.SetFont("Helvetica", "", 9)
-	desc := fmt.Sprintf("%s\nBahan: %s", order.ProductName, order.MaterialName)
-	// Cell w/ multi-line via MultiCell trick: pakai simple single-line MVP.
-	pdf.CellFormat(80, 6, order.ProductName+" ("+order.MaterialName+")", "1", 0, "L", false, 0, "")
-	sizeStr := fmt.Sprintf("%dx%d cm", order.WidthCm, order.HeightCm)
-	pdf.CellFormat(25, 6, sizeStr, "1", 0, "C", false, 0, "")
-	pdf.CellFormat(15, 6, fmt.Sprintf("%d", order.Quantity), "1", 0, "C", false, 0, "")
-	pdf.CellFormat(30, 6, "Rp "+formatIDR(order.UnitPrice), "1", 0, "R", false, 0, "")
-	pdf.CellFormat(30, 6, "Rp "+formatIDR(order.Subtotal), "1", 1, "R", false, 0, "")
-	_ = desc // reserved for future multi-line renderer
+	for i := range order.Items {
+		it := &order.Items[i]
+		// Cell w/ multi-line via MultiCell trick: pakai simple single-line MVP.
+		pdf.CellFormat(80, 6, it.ProductName+" ("+it.MaterialName+")", "1", 0, "L", false, 0, "")
+		sizeStr := fmt.Sprintf("%dx%d cm", it.WidthCm, it.HeightCm)
+		pdf.CellFormat(25, 6, sizeStr, "1", 0, "C", false, 0, "")
+		pdf.CellFormat(15, 6, fmt.Sprintf("%d", it.Quantity), "1", 0, "C", false, 0, "")
+		pdf.CellFormat(30, 6, "Rp "+formatIDR(it.UnitPrice), "1", 0, "R", false, 0, "")
+		pdf.CellFormat(30, 6, "Rp "+formatIDR(it.Subtotal), "1", 1, "R", false, 0, "")
+	}
 
 	// --- Totals block (right-aligned) ---
 	pdf.Ln(2)

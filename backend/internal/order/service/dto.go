@@ -7,6 +7,19 @@ import (
 	"github.com/rajaku-printing/backend/internal/order/model"
 )
 
+// CreateOnlineOrderItemInput — satu baris produk untuk CreateOnlineOrderInput
+// (§32). DesignSource/DesignBrief sekarang PER ITEM (§32.5).
+type CreateOnlineOrderItemInput struct {
+	ProductID  uuid.UUID
+	MaterialID uuid.UUID
+	WidthCm    int
+	HeightCm   int
+	Quantity   int
+
+	DesignSource model.DesignSource
+	DesignBrief  string // untuk request
+}
+
 // CreateOnlineOrderInput is what handler passes to service.
 // Salah satu dari CustomerID (kalau caller sudah login) ATAU (GuestPhone + GuestName)
 // wajib terisi — service akan resolve identity dari mana pun yg tersedia.
@@ -16,12 +29,8 @@ type CreateOnlineOrderInput struct {
 	GuestPhone string     // raw, di-normalize di service
 	GuestName  string
 
-	// Product / spec:
-	ProductID  uuid.UUID
-	MaterialID uuid.UUID
-	WidthCm    int
-	HeightCm   int
-	Quantity   int
+	// Items — 1..20 baris produk (§32.4, ErrNoItems/ErrTooManyItems).
+	Items []CreateOnlineOrderItemInput
 
 	// Fulfillment:
 	MetodeAmbil            model.MetodeAmbil
@@ -29,12 +38,38 @@ type CreateOnlineOrderInput struct {
 	ShippingRecipientName  string // wajib kalau kirim
 	ShippingRecipientPhone string // wajib kalau kirim (di-normalize)
 
-	// Design flow (section 6):
-	DesignSource model.DesignSource
-	DesignBrief  string // untuk request
-
 	// Meta:
 	Notes string
+}
+
+// PublicTrackingResultItem — satu baris produk (§32) yang boleh dilihat
+// pelanggan yang melacak resinya (endpoint TANPA login, §5). Sengaja
+// TIDAK memuat unit_price/subtotal/discount_amount apa pun — endpoint ini
+// tidak pernah mengekspos uang, dan itu tetap harus benar sekarang order
+// boleh multi-item (sebelumnya hanya PublicTrackingResult.ProductName/
+// MaterialName datar, yang membuat pesanan 2 banner terlihat seperti 1
+// banner bagi pelanggan yang melacaknya).
+type PublicTrackingResultItem struct {
+	// ID + DesignSource ada di sini SEMATA supaya tamu terverifikasi (token
+	// scope=guest_order dari POST /lacak/:resi/verify) bisa mengunggah
+	// desain untuk baris yang BENAR — POST /orders/:resi/design-files
+	// mewajibkan order_item_id sejak §32.5, sementara GET /orders/:resi
+	// memakai RequireAuth penuh sehingga token tamu tidak bisa mengambil
+	// detail order untuk mencari id itemnya. Tanpa kedua field ini, satu-
+	// satunya jalan adalah mematikan unggah mandiri tamu — kemampuan yang
+	// disengaja ada (lihat doc RegisterRoutes di modul design).
+	//
+	// Aman diekspos tanpa login: id hanya berguna lewat endpoint unggah yang
+	// TETAP memeriksa kepemilikan (id.UserID == order.CustomerID), dan
+	// pemanggil sudah harus tahu resinya untuk sampai ke sini. Tidak ada
+	// nominal uang yang ikut — batas §5 tidak bergeser.
+	ID           string `json:"id"`
+	ProductName  string `json:"product_name"`
+	MaterialName string `json:"material_name"`
+	WidthCm      int    `json:"width_cm"`
+	HeightCm     int    `json:"height_cm"`
+	Quantity     int    `json:"quantity"`
+	DesignSource string `json:"design_source"`
 }
 
 // PublicTrackingResult — data yg boleh dilihat siapa saja (sensor field
@@ -49,9 +84,12 @@ type PublicTrackingResult struct {
 	// ('request') untuk menentukan aksi unggah mana yang boleh ditawarkan ke
 	// guest terverifikasi. Bukan data sensitif: tidak memuat identitas,
 	// alamat, maupun nominal.
-	DesignSource          string                           `json:"design_source"`
-	ProductName           string                           `json:"product_name"`
-	MaterialName          string                           `json:"material_name"`
+	DesignSource string `json:"design_source"`
+	// Items — daftar SEMUA baris produk order ini (§32), terurut line_no ASC
+	// — GANTI ProductName/MaterialName datar yang lama (yang cuma menampilkan
+	// baris pertama). Lihat PublicTrackingResultItem doc soal batas apa yang
+	// boleh diekspos di sini.
+	Items                 []PublicTrackingResultItem       `json:"items"`
 	ShippingRecipient     string                           `json:"shipping_recipient,omitempty"` // "Ani T***" (masked)
 	ShippingPhoneMasked   string                           `json:"shipping_phone,omitempty"`     // "0812****678"
 	ShippingAddressMasked string                           `json:"shipping_address,omitempty"`   // "Jl. Merdek**"

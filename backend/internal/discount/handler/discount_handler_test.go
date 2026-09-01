@@ -82,6 +82,37 @@ func TestApplicable_InvalidCustomerID_Returns400(t *testing.T) {
 	}
 }
 
+// TestApplicable_NoItemsSent_Returns400 — temuan review §32.3 #5: tanpa
+// product_id/item_subtotal dikirim sama sekali, "jumlah cocok" (0 == 0) lolos
+// begitu saja dan mengembalikan 200 dengan daftar diskon kosong — kasir
+// membacanya sebagai "memang tidak ada promo" padahal permintaannya yang
+// salah bentuk. Harus ditolak 400 sama seperti mismatch jumlah di atas.
+func TestApplicable_NoItemsSent_Returns400(t *testing.T) {
+	h := New(nil)
+	c, rec := newTestContext(http.MethodGet,
+		"/admin/discounts/applicable?channel=pos", nil)
+	h.Applicable(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Applicable() status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestApplicable_ItemSubtotalCountMismatch_Returns400 — §32.3: product_id
+// dan item_subtotal WAJIB dikirim berpasangan (jumlah sama persis) supaya
+// eligible_subtotal per baris keranjang bisa dihitung; jumlah yang tidak
+// cocok ditolak 400, bukan diam-diam dipotong/diisi nol.
+func TestApplicable_ItemSubtotalCountMismatch_Returns400(t *testing.T) {
+	h := New(nil)
+	c, rec := newTestContext(http.MethodGet,
+		"/admin/discounts/applicable?channel=pos&product_id="+uuid.New().String(), nil)
+	h.Applicable(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("Applicable() status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
 // TestCreate_CustomerIDsTooMany_Returns400 — §30.3 mirror
 // TestCreate_ProductIDsTooMany_Returns400.
 func TestCreate_CustomerIDsTooMany_Returns400(t *testing.T) {

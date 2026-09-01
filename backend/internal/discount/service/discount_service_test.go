@@ -591,7 +591,7 @@ func TestApplicable_EmptyScope_FilteredOut_EvenWithoutProductID(t *testing.T) {
 		productIDsResult: map[uuid.UUID][]uuid.UUID{}, // cakupan kosong
 	}
 	svc := New(store)
-	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil, uuid.Nil)
+	views, err := svc.Applicable(context.Background(), "pos", singleItem(100_000, uuid.New()), uuid.Nil)
 	if err != nil {
 		t.Fatalf("Applicable() error = %v, want nil", err)
 	}
@@ -600,11 +600,13 @@ func TestApplicable_EmptyScope_FilteredOut_EvenWithoutProductID(t *testing.T) {
 	}
 }
 
-// TestApplicable_SelectedNonEmptyScope_ShownWhenProductIDOmitted — regresi:
-// diskon applies_to="selected" dengan cakupan TIDAK kosong tetap tampil
-// kalau caller tidak memfilter berdasarkan produk tertentu (product_id
-// tidak dikirim, uuid.Nil) — perilaku lama yang harus tetap dipertahankan.
-func TestApplicable_SelectedNonEmptyScope_ShownWhenProductIDOmitted(t *testing.T) {
+// TestApplicable_SelectedNonEmptyScope_ShownWhenItemMatches — diskon
+// applies_to="selected" dengan cakupan TIDAK kosong tampil kalau keranjang
+// kasir mengandung item yang product_id-nya ADA di cakupan itu. (Sejak
+// kontrak Applicable berubah ke daftar item — §32.3/temuan review #4 — tidak
+// ada lagi konsep "product_id tidak dikirim sama sekali"; setiap baris
+// keranjang selalu punya product_id.)
+func TestApplicable_SelectedNonEmptyScope_ShownWhenItemMatches(t *testing.T) {
 	id := uuid.New()
 	scopedProductID := uuid.New()
 	store := &fakeDiscountStore{
@@ -617,12 +619,12 @@ func TestApplicable_SelectedNonEmptyScope_ShownWhenProductIDOmitted(t *testing.T
 		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {scopedProductID}},
 	}
 	svc := New(store)
-	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil, uuid.Nil)
+	views, err := svc.Applicable(context.Background(), "pos", singleItem(100_000, scopedProductID), uuid.Nil)
 	if err != nil {
 		t.Fatalf("Applicable() error = %v, want nil", err)
 	}
 	if len(views) != 1 {
-		t.Fatalf("Applicable() = %+v, want 1 item (selected discount w/ non-empty scope shown when product_id omitted)", views)
+		t.Fatalf("Applicable() = %+v, want 1 item (selected discount w/ non-empty scope, item matches)", views)
 	}
 }
 
@@ -644,12 +646,45 @@ func TestApplicable_ProductIDGiven_FiltersOutOfScopeDiscount(t *testing.T) {
 		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {scopedProductID}},
 	}
 	svc := New(store)
-	views, err := svc.Applicable(context.Background(), "pos", 100_000, requestedProductID, uuid.Nil)
+	views, err := svc.Applicable(context.Background(), "pos", singleItem(100_000, requestedProductID), uuid.Nil)
 	if err != nil {
 		t.Fatalf("Applicable() error = %v, want nil", err)
 	}
 	if len(views) != 0 {
 		t.Fatalf("Applicable() = %+v, want empty (produk yang diminta tidak ada di cakupan)", views)
+	}
+}
+
+// TestApplicable_MixedCart_SelectedScope_MinSubtotalBasedOnEligibleOnly is
+// the §32.3 regression guard for the exact bug report: promo "khusus flexi,
+// min Rp200rb" pada keranjang [flexi Rp10rb, vinyl Rp500rb] TIDAK BOLEH
+// muncul di kasir — subtotal SELURUH keranjang (510rb) lolos syarat minimum,
+// tapi eligible_subtotal (cuma flexi, 10rb) TIDAK.
+func TestApplicable_MixedCart_SelectedScope_MinSubtotalBasedOnEligibleOnly(t *testing.T) {
+	id := uuid.New()
+	flexiID := uuid.New()
+	vinylID := uuid.New()
+	store := &fakeDiscountStore{
+		activeResult: []model.Discount{{
+			ID: id, Code: "FLEXI20", Name: "Diskon Flexi",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(20),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo:   model.AppliesToSelected,
+			MinSubtotal: 200_000,
+		}},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {flexiID}},
+	}
+	svc := New(store)
+	items := []discountapi.ResolveItem{
+		{LineNo: 1, ProductID: flexiID, Subtotal: 10_000},
+		{LineNo: 2, ProductID: vinylID, Subtotal: 500_000},
+	}
+	views, err := svc.Applicable(context.Background(), "pos", items, uuid.Nil)
+	if err != nil {
+		t.Fatalf("Applicable() error = %v, want nil", err)
+	}
+	if len(views) != 0 {
+		t.Fatalf("Applicable() = %+v, want empty (eligible_subtotal 10000 < min 200000, even though cart total is 510000)", views)
 	}
 }
 
@@ -669,7 +704,7 @@ func TestApplicable_QuotaExhausted_FilteredOut(t *testing.T) {
 		usageMap: map[uuid.UUID]int64{id: 5},
 	}
 	svc := New(store)
-	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil, uuid.Nil)
+	views, err := svc.Applicable(context.Background(), "pos", singleItem(100_000, uuid.New()), uuid.Nil)
 	if err != nil {
 		t.Fatalf("Applicable() error = %v, want nil", err)
 	}
@@ -903,7 +938,7 @@ func TestApplicable_Member_NoCustomerID_FilteredOutByDefault(t *testing.T) {
 		}},
 	}
 	svc := New(store)
-	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil, uuid.Nil)
+	views, err := svc.Applicable(context.Background(), "pos", singleItem(100_000, uuid.New()), uuid.Nil)
 	if err != nil {
 		t.Fatalf("Applicable() error = %v, want nil", err)
 	}
@@ -929,7 +964,7 @@ func TestApplicable_Member_CustomerIDGiven_ActiveMember_Shown(t *testing.T) {
 	svc := New(store)
 	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
 	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: true})
-	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil, customerID)
+	views, err := svc.Applicable(context.Background(), "pos", singleItem(100_000, uuid.New()), customerID)
 	if err != nil {
 		t.Fatalf("Applicable() error = %v, want nil", err)
 	}
@@ -955,7 +990,7 @@ func TestApplicable_Member_CustomerIDGiven_NotActiveMember_FilteredOut(t *testin
 	svc := New(store)
 	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
 	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: false})
-	views, err := svc.Applicable(context.Background(), "pos", 100_000, uuid.Nil, customerID)
+	views, err := svc.Applicable(context.Background(), "pos", singleItem(100_000, uuid.New()), customerID)
 	if err != nil {
 		t.Fatalf("Applicable() error = %v, want nil", err)
 	}

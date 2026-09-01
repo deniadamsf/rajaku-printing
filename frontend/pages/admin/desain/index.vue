@@ -13,7 +13,7 @@
  * Backend /admin/orders tidak filter design_source, jadi filter client-side
  * setelah fetch dengan status filter. Volume order-per-status kecil, aman.
  */
-import type { Order } from '~/types/order'
+import { orderPrimaryProductLabel, type Order } from '~/types/order'
 import type { DataTableColumn } from '~/components/admin/DataTable.vue'
 import { ApiError } from '~/composables/useApi'
 import { FileCheck2, Palette, Hourglass } from '@lucide/vue'
@@ -34,8 +34,12 @@ interface Stage {
   hint: string
   /** Backend status(es) untuk fetch. */
   statuses: Array<'dibayar' | 'desain_dikerjakan' | 'menunggu_approval_desain'>
-  /** Filter client-side by design_source. Kosong = tidak filter. */
-  designSource: 'upload' | 'request' | ''
+  /**
+   * Filter client-side by order.design_source (§32.5.2 — bisa 'mixed' di
+   * order banyak-item yang barisnya campur upload+request). Array kosong =
+   * tidak filter (semua design_source tampil).
+   */
+  designSources: Array<'upload' | 'request' | 'mixed'>
 }
 
 const stages: Stage[] = [
@@ -45,15 +49,19 @@ const stages: Stage[] = [
     icon: FileCheck2,
     hint: 'Customer sudah upload file siap-cetak. Cek isi file & tandai verified untuk lanjut proses cetak.',
     statuses: ['dibayar'],
-    designSource: 'upload',
+    // Bukan 'mixed' — StaffVerifyUpload (aksi seluruh order, §32.6) menolak
+    // kalau ADA SATU SAJA item yang design_source-nya 'request'.
+    designSources: ['upload'],
   },
   {
     key: 'work',
     label: 'Kerjakan Request',
     icon: Palette,
-    hint: 'Customer minta jasa desain. Cek brief + aset lalu upload draft untuk approval.',
+    hint: 'Customer minta jasa desain. Cek brief + aset lalu upload draft per baris untuk approval.',
     statuses: ['dibayar', 'desain_dikerjakan'],
-    designSource: 'request',
+    // 'mixed' IKUT di sini — order campuran tetap butuh staff mengerjakan
+    // baris 'request'-nya, walau sebagian barisnya sudah 'upload' siap cetak.
+    designSources: ['request', 'mixed'],
   },
   {
     key: 'wait',
@@ -61,7 +69,7 @@ const stages: Stage[] = [
     icon: Hourglass,
     hint: 'Draft sudah dikirim ke customer. Follow up manual kalau lama tidak ada respon.',
     statuses: ['menunggu_approval_desain'],
-    designSource: '',
+    designSources: [],
   },
 ]
 
@@ -81,8 +89,9 @@ async function fetchList() {
     const combined = all.flatMap((p) => p.items)
 
     // Filter design_source client-side kalau stage specify.
-    const filtered = active.value.designSource
-      ? combined.filter((o) => o.design_source === active.value.designSource)
+    const sources = active.value.designSources
+    const filtered = sources.length
+      ? combined.filter((o) => sources.includes(o.design_source as 'upload' | 'request' | 'mixed'))
       : combined
 
     // Dedupe by id (paranoia — shouldn't happen since status unik per order).
@@ -94,6 +103,18 @@ async function fetchList() {
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * Ringkasan design_source yang jujur untuk order campuran (§32.5.2) — jangan
+ * tampilkan satu label 'upload'/'request' untuk order 'mixed', itu
+ * menyembunyikan bahwa ada baris lain yang butuh alur berbeda.
+ */
+function designSourceSummary(o: Order): string {
+  if (o.design_source !== 'mixed') return o.design_source
+  const uploadCount = o.items.filter((it) => it.design_source === 'upload').length
+  const requestCount = o.items.filter((it) => it.design_source === 'request').length
+  return `${uploadCount} upload · ${requestCount} request`
 }
 
 onMounted(fetchList)
@@ -176,13 +197,14 @@ function fmtDate(s: string): string {
         </NuxtLink>
       </template>
       <template #cell-product="{ row }">
-        <p class="text-sm text-ink-900">{{ (row as Order).product_name }}</p>
-        <p class="text-xs text-ink-500">
-          {{ (row as Order).width_cm }}×{{ (row as Order).height_cm }}cm · {{ (row as Order).material_name }} · {{ (row as Order).quantity }} pcs
+        <p class="text-sm text-ink-900">{{ orderPrimaryProductLabel(row as Order) }}</p>
+        <p v-if="(row as Order).items[0]" class="text-xs text-ink-500">
+          {{ (row as Order).items[0].width_cm }}×{{ (row as Order).items[0].height_cm }}cm
+          · {{ (row as Order).items[0].material_name }} · {{ (row as Order).items[0].quantity }} pcs
         </p>
       </template>
       <template #cell-design_source="{ row }">
-        <span class="text-xs uppercase text-ink-600">{{ (row as Order).design_source }}</span>
+        <span class="text-xs uppercase text-ink-600">{{ designSourceSummary(row as Order) }}</span>
       </template>
       <template #cell-action="{ row }">
         <NuxtLink

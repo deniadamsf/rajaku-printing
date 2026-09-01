@@ -28,6 +28,7 @@ import {
   XCircle,
 } from '@lucide/vue'
 import { ApiError } from '~/composables/useApi'
+import { business } from '~/utils/business'
 import type { PublicTracking } from '~/types/tracking'
 import type { DesignFile } from '~/types/design'
 import type { PaymentProofCustomer } from '~/types/payment'
@@ -94,25 +95,74 @@ async function submitGuestVerify() {
   if (ok) guestPhone.value = ''
 }
 
-// Aturan gating HARUS sama persis dengan backend (design_service.go
-// UploadCustomerFile), kalau tidak kartu tampil tapi upload ditolak 400:
-//   design_source 'upload'  → hanya status 'dibayar'
-//   design_source 'request' → 'dibayar' / 'desain_dikerjakan' / 'menunggu_approval_desain'
-// Sama dengan `customerUploadKind` di /akun/pesanan/[resi].vue.
-const guestUploadKind = computed<'upload' | 'request' | null>(() => {
-  if (!guestSession.isVerified.value || !data.value) return null
-  const d = data.value
-  if (d.design_source === 'upload' && d.status === 'dibayar') return 'upload'
-  if (
-    d.design_source === 'request' &&
-    ['dibayar', 'desain_dikerjakan', 'menunggu_approval_desain'].includes(d.status)
-  ) {
-    return 'request'
-  }
-  return null
-})
+interface GuestUploadableItem {
+  id: string
+  kind: 'upload' | 'request'
+  label: string
+}
 
-const canUploadGuestDesign = computed(() => guestUploadKind.value !== null)
+/**
+ * Baris item yang boleh diunggahi tamu terverifikasi — pola SAMA dengan
+ * /akun/pesanan/[resi].vue (§32.5, guard identik design_service.go
+ * `UploadCustomerFile`), kalau tidak kartu tampil tapi upload ditolak 400:
+ *   design_source 'upload'  → hanya status order 'dibayar' (file siap cetak)
+ *   design_source 'request' → 'dibayar' / 'desain_dikerjakan' /
+ *                              'menunggu_approval_desain' (aset/logo untuk
+ *                              bahan kerja staf desain, §6)
+ * Backend MENURUNKAN role file (customer_upload vs customer_asset) dari
+ * `order_items.design_source` milik `order_item_id` yang dikirim — tidak
+ * ada field tambahan yang perlu dikirim dari sini untuk membedakan keduanya.
+ *
+ * Label tiap opsi SENGAJA menyebut eksplisit apa yang diminta (berkas siap
+ * cetak vs aset/logo) — halaman TANPA LOGIN ini dipakai orang awam, jangan
+ * dibiarkan menebak file apa yang harus dikirim untuk baris yang mana.
+ */
+const guestUploadableItems = computed<GuestUploadableItem[]>(() => {
+  if (!guestSession.isVerified.value || !data.value) return []
+  const d = data.value
+  const out: GuestUploadableItem[] = []
+  for (const it of d.items) {
+    const size = `${it.material_name} · ${it.width_cm}×${it.height_cm}cm`
+    if (it.design_source === 'upload' && d.status === 'dibayar') {
+      out.push({ id: it.id, kind: 'upload', label: `${it.product_name} (${size}) — kirim file desain siap cetak` })
+    } else if (
+      it.design_source === 'request' &&
+      ['dibayar', 'desain_dikerjakan', 'menunggu_approval_desain'].includes(d.status)
+    ) {
+      out.push({ id: it.id, kind: 'request', label: `${it.product_name} (${size}) — kirim logo/foto (aset desain)` })
+    }
+  }
+  return out
+})
+const canUploadGuestDesign = computed(() => guestUploadableItems.value.length > 0)
+
+/**
+ * Baris yang sedang dipilih untuk diupload. Auto-pilih satu-satunya baris
+ * yang memenuhi syarat supaya order lama (1 item) tetap terasa sederhana —
+ * tamu TIDAK dipaksa memilih dari daftar kalau memang cuma ada 1 opsi.
+ */
+const guestUploadSelectedItemId = ref('')
+watch(
+  guestUploadableItems,
+  (items) => {
+    if (items.length === 1) {
+      guestUploadSelectedItemId.value = items[0].id
+    } else if (!items.some((it) => it.id === guestUploadSelectedItemId.value)) {
+      guestUploadSelectedItemId.value = ''
+    }
+  },
+  { immediate: true },
+)
+const selectedGuestUploadItem = computed(
+  () => guestUploadableItems.value.find((it) => it.id === guestUploadSelectedItemId.value) ?? null,
+)
+
+// CTA WhatsApp pelengkap (bukan pengganti form upload) — buat tamu yang
+// lebih nyaman kirim lewat chat.
+const guestDesignWaLink = computed(() => {
+  const text = encodeURIComponent(`Halo, saya mau kirim file desain untuk pesanan ${resi.value}.`)
+  return `https://wa.me/${business.whatsapp}?text=${text}`
+})
 
 const guestDesignFiles = ref<DesignFile[]>([])
 const loadingGuestDesignFiles = ref(false)
@@ -146,6 +196,16 @@ watch(
 const guestUploadedFiles = computed(() =>
   guestDesignFiles.value.filter((f) => f.role === 'customer_upload' || f.role === 'customer_asset'),
 )
+
+/**
+ * Label banner pemilik sebuah file — cuma ditampilkan untuk order >1 item
+ * (order 1 item sudah jelas dari konteks, label cuma menambah noise).
+ */
+function guestFileItemLabel(f: DesignFile): string | null {
+  if (!data.value || data.value.items.length <= 1) return null
+  const it = data.value.items.find((x) => x.id === f.order_item_id)
+  return it ? it.product_name : null
+}
 
 function guestLogout() {
   guestSession.logout()
@@ -276,6 +336,10 @@ function validateGuestDesignFile(file: File): string | null {
 async function submitGuestDesign() {
   guestDesignError.value = null
   guestDesignSuccess.value = null
+  if (!guestUploadSelectedItemId.value) {
+    guestDesignError.value = 'Pilih banner yang mau diupload filenya dulu.'
+    return
+  }
   if (!guestDesignFile.value) {
     guestDesignError.value = 'Pilih file desain dulu.'
     return
@@ -289,6 +353,7 @@ async function submitGuestDesign() {
   try {
     await guestDesignApi.uploadCustomerFile(
       resi.value,
+      guestUploadSelectedItemId.value,
       guestDesignFile.value,
       guestDesignNotes.value.trim() || undefined,
     )
@@ -296,8 +361,8 @@ async function submitGuestDesign() {
     guestDesignFile.value = null
     guestDesignNotes.value = ''
     if (guestDesignFileInput.value) guestDesignFileInput.value.value = ''
-    // Upload aset pertama bisa meng-advance status order di backend — reload
-    // timeline + daftar file supaya UI sinkron.
+    // Upload bisa meng-advance status order di backend — reload timeline +
+    // daftar file supaya UI sinkron.
     await Promise.all([load(), loadGuestDesignFiles()])
   } catch (e) {
     guestDesignError.value = e instanceof ApiError ? e.message : 'Gagal upload file desain'
@@ -522,10 +587,25 @@ async function copyResi() {
         <div class="mt-6 grid gap-4 sm:grid-cols-2 text-sm">
           <div class="flex items-start gap-2">
             <Package class="h-4 w-4 text-ink-500 mt-0.5" :stroke-width="1.75" />
-            <div>
-              <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Produk</p>
-              <p class="mt-0.5 text-ink-900">{{ data.product_name }}</p>
-              <p class="text-xs text-ink-500">Bahan: {{ data.material_name }}</p>
+            <div class="min-w-0 flex-1">
+              <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
+                Produk <span v-if="data.items.length > 1">({{ data.items.length }} banner)</span>
+              </p>
+              <!-- §32 Order Multi-Item — semua baris ditampilkan, BUKAN cuma yang
+                   pertama. Sengaja tanpa harga apa pun (§5: endpoint publik ini
+                   tidak pernah mengekspos uang). -->
+              <ul class="mt-0.5 space-y-1.5">
+                <li v-for="(it, idx) in data.items" :key="idx">
+                  <p class="text-ink-900">{{ it.product_name }}</p>
+                  <p class="text-xs text-ink-500">
+                    Bahan: {{ it.material_name }}
+                    <span class="text-ink-400">·</span>
+                    <span class="font-mono">{{ it.width_cm }}×{{ it.height_cm }}cm</span>
+                    <span class="text-ink-400">·</span>
+                    {{ it.quantity }} pcs
+                  </p>
+                </li>
+              </ul>
             </div>
           </div>
           <div class="flex items-start gap-2">
@@ -895,7 +975,7 @@ v-if="data.metode_ambil === 'kirim' && (data.shipping_address || data.shipping_p
           </ul>
         </div>
 
-        <!-- Upload desain -->
+        <!-- Upload desain (per item, §32.5 — mencakup baris 'upload' & 'request') -->
         <div
           v-if="canUploadGuestDesign"
           class="rounded-lg border-2 border-gold-400 bg-gold-50/50 p-6"
@@ -904,17 +984,44 @@ v-if="data.metode_ambil === 'kirim' && (data.shipping_address || data.shipping_p
             <Upload class="h-5 w-5 text-gold-700 flex-none mt-0.5" :stroke-width="1.75" />
             <div class="flex-1">
               <h2 class="font-serif text-lg font-semibold text-ink-950">
-                {{ guestUploadKind === 'upload' ? 'Upload desain siap cetak' : 'Upload aset desain (logo / foto)' }}
+                {{ selectedGuestUploadItem?.kind === 'request' ? 'Upload aset desain (logo / foto)' : 'Upload desain siap cetak' }}
               </h2>
               <p class="mt-1 text-sm text-ink-700 leading-relaxed">
-                <template v-if="guestUploadKind === 'upload'">
-                  Upload file desain final Anda. Format yang diterima: JPG, PNG, WebP, PDF, CDR, AI — maksimal
-                  {{ DESIGN_MAX_UPLOAD_MB }} MB. Tim kami akan memverifikasi file sebelum masuk proses cetak.
+                <template v-if="selectedGuestUploadItem?.kind === 'request'">
+                  Upload logo/foto yang ingin dipakai desainer untuk mengerjakan draft Anda. Boleh upload lebih
+                  dari satu file — cukup ulangi proses ini satu per satu.
                 </template>
                 <template v-else>
-                  Upload logo/foto yang ingin dipakai desainer untuk mengerjakan draft Anda. Boleh upload lebih
-                  dari satu file — cukup ulangi proses ini satu per satu. Maksimal {{ DESIGN_MAX_UPLOAD_MB }} MB per file.
+                  Upload file desain final Anda (JPG, PNG, WebP, PDF, CDR, AI). Tim kami akan memverifikasi file
+                  sebelum masuk proses cetak.
                 </template>
+              </p>
+
+              <!-- Pemilih baris — HANYA muncul kalau ada >1 item yang boleh
+                   diupload. Order 1 item tetap sederhana: langsung ke form.
+                   Label tiap opsi eksplisit menyebut apa yang diminta
+                   (berkas siap cetak vs aset/logo) — halaman tanpa login ini
+                   tidak boleh membiarkan tamu menebak. -->
+              <div v-if="guestUploadableItems.length > 1" class="mt-4">
+                <p class="text-sm font-medium text-ink-900">Pilih banner yang mau diupload filenya</p>
+                <div class="mt-1.5 space-y-1.5">
+                  <label
+                    v-for="it in guestUploadableItems"
+                    :key="it.id"
+                    :class="[
+                      'flex cursor-pointer items-center gap-2 rounded-md border p-2.5 text-sm transition-colors',
+                      guestUploadSelectedItemId === it.id
+                        ? 'border-brand-500 bg-brand-50/50 text-ink-950'
+                        : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                    ]"
+                  >
+                    <input v-model="guestUploadSelectedItemId" type="radio" :value="it.id" class="accent-brand-500">
+                    <span>{{ it.label }}</span>
+                  </label>
+                </div>
+              </div>
+              <p v-else-if="guestUploadableItems.length === 1" class="mt-2 text-xs text-ink-500">
+                {{ guestUploadableItems[0].label }}
               </p>
 
               <form class="mt-4 space-y-3" @submit.prevent="submitGuestDesign">
@@ -944,7 +1051,7 @@ v-if="data.metode_ambil === 'kirim' && (data.shipping_address || data.shipping_p
 
                 <button
                   type="button"
-                  :disabled="guestDesignUploading || !guestDesignFile"
+                  :disabled="guestDesignUploading || !guestDesignFile || !guestUploadSelectedItemId"
                   class="inline-flex items-center gap-2 rounded-md bg-brand-500 px-4 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   @click="submitGuestDesign"
                 >
@@ -956,14 +1063,25 @@ v-if="data.metode_ambil === 'kirim' && (data.shipping_address || data.shipping_p
 
               <AlertMessage v-if="guestDesignError" variant="error" :message="guestDesignError" class="mt-3" />
               <AlertMessage v-if="guestDesignSuccess" variant="success" :message="guestDesignSuccess" class="mt-3" />
+
+              <!-- CTA WhatsApp pelengkap — bukan pengganti form di atas. -->
+              <p class="mt-4 text-xs text-ink-500 leading-relaxed">
+                Lebih nyaman kirim lewat chat, atau baris ini belum masuk daftar di atas?
+                <a
+                  :href="guestDesignWaLink"
+                  target="_blank"
+                  rel="noopener"
+                  class="font-medium text-brand-600 underline underline-offset-2 hover:text-brand-700 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
+                >Kirim via WhatsApp</a>.
+              </p>
             </div>
           </div>
         </div>
         <div v-else class="rounded-lg border border-hairline bg-canvas p-6">
           <p class="text-sm text-ink-700 leading-relaxed">
-            Upload file desain belum tersedia untuk status pesanan saat ini
-            (<strong class="text-ink-950">{{ labelOf(currentStatus) }}</strong>). Kartu upload akan muncul
-            begitu pesanan siap menerima file desain.
+            Upload file/aset desain belum tersedia untuk pesanan ini saat ini
+            (<strong class="text-ink-950">{{ labelOf(currentStatus) }}</strong>). Kartu upload akan muncul begitu
+            ada baris yang siap menerima file desain atau aset (logo/foto).
           </p>
         </div>
 
@@ -986,6 +1104,9 @@ v-if="data.metode_ambil === 'kirim' && (data.shipping_address || data.shipping_p
                 <FileWarning v-if="f.is_purged" class="h-3.5 w-3.5 text-ink-400 flex-none mt-0.5" :stroke-width="1.75" />
                 <FileText v-else class="h-3.5 w-3.5 text-ink-500 flex-none mt-0.5" :stroke-width="1.75" />
                 <div class="min-w-0 flex-1">
+                  <p v-if="guestFileItemLabel(f)" class="text-[10px] font-medium uppercase tracking-[0.1em] text-ink-500">
+                    {{ guestFileItemLabel(f) }}
+                  </p>
                   <p class="text-xs text-ink-900 truncate font-mono">{{ f.file_original_name }}</p>
                   <p class="mt-1 text-[10px] text-ink-500">
                     {{ formatBytes(f.file_size_bytes) }} · {{ fmtDateTime(f.uploaded_at) }}

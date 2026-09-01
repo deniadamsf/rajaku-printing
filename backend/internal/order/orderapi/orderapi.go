@@ -65,6 +65,16 @@ var (
 	// requested discount.
 	ErrDiscountUnavailable = errors.New("orderapi: discount resolver not configured, tapi permintaan diskon disertakan")
 
+	// ErrDiscountAllocationMismatch — §32.2's invariant Σ item.DiscountAmount
+	// == orders.DiscountAmount tidak terpenuhi oleh discountapi.Snapshot yang
+	// dikembalikan resolver (Allocations kosong padahal Amount > 0, ATAU
+	// jumlah Allocations tidak persis sama dengan Amount). Order module WAJIB
+	// menolak menyimpan order dengan angka yang meleset ini SENDIRI — jangan
+	// hanya mempercayakan ke discount/service/calc.go di seberang batas
+	// modul (§22, kelas kegagalan senyap yang sama seperti rekap/struk yang
+	// diam-diam beda angka).
+	ErrDiscountAllocationMismatch = errors.New("orderapi: alokasi diskon per item tidak sama dengan discount_amount order — order tidak disimpan")
+
 	// --- Order recap (§28.5) ---
 
 	// ErrRecapInvalidDateRange — 'to' date is before 'from' date.
@@ -85,7 +95,107 @@ var (
 	// frontend: discount_manual berdiri sendiri, tidak pernah bareng
 	// discount_id) — ditolak eksplisit, bukan diam-diam pilih salah satu.
 	ErrRecapDiscountFilterAmbiguous = errors.New("orderapi: discount_manual tidak boleh dikirim bersama discount_id")
+
+	// --- Order multi-item (§32) ---
+
+	// ErrNoItems — order wajib punya minimal 1 item (§32.4).
+	ErrNoItems = errors.New("orderapi: order wajib punya minimal 1 item")
+	// ErrTooManyItems — maksimal 20 item per order (§32.4) — tanpa batas ini
+	// satu request bisa memaksa ratusan Quote ke katalog sekaligus.
+	ErrTooManyItems = errors.New("orderapi: maksimal 20 item per order")
+	// ErrOrderSubtotalNotEditable — super admin mencoba mengirim
+	// EditOrderInput.Subtotal dengan nilai yang BERBEDA dari subtotal order
+	// saat ini. Sejak §32, subtotal order adalah TURUNAN (Σ item.subtotal,
+	// §32.2) — mengeditnya langsung akan membuatnya menyimpang dari jumlah
+	// item yang sebenarnya tanpa ada yang error (persis kelas kegagalan
+	// senyap yang dilarang §22). Koreksi subtotal harus lewat koreksi item
+	// (EditOrderInput.Items, §32.9), bukan lewat field ini — field Subtotal
+	// dipertahankan HANYA supaya frontend yang mengirim balik nilai lama
+	// (echo dari GET sebelumnya, bukan permintaan perubahan) tidak ditolak;
+	// lihat EditOrder doc untuk kenapa perbandingan "berubah" dan bukan
+	// "terkirim" yang dipakai.
+	ErrOrderSubtotalNotEditable = errors.New("orderapi: subtotal tidak bisa diedit langsung — diturunkan dari item pesanan (§32), koreksi lewat items")
+
+	// --- Koreksi baris item oleh super admin (§32.9) ---
+
+	// ErrOrderItemNotFound — EditOrderInput.Items menyebut sebuah item ID
+	// yang tidak ada di order ini (mungkin sudah dihapus admin lain
+	// bersamaan, atau salah ketik id dari frontend).
+	ErrOrderItemNotFound = errors.New("orderapi: baris item pesanan tidak ditemukan")
+	// ErrOrderItemProductNotEditable — caller mencoba mengubah product_id/
+	// material_id/design_source/design_brief pada baris item yang SUDAH ADA
+	// (ID != nil). §32.9: mengganti produk sebuah baris berarti pesanan yang
+	// berbeda — hapus barisnya (jangan sertakan di Items) lalu tambah baris
+	// baru (ID nil) untuk produk yang benar.
+	ErrOrderItemProductNotEditable = errors.New("orderapi: product_id/material_id/design_source baris item yang sudah ada tidak bisa diubah — hapus baris ini lalu tambah baris baru")
+	// ErrOrderItemInvalid — bentuk baris item tidak valid (width_cm/
+	// height_cm/quantity <= 0, unit_price < 0 untuk baris existing, atau
+	// product_id/material_id kosong untuk baris baru).
+	ErrOrderItemInvalid = errors.New("orderapi: baris item pesanan tidak valid")
+	// ErrOrderDiscountExceedsSubtotal — hasil edit item membuat
+	// orders.subtotal yang baru lebih kecil dari orders.discount_amount yang
+	// sudah tersimpan (§28.2 — discount_amount TIDAK berubah nilainya saat
+	// edit item, hanya pembagiannya ke baris). Admin baru saja membuat
+	// pesanan yang potongannya melebihi nilai barangnya — ditolak eksplisit,
+	// bukan diam-diam dijepit (§32.9).
+	ErrOrderDiscountExceedsSubtotal = errors.New("orderapi: subtotal hasil edit lebih kecil dari diskon yang sudah tercatat — tidak bisa disimpan")
+
+	// ErrOrderItemDuplicate — EditOrderInput.Items menyebut ID baris item yang
+	// SAMA lebih dari sekali. Tanpa penolakan ini, resolveItemsForEdit
+	// menjumlahkan subtotal baris itu dua kali ke orders.subtotal sementara
+	// repository hanya meng-UPDATE baris fisiknya sekali (ID sama) — Σ
+	// item.subtotal jadi tidak sama dengan orders.subtotal tanpa satu pun
+	// error (kelas kegagalan senyap §22, temuan review §32.9 #1).
+	ErrOrderItemDuplicate = errors.New("orderapi: id baris item pesanan dikirim lebih dari sekali")
+	// ErrOrderItemHasDesignFiles — super admin mencoba menghapus baris item
+	// yang masih dirujuk oleh satu atau lebih design_files.order_item_id
+	// (migration 000034, RESTRICT — sengaja tanpa ON DELETE CASCADE karena
+	// §19 mempertahankan record design_files selamanya untuk rekap, hanya
+	// blob fisiknya yang dihapus). Menghapus baris pesanan itu berarti
+	// membuang rujukan yang masih dipakai riwayat desain — ditolak eksplisit
+	// dengan pesan yang menyebut baris mana, bukan 500 generik dari
+	// pelanggaran FK Postgres (temuan review §32.9 #2).
+	ErrOrderItemHasDesignFiles = errors.New("orderapi: baris item pesanan masih punya file desain terkait, tidak bisa dihapus")
+
+	// --- Order multi-item, validasi input per baris (§32) ---
+
+	// ErrInvalidDesignSource — sebuah baris item membawa design_source
+	// selain "upload"/"request". Endpoint HTTP publik sudah menolak ini lewat
+	// binding tag (`oneof=upload request`) sebelum sampai ke service — ini
+	// pertahanan lapis kedua untuk pemanggil non-HTTP kontrak orderapi
+	// (mis. modul lain yang menyusun POSCreateOrderInput sendiri), supaya
+	// input salah jatuh ke 400/422 lewat errors.Is, bukan ke 500 generik
+	// lewat branch default mapErr (temuan review §22).
+	ErrInvalidDesignSource = errors.New("orderapi: design_source baris item harus 'upload' atau 'request'")
 )
+
+// OrderItemView — projeksi satu baris order_items (§32) untuk konsumer lain
+// (payment, notification, POS, invoice) tanpa import order/model. DiscountAmount
+// di sini HANYA penjelas per-baris (§32.3 metode sisa terbesar) — layar uang
+// tetap membaca OrderSummary.DiscountAmount/OrderInvoiceView.DiscountAmount
+// (§32.2), jangan menjumlahkan field ini untuk hitungan uang.
+type OrderItemView struct {
+	// ID — order_items.id (§32.5). Dipakai modul design sebagai
+	// order_item_id: setiap file desain menempel ke SATU baris item, bukan
+	// ke order (design_files.order_item_id, migration 000034) — supaya
+	// validasi design_source dan kepemilikan file dicek terhadap item yang
+	// benar pada order campuran (mixed upload/request).
+	ID             uuid.UUID
+	LineNo         int
+	ProductID      *uuid.UUID
+	ProductName    string
+	MaterialName   string
+	PricingType    string
+	WidthCm        int
+	HeightCm       int
+	Quantity       int
+	UnitPrice      int64
+	Subtotal       int64
+	DiscountAmount int64
+	DesignSource   string // "upload" | "request" (§32.5, per item)
+	DesignBrief    string
+	ItemNotes      string
+}
 
 // OrderSummary — projection modul lain (payment, notification, POS) butuh baca
 // order tanpa import order/model. Field yang di-expose sengaja dibatasi.
@@ -98,19 +208,16 @@ type OrderSummary struct {
 	MetodeAmbil        string
 	MetodeBayar        string // "" kalau belum settled
 	Channel            string
-	DesignSource       string     // "upload" | "request" (§6)
+	DesignSource       string     // "upload" | "request" | "mixed" (§32.1, turunan dari Items)
 	DesignApprovalMode *string    // "instant_walkin" | "async_notify" (§11); nil kalau belum di-set
 	CreatedBy          *uuid.UUID // kasir POS (nil untuk order online)
 	CreatedAt          time.Time
 
-	// Line item snapshot (§9/§11) — dibutuhkan konsumer yang perlu render
-	// rincian pesanan (mis. struk POS) tanpa query balik ke order/model.
-	ProductName  string
-	MaterialName string
-	WidthCm      int
-	HeightCm     int
-	Quantity     int
-	UnitPrice    int64
+	// Items — daftar produk dalam order ini (§32), terurut LineNo ASC.
+	// Subtotal/ShippingCost/Total di bawah TETAP di level order (§32.2) —
+	// SATU-SATUNYA angka yang dipakai perhitungan uang; Items hanya untuk
+	// merender rincian pesanan (mis. baris struk per produk).
+	Items        []OrderItemView
 	Subtotal     int64
 	ShippingCost *int64 // nil kalau pickup / belum di-set
 
@@ -123,6 +230,22 @@ type OrderSummary struct {
 	DiscountLabel  string
 }
 
+// POSOrderItemInput — satu baris produk untuk POSCreateOrderInput (§32).
+// Service akan Quote via catalog untuk hitung harga otoritatif per baris
+// (jangan trust harga dari client). DesignSource/DesignBrief/ItemNotes
+// sekarang PER ITEM (§32.5) — satu order boleh campur upload & request.
+type POSOrderItemInput struct {
+	ProductID  uuid.UUID
+	MaterialID uuid.UUID
+	WidthCm    int
+	HeightCm   int
+	Quantity   int
+
+	DesignSource string // "upload" | "request"
+	DesignBrief  string
+	ItemNotes    string
+}
+
 // POSCreateOrderInput — payload untuk create walk-in order (§11).
 // Customer sudah harus resolved (nomor WA → CustomerID via authapi.CustomerService).
 // Metode bayar wajib POS-specific: cash atau qris_pos.
@@ -130,13 +253,8 @@ type POSCreateOrderInput struct {
 	CustomerID uuid.UUID
 	KasirID    uuid.UUID // staff yg input order (untuk rekonsiliasi)
 
-	// Product spec — service akan Quote via catalog untuk hitung harga
-	// otoritatif (jangan trust harga dari client).
-	ProductID  uuid.UUID
-	MaterialID uuid.UUID
-	WidthCm    int
-	HeightCm   int
-	Quantity   int
+	// Items — 1..20 baris produk (§32.4, ErrNoItems/ErrTooManyItems).
+	Items []POSOrderItemInput
 
 	// Fulfillment
 	MetodeAmbil            string // "pickup" | "kirim"
@@ -153,15 +271,16 @@ type POSCreateOrderInput struct {
 	// ini tidak pakai diskon (kasus normal, bukan error). Diselesaikan lewat
 	// discountapi.Resolver — order service TIDAK tahu aturan validasi
 	// diskon, cuma menyalurkan input ke Resolver lalu menyalin hasilnya
-	// (discountapi.Snapshot) ke kolom snapshot orders.
+	// (discountapi.Snapshot) ke kolom snapshot orders DAN mengalokasikan
+	// Snapshot.Allocations ke discount_amount masing-masing item (§32.3).
 	DiscountID           *uuid.UUID
 	ManualDiscountAmount int64
 	DiscountNote         string
 
-	// Design
-	DesignSource       string // "upload" | "request"
+	// DesignApprovalMode tetap PER ORDER (§11) — walau item-nya banyak,
+	// mode approval walk-in ("instant_walkin"/"async_notify") satu untuk
+	// seluruh order.
 	DesignApprovalMode string // "instant_walkin" | "async_notify" (§11); "" = tidak di-set
-	DesignBrief        string
 
 	Notes string
 }
@@ -179,14 +298,12 @@ type OrderInvoiceView struct {
 	MetodeAmbil string
 	MetodeBayar string // "" kalau belum settled
 
-	// Line item — MVP satu produk per order.
-	ProductName  string
-	MaterialName string
-	WidthCm      int
-	HeightCm     int
-	Quantity     int
-	UnitPrice    int64
-	Subtotal     int64
+	// Items — daftar produk dalam order ini (§32), terurut LineNo ASC.
+	// Invoice PDF/struk mencetak SATU BARIS PER ITEM (§32.7); Subtotal di
+	// bawah TETAP di level order, satu-satunya angka dipakai perhitungan
+	// uang.
+	Items    []OrderItemView
+	Subtotal int64
 
 	// Discount (§28.7) — DiscountAmount 0 = tidak ditampilkan sama sekali di
 	// invoice/struk (jangan cetak "Diskon Rp 0"). DiscountLabel sudah final

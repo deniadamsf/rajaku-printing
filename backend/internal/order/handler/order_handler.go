@@ -48,20 +48,26 @@ func (h *Handler) CreateOnline(c *gin.Context) {
 		}
 	}
 
+	items := make([]service.CreateOnlineOrderItemInput, 0, len(req.Items))
+	for _, it := range req.Items {
+		items = append(items, service.CreateOnlineOrderItemInput{
+			ProductID:    it.ProductID,
+			MaterialID:   it.MaterialID,
+			WidthCm:      it.WidthCm,
+			HeightCm:     it.HeightCm,
+			Quantity:     it.Quantity,
+			DesignSource: model.DesignSource(it.DesignSource),
+			DesignBrief:  it.DesignBrief,
+		})
+	}
 	in := service.CreateOnlineOrderInput{
 		GuestPhone:             req.GuestPhone,
 		GuestName:              req.GuestName,
-		ProductID:              req.ProductID,
-		MaterialID:             req.MaterialID,
-		WidthCm:                req.WidthCm,
-		HeightCm:               req.HeightCm,
-		Quantity:               req.Quantity,
+		Items:                  items,
 		MetodeAmbil:            model.MetodeAmbil(req.MetodeAmbil),
 		ShippingAddress:        req.ShippingAddress,
 		ShippingRecipientName:  req.ShippingRecipientName,
 		ShippingRecipientPhone: req.ShippingRecipientPhone,
-		DesignSource:           model.DesignSource(req.DesignSource),
-		DesignBrief:            req.DesignBrief,
 		Notes:                  req.Notes,
 	}
 	if customerID != nil {
@@ -164,6 +170,12 @@ func (h *Handler) mapErr(c *gin.Context, err error) {
 	case errors.Is(err, orderapi.ErrResiCollisionGaveUp):
 		httpx.Error(c, http.StatusServiceUnavailable, httpx.CodeServiceUnavail,
 			"gagal generate resi unik, coba beberapa saat lagi")
+	case errors.Is(err, orderapi.ErrNoItems):
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "order wajib punya minimal 1 item")
+	case errors.Is(err, orderapi.ErrTooManyItems):
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "maksimal 20 item per order")
+	case errors.Is(err, orderapi.ErrInvalidDesignSource):
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "design_source baris item harus 'upload' atau 'request'")
 	// Catalog domain errors bubble via order service — map ke HTTP:
 	case errors.Is(err, catalogapi.ErrProductNotFound):
 		httpx.Error(c, http.StatusNotFound, httpx.CodeNotFound, "produk tidak ditemukan")

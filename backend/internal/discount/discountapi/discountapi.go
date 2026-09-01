@@ -143,6 +143,18 @@ var (
 	ErrDiscountMembershipUnavailable = errors.New("discountapi: validasi membership belum siap, coba lagi nanti")
 )
 
+// ResolveItem — satu baris order (§32) yang ikut dihitung diskonnya.
+// LineNo dipakai memetakan hasil alokasi (Snapshot.Allocations) balik ke
+// baris asalnya — ProductID uuid.Nil berarti item ini tidak punya produk
+// katalog (seharusnya tidak terjadi di order nyata, tapi tidak menghentikan
+// hitungan: item begitu cukup dianggap "tidak eligible" untuk diskon
+// applies_to='selected').
+type ResolveItem struct {
+	LineNo    int
+	ProductID uuid.UUID
+	Subtotal  int64
+}
+
 // ResolveInput — payload untuk menghitung potongan diskon sebuah order.
 // Salah satu dari DiscountID (diskon master) ATAU ManualAmount+Note (diskon
 // manual kasir) — mutually exclusive. Kalau keduanya kosong (DiscountID nil
@@ -152,18 +164,28 @@ type ResolveInput struct {
 	DiscountID   *uuid.UUID
 	ManualAmount int64
 	Note         string
-	Subtotal     int64
-	Channel      string // "online" | "pos" — dicocokkan dengan channel_scope
-	// ProductID — produk order ini, dicocokkan dengan cakupan diskon kalau
-	// applies_to="selected" (§28.9). Diabaikan untuk diskon manual & diskon
-	// applies_to="all".
-	ProductID uuid.UUID
+	// Items — 1..20 baris order (§32.4). Basis hitung diskon (§32.3):
+	//   - applies_to='all' / diskon manual → basis = Σ semua item.Subtotal
+	//   - applies_to='selected'            → basis = Σ item ELIGIBLE saja
+	//     (product_id ada di discount_products); kalau tidak ada satu pun
+	//     yang eligible → ErrDiscountProductMismatch.
+	Items   []ResolveItem
+	Channel string // "online" | "pos" — dicocokkan dengan channel_scope
 	// CustomerID — customer order ini, dicocokkan dengan status membership &
 	// cakupan diskon kalau audience_scope="member" (§30.3). uuid.Nil berarti
 	// "tidak ada customer" (order guest tanpa customer_id) — selalu gagal
 	// ErrDiscountMembershipRequired untuk diskon audience_scope="member".
 	// Diabaikan untuk diskon manual & diskon audience_scope="all".
 	CustomerID uuid.UUID
+}
+
+// ItemAllocation — bagian dari Snapshot.Amount yang jatuh ke satu baris
+// order (LineNo), hasil metode sisa terbesar (§32.3). Σ semua Amount di
+// sini SELALU persis sama dengan Snapshot.Amount — dijamin oleh algoritma
+// alokasi, wajib dijaga unit test (discount/service/calc_test.go).
+type ItemAllocation struct {
+	LineNo int
+	Amount int64
 }
 
 // Snapshot — hasil resolusi diskon, SIAP disalin ke kolom snapshot orders
@@ -177,6 +199,13 @@ type Snapshot struct {
 	Value      float64 // 25.00 (persen) atau 50000 (nominal); 0 untuk manual/tidak ada
 	Amount     int64   // rupiah yang BENAR-BENAR dipotong, sudah dijepit ke subtotal
 	Note       string
+	// Allocations — Amount di atas dipecah per baris order (§32.3), SATU
+	// entri untuk SETIAP item di ResolveInput.Items (termasuk yang tidak
+	// eligible, atau saat Amount == 0 total — semuanya Amount 0 dalam
+	// kondisi itu) — pemanggil tidak perlu menebak baris mana yang tidak
+	// kebagian. Kosong ("nil"/panjang 0) HANYA kalau Snapshot ini
+	// menggambarkan "tidak ada diskon sama sekali" (Type == "").
+	Allocations []ItemAllocation
 }
 
 // Resolver adalah kontrak yang di-consume order/pos module untuk menghitung

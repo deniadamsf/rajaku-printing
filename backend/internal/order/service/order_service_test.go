@@ -23,6 +23,7 @@ type fakeStore struct {
 	createErrs   []error // consumed FIFO per CreateWithHistory call
 	createCalls  int
 	saved        *model.Order
+	savedItems   []model.OrderItem
 	savedHistory *model.OrderStateHistory
 
 	findResi  string
@@ -57,6 +58,11 @@ type fakeStore struct {
 	updateFieldsErr    error
 	updateFieldsCalls  int
 
+	// Super admin item-level edit (§32.9):
+	updateItemsParams repository.UpdateItemsParams
+	updateItemsErr    error
+	updateItemsCalls  int
+
 	overrideStatusParams repository.OverrideStatusParams
 	overrideStatusErr    error
 	overrideStatusCalls  int
@@ -87,7 +93,7 @@ type recapBatchCall struct {
 	Offset, Limit int
 }
 
-func (f *fakeStore) CreateWithHistory(_ context.Context, o *model.Order, h *model.OrderStateHistory) error {
+func (f *fakeStore) CreateWithHistory(_ context.Context, o *model.Order, items []model.OrderItem, h *model.OrderStateHistory) error {
 	f.createCalls++
 	var err error
 	if len(f.createErrs) > 0 {
@@ -97,7 +103,9 @@ func (f *fakeStore) CreateWithHistory(_ context.Context, o *model.Order, h *mode
 	if err == nil {
 		o.ID = uuid.New()
 		o.CreatedAt = time.Now().UTC()
+		o.Items = items
 		f.saved = o
+		f.savedItems = items
 		f.savedHistory = h
 	}
 	return err
@@ -227,6 +235,12 @@ func (f *fakeStore) UpdateFields(_ context.Context, p repository.UpdateFieldsPar
 	return f.updateFieldsErr
 }
 
+func (f *fakeStore) UpdateItems(_ context.Context, p repository.UpdateItemsParams) error {
+	f.updateItemsCalls++
+	f.updateItemsParams = p
+	return f.updateItemsErr
+}
+
 func (f *fakeStore) OverrideStatus(_ context.Context, p repository.OverrideStatusParams) (string, error) {
 	f.overrideStatusCalls++
 	f.overrideStatusParams = p
@@ -273,8 +287,13 @@ func (f *fakeAuditStore) ListByEntity(_ context.Context, filter repository.Admin
 
 type fakeCatalog struct {
 	quoteResult *catalogapi.QuoteResult
-	quoteErr    error
-	quoteCalls  int
+	// quoteResults — kalau diisi, dikonsumsi FIFO per panggilan Quote
+	// (dipakai test multi-item yang butuh harga BERBEDA per baris — lihat
+	// multi_item_test.go). Kalau kosong, setiap panggilan Quote balik ke
+	// quoteResult tunggal seperti sebelumnya (kompatibel dgn test lama).
+	quoteResults []*catalogapi.QuoteResult
+	quoteErr     error
+	quoteCalls   int
 }
 
 func (f *fakeCatalog) ResolveProductBySlug(_ context.Context, _ string) (*catalogapi.ProductSummary, error) {
@@ -287,6 +306,11 @@ func (f *fakeCatalog) Quote(_ context.Context, _ catalogapi.QuoteRequest) (*cata
 	f.quoteCalls++
 	if f.quoteErr != nil {
 		return nil, f.quoteErr
+	}
+	if len(f.quoteResults) > 0 {
+		r := f.quoteResults[0]
+		f.quoteResults = f.quoteResults[1:]
+		return r, nil
 	}
 	return f.quoteResult, nil
 }
@@ -353,15 +377,17 @@ func newQuote(productID, materialID uuid.UUID) *catalogapi.QuoteResult {
 
 func baseInput(productID, materialID uuid.UUID) CreateOnlineOrderInput {
 	return CreateOnlineOrderInput{
-		GuestPhone:   "081234567890",
-		GuestName:    "Ani Testing",
-		ProductID:    productID,
-		MaterialID:   materialID,
-		WidthCm:      100,
-		HeightCm:     200,
-		Quantity:     2,
-		MetodeAmbil:  model.MetodeAmbilPickup,
-		DesignSource: model.DesignSourceUpload,
+		GuestPhone:  "081234567890",
+		GuestName:   "Ani Testing",
+		MetodeAmbil: model.MetodeAmbilPickup,
+		Items: []CreateOnlineOrderItemInput{{
+			ProductID:    productID,
+			MaterialID:   materialID,
+			WidthCm:      100,
+			HeightCm:     200,
+			Quantity:     2,
+			DesignSource: model.DesignSourceUpload,
+		}},
 	}
 }
 
@@ -456,7 +482,7 @@ func TestCreateOnlineOrder_InvalidDesignSource_Rejected(t *testing.T) {
 		&fakeCustomers{identity: &authapi.Identity{UserID: uuid.New()}})
 
 	in := baseInput(productID, materialID)
-	in.DesignSource = "" // invalid
+	in.Items[0].DesignSource = "" // invalid
 
 	_, err := svc.CreateOnlineOrder(context.Background(), in)
 	if err == nil {
@@ -594,9 +620,12 @@ func TestGetByResiPublic_CensorsShippingFields(t *testing.T) {
 	stored := &model.Order{
 		ID: uuid.New(), Resi: "RJK-TRACK123",
 		Status: state.MenungguPembayaran, Channel: model.ChannelOnline,
-		MetodeAmbil:            model.MetodeAmbilKirim,
-		ProductNameSnapshot:    "Banner Flexi",
-		MaterialNameSnapshot:   "Flexi 280",
+		MetodeAmbil: model.MetodeAmbilKirim,
+		Items: []model.OrderItem{{
+			LineNo:               1,
+			ProductNameSnapshot:  "Banner Flexi",
+			MaterialNameSnapshot: "Flexi 280",
+		}},
 		ShippingAddress:        &addr,
 		ShippingRecipientName:  &name,
 		ShippingRecipientPhone: &phone62,
@@ -634,6 +663,40 @@ func TestGetByResiPublic_CensorsShippingFields(t *testing.T) {
 	}
 	if strings.Contains(got.ShippingPhoneMasked, "6281234567890") {
 		t.Errorf("phone leaked raw digits: %q", got.ShippingPhoneMasked)
+	}
+}
+
+// TestGetByResiPublic_MultiItem_ListsAllItems is the §32/§5 regression
+// guard: pesanan dengan 2 baris item harus menampilkan KEDUA baris di
+// halaman lacak publik, bukan hanya baris pertama (bug lama:
+// PublicTrackingResult.ProductName/MaterialName datar cuma menampilkan
+// item pertama, membuat pesanan 2 banner terlihat seperti 1 banner).
+func TestGetByResiPublic_MultiItem_ListsAllItems(t *testing.T) {
+	stored := &model.Order{
+		ID: uuid.New(), Resi: "RJK-MULTI1",
+		Status: state.OrderMasuk, Channel: model.ChannelOnline,
+		MetodeAmbil: model.MetodeAmbilPickup,
+		Items: []model.OrderItem{
+			{LineNo: 1, ProductNameSnapshot: "Banner Flexi", MaterialNameSnapshot: "Flexi 280", WidthCm: 100, HeightCm: 200, Quantity: 1},
+			{LineNo: 2, ProductNameSnapshot: "Banner Vinyl", MaterialNameSnapshot: "Vinyl Glossy", WidthCm: 300, HeightCm: 100, Quantity: 2},
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	store := &fakeStore{findOrder: stored}
+	svc := New(store, &fakeCatalog{}, &fakeCustomers{})
+
+	got, err := svc.GetByResiPublic(context.Background(), "RJK-MULTI1")
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("want 2 items in public tracking result (both banners), got %d — pesanan multi-item tidak boleh terlihat seperti 1 banner (§32/§5)", len(got.Items))
+	}
+	if got.Items[0].ProductName != "Banner Flexi" || got.Items[1].ProductName != "Banner Vinyl" {
+		t.Fatalf("items = %+v, want both product names in line_no order", got.Items)
+	}
+	if got.Items[1].Quantity != 2 || got.Items[1].WidthCm != 300 || got.Items[1].HeightCm != 100 {
+		t.Fatalf("Items[1] = %+v, want dimensions/qty preserved", got.Items[1])
 	}
 }
 

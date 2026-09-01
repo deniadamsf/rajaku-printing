@@ -234,6 +234,7 @@ const columns: DataTableColumn[] = [
   { key: 'resi', label: 'Resi', class: 'w-36' },
   { key: 'customer_name', label: 'Pelanggan' },
   { key: 'product_name', label: 'Produk' },
+  { key: 'jumlah_item', label: 'Item', class: 'w-16 text-right hidden sm:table-cell' },
   { key: 'channel', label: 'Channel', class: 'w-20 hidden md:table-cell' },
   { key: 'status', label: 'Status', class: 'w-36 hidden lg:table-cell' },
   { key: 'subtotal', label: 'Subtotal', class: 'w-28 text-right' },
@@ -429,6 +430,9 @@ function statusLabel(s: string): string {
       </template>
       <template #cell-product_name="{ row }">
         <span class="text-sm text-ink-900">{{ (row as OrderRecapItem).product_name }}</span>
+      </template>
+      <template #cell-jumlah_item="{ row }">
+        <span class="text-sm text-ink-700">{{ (row as OrderRecapItem).jumlah_item }}</span>
       </template>
       <template #cell-channel="{ row }">
         <span class="text-xs uppercase text-ink-600">{{ (row as OrderRecapItem).channel }}</span>

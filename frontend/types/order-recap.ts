@@ -16,7 +16,10 @@ export interface OrderRecapItem {
   resi: string
   /** Backend JSON tag `omitempty` — bisa hilang sama sekali dari payload kalau kosong. */
   customer_name?: string
+  /** Nama item line_no=1, sudah final untuk tampil (§32.8) — akhiran "+N lainnya" kalau jumlah_item > 1. Jangan dihitung ulang di frontend. */
   product_name: string
+  /** Jumlah baris produk order ini (§32.8). */
+  jumlah_item: number
   channel: OrderChannel | string
   status: OrderStatus | string
   subtotal: number

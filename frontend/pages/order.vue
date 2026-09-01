@@ -1,31 +1,35 @@
 <script setup lang="ts">
 /**
- * /order — Halaman order publik (§17 CTA utama).
+ * /order — Halaman order publik (§17 CTA utama, §32 multi-item).
  *
  * Flow:
- *   1. Customer pilih produk + bahan + ukuran → live quote via /catalog/quote.
- *   2. Pilih ambil (pickup / kirim + alamat).
- *   3. Pilih sumber desain (upload sendiri / minta desain).
- *   4. Isi identitas (auto-fill kalau login; guest → nama + WA).
- *   5. Submit → order dibuat status `order_masuk`, dapat resi RJK-xxxxxxxx.
- *   6. Success panel: resi + link `/lacak/:resi` + step-by-step apa berikutnya.
+ *   1. Customer pilih 1..20 baris banner (produk + bahan + ukuran + sumber
+ *      desain per baris) → live quote per baris via /catalog/quote (§32.4).
+ *   2. Pilih ambil (pickup / kirim + alamat) — level order, bukan per baris.
+ *   3. Isi identitas (auto-fill kalau login; guest → nama + WA).
+ *   4. Submit → order dibuat status `order_masuk`, dapat SATU resi
+ *      RJK-xxxxxxxx untuk seluruh baris.
+ *   5. Success panel: resi + ringkasan tiap baris + link `/lacak/:resi`.
  *
  * Auth opsional — Bearer token auto-attach kalau ada; kalau tidak, guest path
  * pakai nama + phone. Redirect POST-nya sama.
  *
  * Design: patuh CLAUDE.md §26 (Fraunces + Inter + Lucide, brand/ink/hairline).
+ * Mobile (§18): tiap baris banner jadi kartu bertumpuk — bukan tabel yang
+ * menggulir ke samping, sejak awal (bukan cuma resize dari desktop).
  */
 import {
   User,
   Package,
   Truck,
-  Palette as PaletteIcon,
   Receipt,
   StickyNote,
   ExternalLink,
   RotateCcw,
   CheckCircle2,
   Loader2,
+  Plus,
+  Trash2,
 } from '@lucide/vue'
 import type { CatalogProduct, CatalogProductDetail, CatalogQuote } from '~/types/catalog'
 import type { Order, DesignSource, MetodeAmbil } from '~/types/order'
@@ -44,24 +48,75 @@ const catalog = useCatalog()
 const orderApi = useOrder()
 const auth = useAuthStore()
 
-// -------------------- state --------------------
+// -------------------- katalog --------------------
 const products = ref<CatalogProduct[]>([])
-const productDetail = ref<CatalogProductDetail | null>(null)
 const loadingProducts = ref(false)
-const loadingDetail = ref(false)
 
+// -------------------- baris item (§32) --------------------
+const MAX_ITEMS = 20
+
+interface OrderItemRow {
+  /** ID lokal stabil untuk :key & timer debounce — TIDAK dikirim ke backend. */
+  key: number
+  productId: string
+  materialId: string
+  widthCm: number
+  heightCm: number
+  quantity: number
+  designSource: DesignSource
+  designBrief: string
+  productDetail: CatalogProductDetail | null
+  loadingDetail: boolean
+  quote: CatalogQuote | null
+  quoteLoading: boolean
+  quoteError: string | null
+}
+
+let rowKeySeq = 0
+function makeRow(): OrderItemRow {
+  rowKeySeq += 1
+  return {
+    key: rowKeySeq,
+    productId: '',
+    materialId: '',
+    widthCm: 0,
+    heightCm: 0,
+    quantity: 1,
+    designSource: 'upload',
+    designBrief: '',
+    productDetail: null,
+    loadingDetail: false,
+    quote: null,
+    quoteLoading: false,
+    quoteError: null,
+  }
+}
+
+const items = ref<OrderItemRow[]>([makeRow()])
+const atMaxItems = computed(() => items.value.length >= MAX_ITEMS)
+
+function addItem() {
+  if (atMaxItems.value) return
+  items.value.push(makeRow())
+}
+
+function removeItem(key: number) {
+  // Baris pertama tidak bisa dihapus — order selalu butuh minimal 1 item.
+  if (items.value.length <= 1) return
+  const timer = quoteTimers.get(key)
+  if (timer) {
+    clearTimeout(timer)
+    quoteTimers.delete(key)
+  }
+  items.value = items.value.filter((r) => r.key !== key)
+}
+
+// -------------------- fulfillment & kontak (level order) --------------------
 const form = reactive({
-  productId: '',
-  materialId: '',
-  widthCm: 0,
-  heightCm: 0,
-  quantity: 1,
   metodeAmbil: 'pickup' as MetodeAmbil,
   shippingAddress: '',
   shippingRecipientName: '',
   shippingRecipientPhone: '',
-  designSource: 'upload' as DesignSource,
-  designBrief: '',
   guestName: '',
   guestPhone: '',
   notes: '',
@@ -74,10 +129,6 @@ onMounted(() => {
     form.guestPhone = auth.user.phone || ''
   }
 })
-
-const quote = ref<CatalogQuote | null>(null)
-const quoteLoading = ref(false)
-const quoteError = ref<string | null>(null)
 
 const submitting = ref(false)
 const submitError = ref<string | null>(null)
@@ -98,8 +149,8 @@ onMounted(async () => {
 })
 
 /**
- * Isi awal formulir dari query string, dikirim widget estimasi di landing
- * (`LandingPriceTeaser` → `/order?produk=…&bahan=…&lebar=…&tinggi=…`).
+ * Isi awal baris pertama dari query string, dikirim widget estimasi di
+ * landing (`LandingPriceTeaser` → `/order?produk=…&bahan=…&lebar=…&tinggi=…`).
  *
  * Tanpa ini, orang yang baru saja menyusun estimasi harus memilih produk,
  * bahan, dan mengetik ukuran yang sama sekali lagi dari nol — persis di
@@ -109,112 +160,108 @@ onMounted(async () => {
  * katalog yang benar-benar dimuat, ukuran wajib angka positif. Query string
  * bisa diketik siapa saja, dan formulir yang terisi data ngawur lebih buruk
  * daripada formulir kosong. Harga tetap dihitung ulang server seperti biasa.
- *
- * Bahan & ukuran baru bisa diisi SETELAH detail produk termuat: watcher
- * `form.productId` mengosongkan ketiga field itu setiap kali produk berganti,
- * jadi mengisinya lebih awal akan langsung terhapus.
  */
 function applyPrefillFromQuery() {
   const q = useRoute().query
   const pid = typeof q.produk === 'string' ? q.produk : ''
   if (!pid || !products.value.some((p) => p.id === pid)) return
 
-  form.productId = pid
+  const row = items.value[0]
+  row.productId = pid
 
-  const stop = watch(productDetail, (d) => {
-    if (!d) return
+  void onProductChange(row).then(() => {
     const mid = typeof q.bahan === 'string' ? q.bahan : ''
-    if (mid && d.pricings.some((r) => r.material_id === mid)) {
-      form.materialId = mid
+    if (mid && row.productDetail?.pricings.some((r) => r.material_id === mid)) {
+      row.materialId = mid
     }
     const w = Number(q.lebar)
     const h = Number(q.tinggi)
-    if (Number.isFinite(w) && w > 0) form.widthCm = w
-    if (Number.isFinite(h) && h > 0) form.heightCm = h
-    stop()
+    if (Number.isFinite(w) && w > 0) row.widthCm = w
+    if (Number.isFinite(h) && h > 0) row.heightCm = h
+    scheduleQuote(row)
   })
 }
 
-watch(
-  () => form.productId,
-  async (pid) => {
-    productDetail.value = null
-    form.materialId = ''
-    form.widthCm = 0
-    form.heightCm = 0
-    quote.value = null
-    quoteError.value = null
-    if (!pid) return
-    const p = products.value.find((x) => x.id === pid)
-    if (!p) return
-    loadingDetail.value = true
-    try {
-      productDetail.value = await catalog.getProduct(p.slug)
-      if (productDetail.value.pricings.length === 1) {
-        form.materialId = productDetail.value.pricings[0].material_id
-      }
-    } catch (e) {
-      submitError.value = e instanceof ApiError ? e.message : 'Gagal memuat detail produk'
-    } finally {
-      loadingDetail.value = false
+// -------------------- per-baris: produk / bahan / quote --------------------
+async function onProductChange(row: OrderItemRow) {
+  row.productDetail = null
+  row.materialId = ''
+  row.widthCm = 0
+  row.heightCm = 0
+  row.quote = null
+  row.quoteError = null
+  if (!row.productId) return
+  const p = products.value.find((x) => x.id === row.productId)
+  if (!p) return
+  row.loadingDetail = true
+  try {
+    row.productDetail = await catalog.getProduct(p.slug)
+    if (row.productDetail.pricings.length === 1) {
+      row.materialId = row.productDetail.pricings[0].material_id
+      onMaterialChange(row)
     }
-  },
-)
-
-watch(
-  () => form.materialId,
-  (matId) => {
-    const p = productDetail.value
-    if (!p || !matId) return
-    if (p.pricing_type === 'paket') {
-      const row = p.pricings.find((r) => r.material_id === matId)
-      if (row?.width_cm) form.widthCm = row.width_cm
-      if (row?.height_cm) form.heightCm = row.height_cm
-    }
-  },
-)
-
-let quoteTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleQuote() {
-  if (quoteTimer) clearTimeout(quoteTimer)
-  quoteTimer = setTimeout(runQuote, 400)
+  } catch (e) {
+    submitError.value = e instanceof ApiError ? e.message : 'Gagal memuat detail produk'
+  } finally {
+    row.loadingDetail = false
+  }
 }
 
-async function runQuote() {
-  const p = productDetail.value
-  if (!p || !form.materialId || form.widthCm <= 0 || form.heightCm <= 0) {
-    quote.value = null
-    quoteError.value = null
+function onMaterialChange(row: OrderItemRow) {
+  const p = row.productDetail
+  if (p && row.materialId && p.pricing_type === 'paket') {
+    const found = p.pricings.find((r) => r.material_id === row.materialId)
+    if (found?.width_cm) row.widthCm = found.width_cm
+    if (found?.height_cm) row.heightCm = found.height_cm
+  }
+  scheduleQuote(row)
+}
+
+const quoteTimers = new Map<number, ReturnType<typeof setTimeout>>()
+function scheduleQuote(row: OrderItemRow) {
+  const existing = quoteTimers.get(row.key)
+  if (existing) clearTimeout(existing)
+  quoteTimers.set(
+    row.key,
+    setTimeout(() => runQuote(row), 400),
+  )
+}
+
+async function runQuote(row: OrderItemRow) {
+  const p = row.productDetail
+  if (!p || !row.materialId || row.widthCm <= 0 || row.heightCm <= 0) {
+    row.quote = null
+    row.quoteError = null
     return
   }
-  quoteLoading.value = true
-  quoteError.value = null
+  row.quoteLoading = true
+  row.quoteError = null
   try {
-    quote.value = await catalog.quote({
+    row.quote = await catalog.quote({
       product_id: p.id,
-      material_id: form.materialId,
-      width_cm: form.widthCm,
-      height_cm: form.heightCm,
+      material_id: row.materialId,
+      width_cm: row.widthCm,
+      height_cm: row.heightCm,
     })
   } catch (e) {
-    quote.value = null
-    quoteError.value = e instanceof ApiError ? e.message : 'Gagal menghitung harga'
+    row.quote = null
+    row.quoteError = e instanceof ApiError ? e.message : 'Gagal menghitung harga'
   } finally {
-    quoteLoading.value = false
+    row.quoteLoading = false
   }
 }
 
-watch(() => [form.materialId, form.widthCm, form.heightCm], scheduleQuote)
-
 // -------------------- derived --------------------
-const isPerM2 = computed(() => productDetail.value?.pricing_type === 'per_m2')
-const isPaket = computed(() => productDetail.value?.pricing_type === 'paket')
+function isPerM2(row: OrderItemRow): boolean {
+  return row.productDetail?.pricing_type === 'per_m2'
+}
+function isPaket(row: OrderItemRow): boolean {
+  return row.productDetail?.pricing_type === 'paket'
+}
 const isKirim = computed(() => form.metodeAmbil === 'kirim')
 
-const subtotal = computed(() => (quote.value ? quote.value.total_price * form.quantity : 0))
-
-const availableMaterials = computed(() => {
-  const p = productDetail.value
+function availableMaterials(row: OrderItemRow) {
+  const p = row.productDetail
   if (!p) return []
   return p.pricings.map((r) => ({
     id: r.material_id,
@@ -223,19 +270,30 @@ const availableMaterials = computed(() => {
         ? `${r.material_name}${r.package_label ? ' · ' + r.package_label : ''}${r.price_total != null ? ' · ' + fmtIDR(r.price_total) : ''}`
         : `${r.material_name}${r.price_per_m2 != null ? ' · ' + fmtIDR(r.price_per_m2) + '/m²' : ''}`,
   }))
-})
+}
+
+function rowSubtotal(row: OrderItemRow): number {
+  return row.quote ? row.quote.total_price * row.quantity : 0
+}
+const grandSubtotal = computed(() => items.value.reduce((sum, r) => sum + rowSubtotal(r), 0))
+
+function rowValid(row: OrderItemRow): boolean {
+  if (!row.productId || !row.materialId) return false
+  if (row.widthCm <= 0 || row.heightCm <= 0 || row.quantity < 1) return false
+  if (!row.quote) return false
+  if (row.designSource === 'request' && !row.designBrief.trim()) return false
+  return true
+}
 
 const canSubmit = computed(() => {
   if (submitting.value) return false
-  if (!form.productId || !form.materialId) return false
-  if (form.widthCm <= 0 || form.heightCm <= 0 || form.quantity < 1) return false
-  if (!quote.value) return false
+  if (items.value.length === 0) return false
+  if (!items.value.every(rowValid)) return false
   if (isKirim.value) {
     if (!form.shippingAddress.trim()) return false
     if (!form.shippingRecipientName.trim()) return false
     if (!form.shippingRecipientPhone.trim()) return false
   }
-  if (form.designSource === 'request' && !form.designBrief.trim()) return false
   // Guest identity (kecuali sudah login sebagai customer):
   if (!auth.isCustomer) {
     if (!form.guestName.trim() || !form.guestPhone.trim()) return false
@@ -260,17 +318,19 @@ async function onSubmit() {
   submitError.value = null
   try {
     const res = await orderApi.createOnline({
-      product_id: form.productId,
-      material_id: form.materialId,
-      width_cm: form.widthCm,
-      height_cm: form.heightCm,
-      quantity: form.quantity,
+      items: items.value.map((r) => ({
+        product_id: r.productId,
+        material_id: r.materialId,
+        width_cm: r.widthCm,
+        height_cm: r.heightCm,
+        quantity: r.quantity,
+        design_source: r.designSource,
+        design_brief: r.designBrief.trim() || undefined,
+      })),
       metode_ambil: form.metodeAmbil,
       shipping_address: isKirim.value ? form.shippingAddress.trim() : undefined,
       shipping_recipient_name: isKirim.value ? form.shippingRecipientName.trim() : undefined,
       shipping_recipient_phone: isKirim.value ? form.shippingRecipientPhone.trim() : undefined,
-      design_source: form.designSource,
-      design_brief: form.designBrief.trim() || undefined,
       guest_name: auth.isCustomer ? undefined : form.guestName.trim(),
       guest_phone: auth.isCustomer ? undefined : form.guestPhone.trim(),
       notes: form.notes.trim() || undefined,
@@ -287,20 +347,12 @@ async function onSubmit() {
 
 function resetForm() {
   successResult.value = null
-  form.productId = ''
-  form.materialId = ''
-  form.widthCm = 0
-  form.heightCm = 0
-  form.quantity = 1
+  items.value = [makeRow()]
   form.metodeAmbil = 'pickup'
   form.shippingAddress = ''
   form.shippingRecipientName = ''
   form.shippingRecipientPhone = ''
-  form.designSource = 'upload'
-  form.designBrief = ''
   form.notes = ''
-  productDetail.value = null
-  quote.value = null
   submitError.value = null
 }
 </script>
@@ -323,32 +375,31 @@ function resetForm() {
       </div>
 
       <div class="rounded-lg border border-hairline bg-canvas p-6 md:p-8">
-        <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-2">Ringkasan order</p>
-        <div class="grid gap-x-6 gap-y-2 text-sm md:grid-cols-2">
-          <div class="flex justify-between md:justify-start md:gap-2">
-            <span class="text-ink-500">Produk</span>
-            <span class="text-ink-900">{{ successResult.product_name }}</span>
-          </div>
-          <div class="flex justify-between md:justify-start md:gap-2">
-            <span class="text-ink-500">Bahan</span>
-            <span class="text-ink-900">{{ successResult.material_name }}</span>
-          </div>
-          <div class="flex justify-between md:justify-start md:gap-2">
-            <span class="text-ink-500">Ukuran</span>
-            <span class="text-ink-900 font-mono text-xs">{{ successResult.width_cm }} × {{ successResult.height_cm }} cm</span>
-          </div>
-          <div class="flex justify-between md:justify-start md:gap-2">
-            <span class="text-ink-500">Kuantitas</span>
-            <span class="text-ink-900">{{ successResult.quantity }} pcs</span>
-          </div>
-          <div class="flex justify-between md:justify-start md:gap-2">
-            <span class="text-ink-500">Ambil</span>
-            <span class="text-ink-900 capitalize">{{ successResult.metode_ambil }}</span>
-          </div>
-          <div class="flex justify-between md:justify-start md:gap-2">
-            <span class="text-ink-500">Subtotal</span>
-            <span class="font-serif text-lg font-semibold text-ink-950">{{ fmtIDR(successResult.subtotal) }}</span>
-          </div>
+        <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-3">
+          Ringkasan order · {{ successResult.items.length }} banner
+        </p>
+        <ul class="divide-y divide-hairline">
+          <li v-for="it in successResult.items" :key="it.line_no" class="py-3 first:pt-0 last:pb-0">
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+              <p class="text-sm font-medium text-ink-900">{{ it.product_name }}</p>
+              <p class="text-sm text-ink-900">{{ fmtIDR(it.subtotal) }}</p>
+            </div>
+            <p class="mt-0.5 text-xs text-ink-500">
+              {{ it.material_name }}
+              <span class="text-ink-400">·</span>
+              <span class="font-mono">{{ it.width_cm }} × {{ it.height_cm }} cm</span>
+              <span class="text-ink-400">·</span>
+              {{ it.quantity }} pcs
+            </p>
+          </li>
+        </ul>
+        <div class="mt-3 flex justify-between border-t border-hairline pt-3 text-sm">
+          <span class="text-ink-500">Ambil</span>
+          <span class="text-ink-900 capitalize">{{ successResult.metode_ambil }}</span>
+        </div>
+        <div class="mt-2 flex justify-between">
+          <span class="text-sm font-semibold text-ink-950">Subtotal</span>
+          <span class="font-serif text-lg font-semibold text-ink-950">{{ fmtIDR(successResult.subtotal) }}</span>
         </div>
       </div>
 
@@ -368,8 +419,8 @@ function resetForm() {
           </li>
           <li class="flex gap-3">
             <span class="font-serif text-lg font-semibold text-gold-400 leading-none">3.</span>
-            <span v-if="successResult.design_source === 'request'">
-              Tim desainer kami akan kirim draft untuk approval Anda sebelum masuk cetak.
+            <span v-if="successResult.design_source !== 'upload'">
+              Tim desainer kami akan kirim draft untuk approval Anda sebelum masuk cetak (untuk banner yang Anda minta dibuatkan).
             </span>
             <!-- Halaman detail pesanan dijaga middleware customer-only, jadi link
                  hanya relevan untuk customer terdaftar. Order guest belum punya
@@ -416,8 +467,8 @@ function resetForm() {
           Cetak banner Anda, dari sini.
         </h1>
         <p class="mt-3 text-sm md:text-base text-ink-500 leading-relaxed max-w-2xl">
-          Pilih bahan, tentukan ukuran, hitung harga langsung. Tim kami hubungi via WA setelah order masuk —
-          bisa bayar transfer atau QRIS, upload desain kapan pun setelah pesanan tercatat.
+          Pilih bahan, tentukan ukuran, hitung harga langsung. Butuh beberapa ukuran sekaligus? Tambah banner
+          dalam satu pesanan yang sama. Tim kami hubungi via WA setelah order masuk.
         </p>
       </div>
 
@@ -425,101 +476,200 @@ function resetForm() {
         <div class="space-y-6">
           <AlertMessage v-if="submitError" variant="error" :message="submitError" />
 
-          <!-- Produk & ukuran -->
-          <fieldset class="rounded-lg border border-hairline bg-canvas p-6">
-            <legend class="flex items-center gap-2 px-2 -ml-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
-              <Package class="h-3.5 w-3.5" :stroke-width="1.75" />
-              Produk & Ukuran
-            </legend>
-
-            <div class="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label for="ord-product" class="block text-sm font-medium text-ink-900">
-                  Produk <span class="text-brand-500">*</span>
-                </label>
-                <select
-                  id="ord-product"
-                  v-model="form.productId"
-                  required
-                  :disabled="loadingProducts"
-                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
-                >
-                  <option value="">{{ loadingProducts ? 'Memuat…' : 'Pilih produk' }}</option>
-                  <option v-for="p in products" :key="p.id" :value="p.id">
-                    {{ p.name }}
-                  </option>
-                </select>
-                <p v-if="productDetail?.description" class="mt-1 text-xs text-ink-500 leading-relaxed">{{ productDetail.description }}</p>
-              </div>
-
-              <div>
-                <label for="ord-material" class="block text-sm font-medium text-ink-900">
-                  Bahan <span class="text-brand-500">*</span>
-                </label>
-                <select
-                  id="ord-material"
-                  v-model="form.materialId"
-                  required
-                  :disabled="!productDetail || loadingDetail"
-                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
-                >
-                  <option value="">{{ loadingDetail ? 'Memuat…' : 'Pilih bahan' }}</option>
-                  <option v-for="m in availableMaterials" :key="m.id" :value="m.id">{{ m.label }}</option>
-                </select>
-                <p v-if="isPaket" class="mt-1 text-xs text-ink-500">Ukuran otomatis mengikuti paket terpilih.</p>
-                <p v-else-if="isPerM2 && productDetail" class="mt-1 text-xs text-ink-500">
-                  <template v-if="productDetail.min_width_cm && productDetail.max_width_cm">
-                    Ukuran custom · {{ productDetail.min_width_cm }}–{{ productDetail.max_width_cm }} cm (W)
-                    × {{ productDetail.min_height_cm }}–{{ productDetail.max_height_cm }} cm (H)
-                  </template>
+          <!-- Baris banner (§32) — kartu bertumpuk di semua breakpoint, BUKAN
+               tabel yang menggulir ke samping (§18: mobile bukan cuma resize). -->
+          <div class="space-y-4">
+            <div
+              v-for="(row, idx) in items"
+              :key="row.key"
+              class="rounded-lg border border-hairline bg-canvas p-6"
+            >
+              <div class="flex items-center justify-between gap-2 mb-4">
+                <p class="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
+                  <Package class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  Banner {{ idx + 1 }}
                 </p>
+                <button
+                  v-if="idx > 0"
+                  type="button"
+                  class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-ink-500 hover:text-brand-600 hover:bg-brand-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+                  @click="removeItem(row.key)"
+                >
+                  <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  Hapus
+                </button>
               </div>
-            </div>
 
-            <div class="mt-4 grid gap-4 sm:grid-cols-3">
-              <div>
-                <label for="ord-width" class="block text-sm font-medium text-ink-900">
-                  Lebar (cm) <span class="text-brand-500">*</span>
-                </label>
-                <input
-                  id="ord-width"
-                  v-model.number="form.widthCm"
-                  type="number"
-                  min="1"
-                  required
-                  :disabled="isPaket"
-                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
-                >
+              <div class="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label :for="`ord-product-${row.key}`" class="block text-sm font-medium text-ink-900">
+                    Produk <span class="text-brand-500">*</span>
+                  </label>
+                  <select
+                    :id="`ord-product-${row.key}`"
+                    v-model="row.productId"
+                    required
+                    :disabled="loadingProducts"
+                    class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
+                    @change="onProductChange(row)"
+                  >
+                    <option value="">{{ loadingProducts ? 'Memuat…' : 'Pilih produk' }}</option>
+                    <option v-for="p in products" :key="p.id" :value="p.id">
+                      {{ p.name }}
+                    </option>
+                  </select>
+                  <p v-if="row.productDetail?.description" class="mt-1 text-xs text-ink-500 leading-relaxed">{{ row.productDetail.description }}</p>
+                </div>
+
+                <div>
+                  <label :for="`ord-material-${row.key}`" class="block text-sm font-medium text-ink-900">
+                    Bahan <span class="text-brand-500">*</span>
+                  </label>
+                  <select
+                    :id="`ord-material-${row.key}`"
+                    v-model="row.materialId"
+                    required
+                    :disabled="!row.productDetail || row.loadingDetail"
+                    class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
+                    @change="onMaterialChange(row)"
+                  >
+                    <option value="">{{ row.loadingDetail ? 'Memuat…' : 'Pilih bahan' }}</option>
+                    <option v-for="m in availableMaterials(row)" :key="m.id" :value="m.id">{{ m.label }}</option>
+                  </select>
+                  <p v-if="isPaket(row)" class="mt-1 text-xs text-ink-500">Ukuran otomatis mengikuti paket terpilih.</p>
+                  <p v-else-if="isPerM2(row) && row.productDetail" class="mt-1 text-xs text-ink-500">
+                    <template v-if="row.productDetail.min_width_cm && row.productDetail.max_width_cm">
+                      Ukuran custom · {{ row.productDetail.min_width_cm }}–{{ row.productDetail.max_width_cm }} cm (W)
+                      × {{ row.productDetail.min_height_cm }}–{{ row.productDetail.max_height_cm }} cm (H)
+                    </template>
+                  </p>
+                </div>
               </div>
-              <div>
-                <label for="ord-height" class="block text-sm font-medium text-ink-900">
-                  Tinggi (cm) <span class="text-brand-500">*</span>
-                </label>
-                <input
-                  id="ord-height"
-                  v-model.number="form.heightCm"
-                  type="number"
-                  min="1"
-                  required
-                  :disabled="isPaket"
-                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
-                >
+
+              <div class="mt-4 grid gap-4 sm:grid-cols-3">
+                <div>
+                  <label :for="`ord-width-${row.key}`" class="block text-sm font-medium text-ink-900">
+                    Lebar (cm) <span class="text-brand-500">*</span>
+                  </label>
+                  <input
+                    :id="`ord-width-${row.key}`"
+                    v-model.number="row.widthCm"
+                    type="number"
+                    min="1"
+                    required
+                    :disabled="isPaket(row)"
+                    class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
+                    @input="scheduleQuote(row)"
+                  >
+                </div>
+                <div>
+                  <label :for="`ord-height-${row.key}`" class="block text-sm font-medium text-ink-900">
+                    Tinggi (cm) <span class="text-brand-500">*</span>
+                  </label>
+                  <input
+                    :id="`ord-height-${row.key}`"
+                    v-model.number="row.heightCm"
+                    type="number"
+                    min="1"
+                    required
+                    :disabled="isPaket(row)"
+                    class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors disabled:bg-canvas-alt disabled:text-ink-500"
+                    @input="scheduleQuote(row)"
+                  >
+                </div>
+                <div>
+                  <label :for="`ord-qty-${row.key}`" class="block text-sm font-medium text-ink-900">
+                    Kuantitas <span class="text-brand-500">*</span>
+                  </label>
+                  <input
+                    :id="`ord-qty-${row.key}`"
+                    v-model.number="row.quantity"
+                    type="number"
+                    min="1"
+                    required
+                    class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                  >
+                </div>
               </div>
-              <div>
-                <label for="ord-qty" class="block text-sm font-medium text-ink-900">
-                  Kuantitas <span class="text-brand-500">*</span>
-                </label>
-                <input
-                  id="ord-qty"
-                  v-model.number="form.quantity"
-                  type="number"
-                  min="1"
-                  required
-                  class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-                >
+
+              <!-- Desain per baris (§32.5) -->
+              <div class="mt-4">
+                <p class="text-sm font-medium text-ink-900 mb-2">Desain banner ini</p>
+                <div class="grid gap-2 sm:grid-cols-2">
+                  <label
+                    :class="[
+                      'flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm transition-colors',
+                      row.designSource === 'upload'
+                        ? 'border-brand-500 bg-brand-50/50 text-ink-950'
+                        : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                    ]"
+                  >
+                    <input v-model="row.designSource" type="radio" :name="`design-source-${row.key}`" value="upload" class="mt-0.5 accent-brand-500">
+                    <span>
+                      <span class="block font-semibold">Saya sudah punya desain</span>
+                      <span class="mt-0.5 block text-xs text-ink-500">Upload file (CDR/AI/PDF/JPG/PNG) via WA setelah order tercatat.</span>
+                    </span>
+                  </label>
+                  <label
+                    :class="[
+                      'flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm transition-colors',
+                      row.designSource === 'request'
+                        ? 'border-brand-500 bg-brand-50/50 text-ink-950'
+                        : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                    ]"
+                  >
+                    <input v-model="row.designSource" type="radio" :name="`design-source-${row.key}`" value="request" class="mt-0.5 accent-brand-500">
+                    <span>
+                      <span class="block font-semibold">Minta jasa desain</span>
+                      <span class="mt-0.5 block text-xs text-ink-500">Tim desainer buat draft, Anda approve dulu sebelum cetak.</span>
+                    </span>
+                  </label>
+                </div>
+
+                <div v-if="row.designSource === 'request'" class="mt-3">
+                  <label :for="`ord-brief-${row.key}`" class="block text-sm font-medium text-ink-900">
+                    Brief singkat <span class="text-brand-500">*</span>
+                  </label>
+                  <textarea
+                    :id="`ord-brief-${row.key}`"
+                    v-model="row.designBrief"
+                    rows="2"
+                    required
+                    placeholder="Contoh: Banner ucapan syukuran, warna dominan biru, teks 'Aqiqah Naura'."
+                    class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                  />
+                </div>
               </div>
+
+              <!-- Harga baris ini -->
+              <div class="mt-4 flex items-center justify-between border-t border-hairline pt-3 text-sm">
+                <span class="text-ink-500">
+                  <Loader2 v-if="row.quoteLoading" class="inline h-3 w-3 animate-spin align-[-1px]" :stroke-width="1.75" />
+                  <template v-else-if="row.quote">{{ fmtIDR(row.quote.total_price) }} / pcs</template>
+                  <template v-else>Lengkapi produk, bahan & ukuran</template>
+                </span>
+                <span class="font-serif text-base font-semibold text-ink-950">{{ fmtIDR(rowSubtotal(row)) }}</span>
+              </div>
+              <p v-if="row.quoteError" class="mt-1 text-xs text-brand-700">{{ row.quoteError }}</p>
             </div>
-          </fieldset>
+          </div>
+
+          <div>
+            <button
+              type="button"
+              :disabled="atMaxItems"
+              class="inline-flex items-center gap-2 rounded-md border border-hairline bg-canvas px-4 py-2 text-sm font-semibold text-ink-900 hover:bg-canvas-alt hover:border-ink-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              @click="addItem"
+            >
+              <Plus class="h-4 w-4" :stroke-width="1.75" />
+              Tambah banner
+            </button>
+            <p class="mt-1.5 text-xs text-ink-500">
+              {{ atMaxItems
+                ? `Maksimal ${MAX_ITEMS} banner per pesanan sudah tercapai. Buat pesanan terpisah untuk banner tambahan.`
+                : `Bisa ditambah sampai ${MAX_ITEMS} banner dalam satu pesanan (${items.length}/${MAX_ITEMS}).` }}
+            </p>
+          </div>
 
           <!-- Fulfillment -->
           <fieldset class="rounded-lg border border-hairline bg-canvas p-6">
@@ -601,59 +751,6 @@ function resetForm() {
             </div>
           </fieldset>
 
-          <!-- Design -->
-          <fieldset class="rounded-lg border border-hairline bg-canvas p-6">
-            <legend class="flex items-center gap-2 px-2 -ml-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
-              <PaletteIcon class="h-3.5 w-3.5" :stroke-width="1.75" />
-              Desain
-            </legend>
-
-            <div class="grid gap-2 sm:grid-cols-2">
-              <label
-                :class="[
-                  'flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm transition-colors',
-                  form.designSource === 'upload'
-                    ? 'border-brand-500 bg-brand-50/50 text-ink-950'
-                    : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
-                ]"
-              >
-                <input v-model="form.designSource" type="radio" value="upload" class="mt-0.5 accent-brand-500">
-                <span>
-                  <span class="block font-semibold">Saya sudah punya desain</span>
-                  <span class="mt-0.5 block text-xs text-ink-500">Upload file (CDR/AI/PDF/JPG/PNG) via WA setelah order tercatat.</span>
-                </span>
-              </label>
-              <label
-                :class="[
-                  'flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm transition-colors',
-                  form.designSource === 'request'
-                    ? 'border-brand-500 bg-brand-50/50 text-ink-950'
-                    : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
-                ]"
-              >
-                <input v-model="form.designSource" type="radio" value="request" class="mt-0.5 accent-brand-500">
-                <span>
-                  <span class="block font-semibold">Minta jasa desain</span>
-                  <span class="mt-0.5 block text-xs text-ink-500">Tim desainer buat draft, Anda approve dulu sebelum cetak.</span>
-                </span>
-              </label>
-            </div>
-
-            <div v-if="form.designSource === 'request'" class="mt-4">
-              <label for="ord-brief" class="block text-sm font-medium text-ink-900">
-                Brief singkat <span class="text-brand-500">*</span>
-              </label>
-              <textarea
-                id="ord-brief"
-                v-model="form.designBrief"
-                rows="3"
-                required
-                placeholder="Contoh: Banner ucapan syukuran, warna dominan biru, teks 'Aqiqah Naura'. Logo boleh saya kirim via WA nanti."
-                class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-              />
-            </div>
-          </fieldset>
-
           <!-- Kontak -->
           <fieldset v-if="!auth.isCustomer" class="rounded-lg border border-hairline bg-canvas p-6">
             <legend class="flex items-center gap-2 px-2 -ml-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
@@ -702,7 +799,7 @@ function resetForm() {
           <fieldset class="rounded-lg border border-hairline bg-canvas p-6">
             <legend class="flex items-center gap-2 px-2 -ml-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">
               <StickyNote class="h-3.5 w-3.5" :stroke-width="1.75" />
-              Catatan (opsional)
+              Catatan (opsional, untuk seluruh pesanan)
             </legend>
             <textarea
               v-model="form.notes"
@@ -718,66 +815,32 @@ function resetForm() {
           <div class="rounded-lg border border-hairline bg-canvas p-6">
             <div class="flex items-center gap-2">
               <Receipt class="h-4 w-4 text-ink-700" :stroke-width="1.75" />
-              <h2 class="text-sm font-semibold text-ink-900">Ringkasan</h2>
+              <h2 class="text-sm font-semibold text-ink-900">Ringkasan · {{ items.length }} banner</h2>
             </div>
 
-            <dl class="mt-4 space-y-2 text-sm">
-              <div class="flex justify-between">
-                <dt class="text-ink-500">Produk</dt>
-                <dd class="text-ink-900 text-right max-w-[60%] truncate">{{ productDetail?.name || '—' }}</dd>
-              </div>
-              <div class="flex justify-between">
-                <dt class="text-ink-500">Bahan</dt>
-                <dd class="text-ink-900 text-right max-w-[60%] truncate">{{ quote?.material_name || '—' }}</dd>
-              </div>
-              <div class="flex justify-between">
-                <dt class="text-ink-500">Ukuran</dt>
-                <dd class="text-ink-900 font-mono text-xs">
-                  <template v-if="form.widthCm > 0 && form.heightCm > 0">
-                    {{ form.widthCm }} × {{ form.heightCm }} cm
+            <ul class="mt-4 space-y-3 divide-y divide-hairline">
+              <li v-for="(row, idx) in items" :key="row.key" class="pt-3 first:pt-0 text-sm">
+                <div class="flex justify-between gap-2">
+                  <span class="text-ink-500">Banner {{ idx + 1 }}</span>
+                  <span class="text-ink-900 font-medium">{{ fmtIDR(rowSubtotal(row)) }}</span>
+                </div>
+                <p class="mt-0.5 text-xs text-ink-500 truncate">
+                  {{ row.productDetail?.name || 'Belum dipilih' }}
+                  <template v-if="row.widthCm > 0 && row.heightCm > 0">
+                    <span class="text-ink-400">·</span> <span class="font-mono">{{ row.widthCm }}×{{ row.heightCm }}cm</span>
                   </template>
-                  <template v-else>—</template>
-                </dd>
-              </div>
-              <div class="flex justify-between">
-                <dt class="text-ink-500">Kuantitas</dt>
-                <dd class="text-ink-900">{{ form.quantity }} pcs</dd>
-              </div>
-              <div v-if="quote?.area_m2 != null" class="flex justify-between">
-                <dt class="text-ink-500">Luas / pcs</dt>
-                <dd class="text-ink-900 font-mono text-xs">{{ quote.area_m2.toFixed(2) }} m²</dd>
-              </div>
-              <div
-                v-if="quote?.chargeable_m2 != null && quote?.area_m2 != null && quote.chargeable_m2 > quote.area_m2"
-                class="flex justify-between"
-              >
-                <dt class="text-ink-500">Luas dihitung (min. order)</dt>
-                <dd class="text-ink-900 font-mono text-xs">{{ quote.chargeable_m2.toFixed(2) }} m²</dd>
-              </div>
-              <p
-                v-if="quote?.chargeable_m2 != null && quote?.area_m2 != null && quote.chargeable_m2 > quote.area_m2"
-                class="text-xs text-ink-500 leading-relaxed"
-              >
-                Bahan ini punya minimum order {{ quote.chargeable_m2.toFixed(2) }} m² — harga dihitung dari luas minimum, bukan luas aktual pesanan.
-              </p>
-              <div class="flex justify-between border-t border-hairline pt-2 mt-1">
-                <dt class="text-ink-500">Harga / pcs</dt>
-                <dd class="text-ink-900">
-                  <span v-if="quoteLoading" class="inline-flex items-center text-ink-500">
-                    <Loader2 class="h-3 w-3 animate-spin" :stroke-width="1.75" />
-                  </span>
-                  <span v-else>{{ fmtIDR(quote?.total_price) }}</span>
-                </dd>
-              </div>
-              <div class="flex justify-between border-t border-hairline pt-3 mt-1">
-                <dt class="font-semibold text-ink-950">Subtotal</dt>
-                <dd class="font-serif text-lg font-semibold text-ink-950">{{ fmtIDR(subtotal) }}</dd>
-              </div>
-            </dl>
+                  <span class="text-ink-400">·</span> {{ row.quantity }} pcs
+                </p>
+              </li>
+            </ul>
+
+            <div class="mt-4 flex justify-between border-t border-hairline pt-3">
+              <span class="font-semibold text-ink-950">Subtotal</span>
+              <span class="font-serif text-lg font-semibold text-ink-950">{{ fmtIDR(grandSubtotal) }}</span>
+            </div>
             <p v-if="isKirim" class="mt-2 text-[11px] text-ink-500 leading-relaxed">
               + ongkir (dihitung admin, diinfokan via WA).
             </p>
-            <p v-if="quoteError" class="mt-3 text-xs text-brand-700">{{ quoteError }}</p>
 
             <!--
               type="button" + @click supaya submit tetap fire di kondisi hydration

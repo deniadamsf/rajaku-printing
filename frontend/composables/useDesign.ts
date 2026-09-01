@@ -60,22 +60,34 @@ export function useDesign(options: UseApiOptions = {}) {
     return api.post<{ ok: boolean }>(`/design-drafts/${draftId}/revision`, { notes })
   }
 
-  async function uploadDraft(resi: string, file: File, notes?: string): Promise<DesignFile> {
+  /**
+   * uploadDraft — staff upload draft desain untuk SATU baris item (§32.5,
+   * request path). `orderItemId` wajib — backend menolak 400 kalau kosong
+   * atau bukan milik order ini (`order_item_id tidak ditemukan pada order
+   * ini`). Cuma SATU draft `pending` yang boleh ada per ORDER (bukan per
+   * item) — upload kedua sebelum draft pertama direspon customer akan
+   * ditolak 409 `ErrPendingDraftExists`, apa pun item tujuannya.
+   */
+  async function uploadDraft(resi: string, orderItemId: string, file: File, notes?: string): Promise<DesignFile> {
     const form = new FormData()
     form.append('file', file)
+    form.append('order_item_id', orderItemId)
     if (notes) form.append('notes', notes)
     return api.post<DesignFile>(`/admin/orders/${resi}/design-drafts`, form)
   }
 
   /**
    * uploadCustomerFile — customer upload desain siap cetak (design_source
-   * 'upload') atau aset desain untuk request desain (design_source 'request').
-   * Role di-derive backend dari `order.design_source`; validasi state (order
-   * harus 'dibayar' dst) juga di backend — lihat design_service.go.
+   * 'upload') atau aset desain untuk request desain (design_source 'request')
+   * untuk SATU baris item (§32.5). `orderItemId` wajib. Role di-derive
+   * backend dari `order_items.design_source` milik item itu — BUKAN
+   * `order.design_source` (bisa 'mixed' di order campuran); validasi state
+   * (order harus 'dibayar' dst) juga di backend — lihat design_service.go.
    */
-  async function uploadCustomerFile(resi: string, file: File, notes?: string): Promise<DesignFile> {
+  async function uploadCustomerFile(resi: string, orderItemId: string, file: File, notes?: string): Promise<DesignFile> {
     const form = new FormData()
     form.append('file', file)
+    form.append('order_item_id', orderItemId)
     if (notes) form.append('notes', notes)
     return api.post<DesignFile>(`/orders/${resi}/design-files`, form)
   }

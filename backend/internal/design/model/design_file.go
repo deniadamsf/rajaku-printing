@@ -36,7 +36,14 @@ const (
 type DesignFile struct {
 	ID      uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 	OrderID uuid.UUID `gorm:"type:uuid;not null;index"                       json:"order_id"`
-	Role    Role      `gorm:"size:30;not null"                               json:"role"`
+	// OrderItemID — baris order_items yang ditumpangi file ini (§32.5,
+	// migration 000034). Setiap file desain menempel ke SATU item, bukan ke
+	// order secara umum — supaya staff tahu file mana untuk banner yang
+	// mana saat sebuah order punya beberapa ukuran/produk sekaligus.
+	// Validasi design_source (ErrDesignSourceMismatch) dicek terhadap
+	// item ini, BUKAN orders.design_source (yang sejak §32.1 bisa "mixed").
+	OrderItemID uuid.UUID `gorm:"type:uuid;not null;index"                   json:"order_item_id"`
+	Role        Role      `gorm:"size:30;not null"                          json:"role"`
 
 	FilePath         string `gorm:"not null"           json:"-"` // internal; served via /design-files/:id/file
 	FileOriginalName string `gorm:"size:255;not null"  json:"file_original_name"`

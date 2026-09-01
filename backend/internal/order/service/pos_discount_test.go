@@ -36,16 +36,18 @@ func (f *fakeDiscountResolver) ResolveForOrder(_ context.Context, in discountapi
 
 func posInput(productID, materialID, customerID, kasirID uuid.UUID) orderapi.POSCreateOrderInput {
 	return orderapi.POSCreateOrderInput{
-		CustomerID:   customerID,
-		KasirID:      kasirID,
-		ProductID:    productID,
-		MaterialID:   materialID,
-		WidthCm:      100,
-		HeightCm:     200,
-		Quantity:     1,
-		MetodeAmbil:  "pickup",
-		MetodeBayar:  "cash",
-		DesignSource: "upload",
+		CustomerID: customerID,
+		KasirID:    kasirID,
+		Items: []orderapi.POSOrderItemInput{{
+			ProductID:    productID,
+			MaterialID:   materialID,
+			WidthCm:      100,
+			HeightCm:     200,
+			Quantity:     1,
+			DesignSource: "upload",
+		}},
+		MetodeAmbil: "pickup",
+		MetodeBayar: "cash",
 	}
 }
 
@@ -60,6 +62,11 @@ func TestCreatePOSOrder_TotalFormula_WithMasterDiscount(t *testing.T) {
 	resolver := &fakeDiscountResolver{snap: &discountapi.Snapshot{
 		DiscountID: &discID, Code: "PROMO10", Name: "Promo 10rb",
 		Type: "nominal", Value: 10000, Amount: 10000,
+		// Allocations wajib diisi (§32.2/§32.3) — resolver asli SELALU
+		// mengembalikan satu entri per item; fixture ini meniru kontrak itu
+		// supaya order/service.applyItemDiscountAllocations (guard §22
+		// terhadap Σ alokasi != discount_amount) tidak menolaknya.
+		Allocations: []discountapi.ItemAllocation{{LineNo: 1, Amount: 10000}},
 	}}
 	svc := New(store, catalog, &fakeCustomers{})
 	svc.SetDiscountResolver(resolver)
@@ -83,8 +90,8 @@ func TestCreatePOSOrder_TotalFormula_WithMasterDiscount(t *testing.T) {
 	if store.saved.DiscountNameSnapshot == nil || *store.saved.DiscountNameSnapshot != "Promo 10rb" {
 		t.Fatalf("saved order discount_name_snapshot = %v, want Promo 10rb", store.saved.DiscountNameSnapshot)
 	}
-	if resolver.lastInput.Subtotal != 50000 || resolver.lastInput.Channel != "pos" {
-		t.Fatalf("resolver input = %+v, want subtotal=50000 channel=pos", resolver.lastInput)
+	if len(resolver.lastInput.Items) != 1 || resolver.lastInput.Items[0].Subtotal != 50000 || resolver.lastInput.Channel != "pos" {
+		t.Fatalf("resolver input = %+v, want 1 item subtotal=50000 channel=pos", resolver.lastInput)
 	}
 }
 

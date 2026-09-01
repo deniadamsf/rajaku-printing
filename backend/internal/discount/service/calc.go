@@ -2,6 +2,7 @@ package service
 
 import (
 	"math"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,17 +31,38 @@ func computeStatus(d *model.Discount, usageCount int64, now time.Time) string {
 	}
 }
 
-// validateForUse checks every rule in §28.4 (in the order sentinel errors
-// are documented there) and returns the FIRST one that fails, or nil if the
-// discount may be used for this subtotal/channel right now.
+// validateForUse checks every rule in §28.4/§32.3 and returns the FIRST one
+// that fails, or nil if the discount may be used for this subtotal/channel
+// right now.
 //
-// productID + scopedProductIDs implement §28.9: only checked when
+// Urutan pemeriksaan (temuan review §32.3/§28.4 — WAJIB dalam urutan ini,
+// jangan diubah tanpa alasan): is_active → masa berlaku → channel → CAKUPAN
+// PRODUK (§28.9) → eligible_subtotal > 0 → min_subtotal → kuota → cakupan
+// member (§30.3). Cakupan produk dicek SEBELUM min_subtotal dengan sengaja:
+// min_subtotal dibandingkan terhadap eligible_subtotal (basis yang sudah
+// disaring per cakupan produk, bukan subtotal seluruh keranjang), jadi kalau
+// urutannya dibalik, kasir/pembeli akan melihat pesan "subtotal minimum
+// tidak terpenuhi" padahal akar masalahnya "tidak ada produk yang cocok" —
+// pesan yang salah untuk masalah yang sebenar-benarnya berbeda.
+//
+// subtotal — basis hitung (§32.3): pemanggil (resolveMasterDiscount) sudah
+// menghitung eligible_subtotal SEBELUM memanggil ini untuk applies_to=
+// "selected" (Σ subtotal item yang product_id-nya ada di scopedProductIDs),
+// jadi min_subtotal di bawah otomatis dibandingkan ke basis yang benar tanpa
+// fungsi ini perlu tahu konsep "item" sama sekali.
+//
+// productIDs + scopedProductIDs implement §28.9/§32.3: only checked when
 // d.AppliesTo == "selected" — an "all" discount ignores both arguments
 // entirely. scopedProductIDs being empty is NEVER treated as "applies to
 // everything" (ErrDiscountScopeEmpty), even though the discount's row was
 // saved with applies_to="selected" — a product that used to be the sole
 // member of the scope can be dropped from it AFTER the discount was created,
 // so this must be re-checked here every time, not just at create/update.
+// productIDs is the set of product_id across every candidate item (order
+// items, or the cart being previewed by Applicable) — an empty slice means
+// "not filtering by product" (Applicable's compatibility case, no product_id
+// sent at all); a non-empty slice with NO overlap against scopedProductIDs
+// means none of the candidate items are eligible → ErrDiscountProductMismatch.
 //
 // customerID + isActiveMember + membershipEnabled + scopedCustomerIDs
 // implement §30.3: only checked when d.AudienceScope == "member" — an "all"
@@ -48,7 +70,7 @@ func computeStatus(d *model.Discount, usageCount int64, now time.Time) string {
 // §28.9 product scope, so callers see the same ordering documented in
 // §28.4/§30.3 (channel/period/quota/product scope first, member scope last).
 func validateForUse(d *model.Discount, subtotal int64, channel string, usageCount int64, now time.Time,
-	productID uuid.UUID, scopedProductIDs []uuid.UUID,
+	productIDs []uuid.UUID, scopedProductIDs []uuid.UUID,
 	customerID uuid.UUID, isActiveMember bool, membershipEnabled bool, scopedCustomerIDs []uuid.UUID) error {
 	if !d.IsActive {
 		return discountapi.ErrDiscountInactive
@@ -62,26 +84,38 @@ func validateForUse(d *model.Discount, subtotal int64, channel string, usageCoun
 	if d.ChannelScope != model.ChannelScopeAll && string(d.ChannelScope) != channel {
 		return discountapi.ErrDiscountChannelMismatch
 	}
+	// §28.9/§32.3 — cakupan produk WAJIB ditentukan SEBELUM min_subtotal.
+	// Lihat doc-comment di atas fungsi ini untuk alasannya.
+	if d.AppliesTo == model.AppliesToSelected {
+		// Cakupan kosong ditolak TANPA SYARAT (temuan review #4) — tidak
+		// peduli productIDs diisi atau tidak, applies_to="selected" dengan
+		// discount_products kosong TIDAK PERNAH bisa dipakai.
+		if len(scopedProductIDs) == 0 {
+			return discountapi.ErrDiscountScopeEmpty
+		}
+		// productIDs kosong berarti "tidak difilter berdasarkan produk
+		// tertentu" (dipakai Applicable ketika caller tidak mengirim
+		// product_id sama sekali) — kecocokan produk baru dicek kalau
+		// caller benar-benar menyebutkan produknya.
+		if len(productIDs) > 0 && !containsAnyUUID(scopedProductIDs, productIDs) {
+			return discountapi.ErrDiscountProductMismatch
+		}
+	}
+	// §32.3 — eligible_subtotal <= 0 berarti tidak ada satu pun item yang
+	// benar-benar menyumbang nilai ke basis diskon ini (mis. cakupan produk
+	// cocok tapi item itu bernilai Rp0, atau applies_to='all' pada order yang
+	// entah bagaimana bernilai nol) — tolak eksplisit dengan sentinel yang
+	// sama seperti "tidak ada produk cocok" (ErrDiscountProductMismatch),
+	// supaya diskon begini tidak lolos dengan potongan Rp0 sambil tetap
+	// memakan satu slot kuota (§28.4 menghitung kuota dari orders.discount_id).
+	if subtotal <= 0 {
+		return discountapi.ErrDiscountProductMismatch
+	}
 	if subtotal < d.MinSubtotal {
 		return discountapi.ErrDiscountMinSubtotal
 	}
 	if d.Quota != nil && usageCount >= int64(*d.Quota) {
 		return discountapi.ErrDiscountQuotaExhausted
-	}
-	if d.AppliesTo == model.AppliesToSelected {
-		// Cakupan kosong ditolak TANPA SYARAT (temuan review #4) — tidak
-		// peduli productID diisi atau tidak, applies_to="selected" dengan
-		// discount_products kosong TIDAK PERNAH bisa dipakai.
-		if len(scopedProductIDs) == 0 {
-			return discountapi.ErrDiscountScopeEmpty
-		}
-		// productID == uuid.Nil berarti "tidak difilter berdasarkan produk
-		// tertentu" (dipakai Applicable ketika caller tidak mengirim
-		// product_id sama sekali) — kecocokan produk baru dicek kalau
-		// caller benar-benar menyebutkan produknya.
-		if productID != uuid.Nil && !containsUUID(scopedProductIDs, productID) {
-			return discountapi.ErrDiscountProductMismatch
-		}
 	}
 	if d.AudienceScope == model.AudienceScopeMember {
 		// §30.1 — ditolak SAAT DIPAKAI, bukan cuma disembunyikan di UI. Dicek
@@ -117,6 +151,18 @@ func validateForUse(d *model.Discount, subtotal int64, channel string, usageCoun
 func containsUUID(ids []uuid.UUID, id uuid.UUID) bool {
 	for _, v := range ids {
 		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAnyUUID reports whether at least one of `candidates` is present in
+// `ids` (§32.3 — "diskon applies_to='selected' muncul kalau minimal satu
+// product_id cocok").
+func containsAnyUUID(ids []uuid.UUID, candidates []uuid.UUID) bool {
+	for _, c := range candidates {
+		if containsUUID(ids, c) {
 			return true
 		}
 	}
@@ -165,6 +211,62 @@ func clampAmount(raw, subtotal int64) int64 {
 		return subtotal
 	}
 	return raw
+}
+
+// allocate implements §32.3's "metode sisa terbesar" (largest remainder
+// method): `amount` is split across `items` proportionally to each item's
+// Subtotal, floored, then the leftover rupiah is handed out ONE AT A TIME to
+// the items with the largest fractional remainder — ties broken by the
+// smallest LineNo. This GUARANTEES Σ result == amount exactly, which plain
+// per-row rounding does NOT (§32.2's invariant depends on this holding).
+//
+// Every item in `items` gets an entry in the result, including ones that end
+// up with Amount 0 (an item list that's empty of remainder-winners, or
+// `amount<=0`) — callers must never have to guess which lines were skipped.
+func allocate(amount int64, items []discountapi.ResolveItem) []discountapi.ItemAllocation {
+	out := make([]discountapi.ItemAllocation, len(items))
+	for i := range items {
+		out[i] = discountapi.ItemAllocation{LineNo: items[i].LineNo, Amount: 0}
+	}
+	if amount <= 0 || len(items) == 0 {
+		return out
+	}
+	var basis int64
+	for i := range items {
+		basis += items[i].Subtotal
+	}
+	if basis <= 0 {
+		// Tidak ada dasar proporsional yang masuk akal (semua item subtotal
+		// 0) — jangan bagi dengan nol, biarkan semua 0 apa adanya.
+		return out
+	}
+
+	type remainder struct {
+		idx  int
+		frac float64
+		line int
+	}
+	remainders := make([]remainder, len(items))
+	var allocated int64
+	for i := range items {
+		exact := float64(amount) * float64(items[i].Subtotal) / float64(basis)
+		floor := int64(math.Floor(exact))
+		out[i].Amount = floor
+		allocated += floor
+		remainders[i] = remainder{idx: i, frac: exact - float64(floor), line: items[i].LineNo}
+	}
+
+	leftover := amount - allocated
+	sort.SliceStable(remainders, func(a, b int) bool {
+		if remainders[a].frac != remainders[b].frac {
+			return remainders[a].frac > remainders[b].frac
+		}
+		return remainders[a].line < remainders[b].line
+	})
+	for i := int64(0); i < leftover && int(i) < len(remainders); i++ {
+		out[remainders[i].idx].Amount++
+	}
+	return out
 }
 
 // toDiscountView projects a model.Discount + usage count + product/member

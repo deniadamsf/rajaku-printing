@@ -44,7 +44,7 @@ const recapCSVFlushEvery = 200
 // recapCSVHeader — kolom sama dengan tabel admin (§28.5): angka rupiah polos
 // tanpa pemisah ribuan (langsung terbaca sebagai angka di spreadsheet).
 var recapCSVHeader = []string{
-	"Tanggal", "Resi", "Pelanggan", "Produk", "Channel", "Status",
+	"Tanggal", "Resi", "Pelanggan", "Produk", "Jumlah Item", "Channel", "Status",
 	"Subtotal", "Diskon", "Nominal Diskon", "Ongkir", "Total", "Metode Bayar",
 }
 
@@ -57,6 +57,7 @@ func recapRowToCSVRecord(r service.RecapRow) []string {
 		// formula injection sebelum ditulis sebagai sel CSV.
 		csvsafe.Field(r.CustomerName),
 		r.ProductName,
+		strconv.FormatInt(r.ItemCount, 10),
 		r.Channel,
 		r.Status,
 		strconv.FormatInt(r.Subtotal, 10),

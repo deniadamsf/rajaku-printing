@@ -15,6 +15,13 @@ type UploadInput struct {
 	// Order identifier — pakai resi (yg ditangani handler dari :resi param).
 	Resi string
 
+	// OrderItemID — order_items.id yang dituju (§32.5). WAJIB diisi; service
+	// menolak dengan designapi.ErrOrderItemMismatch kalau tidak ditemukan
+	// pada order yang dituju. Role file (customer_upload/customer_asset/
+	// staff_draft) diturunkan dari DesignSource item ini, bukan
+	// orders.design_source (yang bisa "mixed" pada order campuran).
+	OrderItemID uuid.UUID
+
 	// Caller identity — dipakai untuk ownership check + audit.
 	CallerID uuid.UUID
 	IsStaff  bool

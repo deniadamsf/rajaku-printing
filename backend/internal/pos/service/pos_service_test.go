@@ -185,14 +185,16 @@ func validInput(kasir uuid.UUID) CreateOrderInput {
 		KasirID:       kasir,
 		CustomerName:  "Budi",
 		CustomerPhone: "081234567890", // will be normalized to 6281234567890
-		ProductID:     uuid.New(),
-		MaterialID:    uuid.New(),
-		WidthCm:       100,
-		HeightCm:      200,
-		Quantity:      1,
-		MetodeAmbil:   "pickup",
-		MetodeBayar:   "cash",
-		DesignSource:  "upload",
+		Items: []CreateOrderItemInput{{
+			ProductID:    uuid.New(),
+			MaterialID:   uuid.New(),
+			WidthCm:      100,
+			HeightCm:     200,
+			Quantity:     1,
+			DesignSource: "upload",
+		}},
+		MetodeAmbil: "pickup",
+		MetodeBayar: "cash",
 	}
 }
 
@@ -266,12 +268,16 @@ func TestCreateOrder_LineItemDetailsPopulated(t *testing.T) {
 	cmd := &fakeOrderCmd{createResult: &orderapi.OrderSummary{
 		ID: uuid.New(), Resi: "RJK-POS7", CustomerID: custID,
 		Total: 215000, MetodeBayar: "cash", MetodeAmbil: "kirim",
-		ProductName:  "Banner Vinyl",
-		MaterialName: "Flexi Korea",
-		WidthCm:      100,
-		HeightCm:     200,
-		Quantity:     2,
-		UnitPrice:    100000,
+		Items: []orderapi.OrderItemView{{
+			LineNo:       1,
+			ProductName:  "Banner Vinyl",
+			MaterialName: "Flexi Korea",
+			WidthCm:      100,
+			HeightCm:     200,
+			Quantity:     2,
+			UnitPrice:    100000,
+			Subtotal:     200000,
+		}},
 		Subtotal:     200000,
 		ShippingCost: &shipping,
 	}}
@@ -292,26 +298,103 @@ func TestCreateOrder_LineItemDetailsPopulated(t *testing.T) {
 	if result.CustomerPhone != "6281234567890" {
 		t.Errorf("customer_phone: want %q got %q", "6281234567890", result.CustomerPhone)
 	}
-	if result.ProductName != "Banner Vinyl" {
-		t.Errorf("product_name: want Banner Vinyl got %q", result.ProductName)
+	if len(result.Items) != 1 {
+		t.Fatalf("want 1 receipt item, got %d", len(result.Items))
 	}
-	if result.MaterialName != "Flexi Korea" {
-		t.Errorf("material_name: want Flexi Korea got %q", result.MaterialName)
+	item := result.Items[0]
+	if item.ProductName != "Banner Vinyl" {
+		t.Errorf("product_name: want Banner Vinyl got %q", item.ProductName)
 	}
-	if result.WidthCm != 100 || result.HeightCm != 200 {
-		t.Errorf("width/height: want 100x200 got %dx%d", result.WidthCm, result.HeightCm)
+	if item.MaterialName != "Flexi Korea" {
+		t.Errorf("material_name: want Flexi Korea got %q", item.MaterialName)
 	}
-	if result.Quantity != 2 {
-		t.Errorf("quantity: want 2 got %d", result.Quantity)
+	if item.WidthCm != 100 || item.HeightCm != 200 {
+		t.Errorf("width/height: want 100x200 got %dx%d", item.WidthCm, item.HeightCm)
 	}
-	if result.UnitPrice != 100000 {
-		t.Errorf("unit_price: want 100000 got %d", result.UnitPrice)
+	if item.Quantity != 2 {
+		t.Errorf("quantity: want 2 got %d", item.Quantity)
+	}
+	if item.UnitPrice != 100000 {
+		t.Errorf("unit_price: want 100000 got %d", item.UnitPrice)
 	}
 	if result.Subtotal != 200000 {
 		t.Errorf("subtotal: want 200000 got %d", result.Subtotal)
 	}
 	if result.ShippingCost == nil || *result.ShippingCost != 15000 {
 		t.Errorf("shipping_cost: want 15000 got %v", result.ShippingCost)
+	}
+}
+
+// TestCreateOrder_MultiItem_TwoDifferentSizes_ProducesTwoReceiptLines
+// (Tugas A) — order POS dengan 2 baris produk beda ukuran wajib meneruskan
+// SELURUH item ke orderapi.POSCreateOrderInput (bukan cuma Items[0]), dan
+// struk (result.Items) wajib memuat 2 baris dengan totalnya benar. Baris
+// diskon TETAP satu agregat di level order (§32.7) — bukan per item.
+func TestCreateOrder_MultiItem_TwoDifferentSizes_ProducesTwoReceiptLines(t *testing.T) {
+	kasir := uuid.New()
+	custID := uuid.New()
+	discountAmt := int64(20000)
+	cmd := &fakeOrderCmd{createResult: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-POS11", CustomerID: custID,
+		Total: 280000, MetodeBayar: "cash", MetodeAmbil: "pickup",
+		Items: []orderapi.OrderItemView{
+			{
+				LineNo: 1, ProductName: "Banner Vinyl", MaterialName: "Flexi Korea",
+				WidthCm: 100, HeightCm: 200, Quantity: 1, UnitPrice: 200000, Subtotal: 200000,
+			},
+			{
+				LineNo: 2, ProductName: "Banner Vinyl", MaterialName: "Flexi China",
+				WidthCm: 300, HeightCm: 100, Quantity: 1, UnitPrice: 100000, Subtotal: 100000,
+			},
+		},
+		Subtotal:       300000,
+		DiscountAmount: discountAmt,
+		DiscountLabel:  "Promo Lebaran",
+	}}
+	custs := &fakeCustomers{identity: &authapi.Identity{UserID: custID, Name: "Budi", Phone: "6281234567890"}}
+	svc := newSvc(cmd, custs, nil, nil)
+
+	in := validInput(kasir)
+	in.Items = []CreateOrderItemInput{
+		{ProductID: uuid.New(), MaterialID: uuid.New(), WidthCm: 100, HeightCm: 200, Quantity: 1, DesignSource: "upload"},
+		{ProductID: uuid.New(), MaterialID: uuid.New(), WidthCm: 300, HeightCm: 100, Quantity: 1, DesignSource: "request", DesignBrief: "logo toko di tengah"},
+	}
+
+	result, err := svc.CreateOrder(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+
+	// Kedua item dari input harus diteruskan utuh ke orderapi — bukan cuma
+	// Items[0] (regresi yang persis ditinggalkan tahap 1 sebagai TODO).
+	if len(cmd.createInput.Items) != 2 {
+		t.Fatalf("orderapi.POSCreateOrderInput.Items: want 2 got %d", len(cmd.createInput.Items))
+	}
+	if cmd.createInput.Items[0].WidthCm != 100 || cmd.createInput.Items[1].WidthCm != 300 {
+		t.Errorf("item order/width tidak sesuai input: %+v", cmd.createInput.Items)
+	}
+	if cmd.createInput.Items[1].DesignSource != "request" || cmd.createInput.Items[1].DesignBrief != "logo toko di tengah" {
+		t.Errorf("item[1] design_source/brief tidak diteruskan: %+v", cmd.createInput.Items[1])
+	}
+
+	// Struk memuat 2 baris item.
+	if len(result.Items) != 2 {
+		t.Fatalf("result.Items: want 2 baris struk got %d", len(result.Items))
+	}
+	if result.Items[0].Subtotal != 200000 || result.Items[1].Subtotal != 100000 {
+		t.Errorf("subtotal per baris salah: %+v", result.Items)
+	}
+
+	// Total tetap dibaca dari kolom agregat orders (§32.2), bukan dihitung
+	// ulang dari Items di sini.
+	if result.Subtotal != 300000 {
+		t.Errorf("subtotal agregat: want 300000 got %d", result.Subtotal)
+	}
+	if result.DiscountAmount != 20000 || result.DiscountLabel != "Promo Lebaran" {
+		t.Errorf("baris diskon agregat salah: amount=%d label=%q", result.DiscountAmount, result.DiscountLabel)
+	}
+	if result.Total != 280000 {
+		t.Errorf("total: want 280000 got %d", result.Total)
 	}
 }
 

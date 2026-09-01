@@ -33,6 +33,7 @@ func mapDomainErr(c *gin.Context, err error) {
 		httpx.Error(c, http.StatusForbidden, httpx.CodeForbidden, err.Error())
 	case errors.Is(err, designapi.ErrOrderNotDesignReady),
 		errors.Is(err, designapi.ErrDesignSourceMismatch),
+		errors.Is(err, designapi.ErrOrderItemMismatch),
 		errors.Is(err, designapi.ErrInvalidRole),
 		errors.Is(err, designapi.ErrInvalidMimeType),
 		errors.Is(err, designapi.ErrFileTooLarge),
@@ -56,8 +57,10 @@ func mapDomainErr(c *gin.Context, err error) {
 
 // POST /orders/:resi/design-files
 // Content-Type: multipart/form-data
-// Fields: file (required), notes (optional)
-// Auth: RequireAuth (customer OR staff). Service derive role dari order.design_source.
+// Fields: file (required), order_item_id (required, §32.5), notes (optional)
+// Auth: RequireAuth (customer OR staff). Service derive role dari
+// order_items.design_source milik order_item_id yang dikirim — BUKAN
+// orders.design_source (bisa "mixed" pada order campuran).
 func (h *Handler) UploadCustomerFile(c *gin.Context) {
 	id, err := authapi.IdentityFromContext(c.Request.Context())
 	if err != nil || id == nil {
@@ -67,6 +70,10 @@ func (h *Handler) UploadCustomerFile(c *gin.Context) {
 	resi := c.Param("resi")
 	if resi == "" {
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeBadRequest, "resi required")
+		return
+	}
+	itemID, ok := parseOrderItemID(c)
+	if !ok {
 		return
 	}
 	fh, ok := openUploadFile(c)
@@ -87,6 +94,7 @@ func (h *Handler) UploadCustomerFile(c *gin.Context) {
 
 	saved, err := h.svc.UploadCustomerFile(c.Request.Context(), service.UploadInput{
 		Resi:          resi,
+		OrderItemID:   itemID,
 		CallerID:      id.UserID,
 		IsStaff:       id.UserType == authapi.UserTypeStaff,
 		ScopedOrderID: id.OrderID,
@@ -104,11 +112,16 @@ func (h *Handler) UploadCustomerFile(c *gin.Context) {
 }
 
 // POST /admin/orders/:resi/design-drafts
-// Same multipart form; caller is staff (permission design.work).
+// Same multipart form (+ order_item_id, §32.5); caller is staff (permission
+// design.work).
 func (h *Handler) StaffUploadDraft(c *gin.Context) {
 	id, err := authapi.IdentityFromContext(c.Request.Context())
 	if err != nil || id == nil {
 		httpx.Error(c, http.StatusUnauthorized, httpx.CodeUnauthorized, "authentication required")
+		return
+	}
+	itemID, ok := parseOrderItemID(c)
+	if !ok {
 		return
 	}
 	fh, ok := openUploadFile(c)
@@ -129,6 +142,7 @@ func (h *Handler) StaffUploadDraft(c *gin.Context) {
 
 	saved, err := h.svc.StaffUploadDraft(c.Request.Context(), service.UploadInput{
 		Resi:          c.Param("resi"),
+		OrderItemID:   itemID,
 		CallerID:      id.UserID,
 		IsStaff:       true,
 		ScopedOrderID: id.OrderID,
@@ -315,6 +329,24 @@ func (h *Handler) GetFile(c *gin.Context) {
 	c.Header("Content-Disposition",
 		"inline; filename="+strconv.Quote(handle.File.FileOriginalName))
 	c.File(handle.AbsPath)
+}
+
+// parseOrderItemID — validasi shape field form "order_item_id" (§32.5).
+// Wajib diisi & berformat UUID; validasi bisnis (item benar-benar milik
+// order ini, design_source cocok) tetap di service (§22). Menulis error
+// response langsung kalau gagal; caller cukup return.
+func parseOrderItemID(c *gin.Context) (uuid.UUID, bool) {
+	raw := c.PostForm("order_item_id")
+	if raw == "" {
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "field 'order_item_id' wajib")
+		return uuid.Nil, false
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "order_item_id tidak valid")
+		return uuid.Nil, false
+	}
+	return id, true
 }
 
 // openUploadFile — validasi shape file field. Return FileHeader supaya caller

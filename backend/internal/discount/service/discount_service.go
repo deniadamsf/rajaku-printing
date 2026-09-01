@@ -170,7 +170,7 @@ func (s *Service) List(ctx context.Context, f ListFilter) (*ListResult, error) {
 
 // Applicable implements GET /admin/discounts/applicable (§28.5 UI — layar
 // kasir). Mengembalikan hanya diskon yang lolos SEMUA validasi
-// §28.4/§28.9/§30.3 untuk subtotal & channel yang diberikan, ditambah
+// §28.4/§28.9/§30.3/§32.3 untuk keranjang & channel yang diberikan, ditambah
 // preview_amount.
 //
 // Temuan review #5 — penyaringan dilakukan dengan memanggil validateForUse
@@ -181,27 +181,34 @@ func (s *Service) List(ctx context.Context, f ListFilter) (*ListResult, error) {
 // SYARAT, terlepas dari productID diisi atau tidak — begitu juga untuk
 // cakupan member (§30.3).
 //
-// productID (§28.9) — uuid.Nil berarti "tidak difilter berdasarkan produk"
-// (kompatibel dengan pemanggil lama yang belum kirim product_id — lihat
-// juga guard di validateForUse). Kalau diisi (bukan uuid.Nil), diskon
-// applies_to="selected" yang cakupannya tidak menyertakan productID
-// DISARING dari hasil — supaya kasir tidak pernah melihat promo yang akan
-// ditolak saat disimpan. Diskon applies_to="all" selalu lolos filter ini,
-// apa pun productID-nya. Handler bertanggung jawab menolak uuid.Nil yang
-// DIKIRIM EKSPLISIT sebagai product_id (400) sebelum sampai di sini.
+// items (§32.3 — kontrak yang sama dengan discountapi.ResolveInput.Items,
+// dipilih supaya layar kasir tidak pernah melihat promo yang akan ditolak
+// saat "Buat Pesanan" ditekan) — SETIAP baris di keranjang, lengkap dengan
+// subtotal per baris. Basis prefilter SQL (ListActiveForChannel) memakai
+// totalSubtotal(items) (SELURUH keranjang, sebuah superset yang AMAN: kalau
+// eligible_subtotal <= min_subtotal lolos, maka total keranjang yang lebih
+// besar pasti ikut lolos prefilter — filter yang sesungguhnya per-diskon,
+// pakai eligible_subtotal, terjadi di bawah lewat splitEligibleItems +
+// validateForUse, PERSIS pola yang dipakai resolveMasterDiscount saat order
+// benar-benar disimpan). Sebelum perubahan ini, Applicable membandingkan
+// min_subtotal ke SELURUH subtotal keranjang untuk SEMUA diskon (termasuk
+// applies_to="selected") — itu yang membuat promo "khusus produk A, min
+// Rp200rb" muncul di kasir untuk keranjang [A: Rp10rb, B: Rp500rb] lalu
+// ditolak saat disimpan (§32.3 melarang ini secara eksplisit).
 //
 // customerID (§30.3) — uuid.Nil berarti "tidak difilter berdasarkan
 // customer" — diskon audience_scope="member" SAMA SEKALI TIDAK MUNCUL di
-// hasil untuk kasus ini (aman by default, BEDA dari productID di mana
+// hasil untuk kasus ini (aman by default, BEDA dari items di mana
 // applies_to="all" tetap lolos tanpa product_id — di sini "member" TIDAK
 // PERNAH lolos tanpa customer_id, karena tanpa customer_id tidak ada cara
 // mengecek status membernya sama sekali). Kalau diisi, diskon
 // audience_scope="member" yang customer ini TIDAK MEMENUHI SYARAT (bukan
 // member aktif, membership_enabled=false, atau selected_members tapi tidak
 // match) DISARING dari hasil.
-func (s *Service) Applicable(ctx context.Context, channel string, subtotal int64, productID, customerID uuid.UUID) ([]ApplicableView, error) {
+func (s *Service) Applicable(ctx context.Context, channel string, items []discountapi.ResolveItem, customerID uuid.UUID) ([]ApplicableView, error) {
 	now := time.Now()
-	candidates, err := s.discounts.ListActiveForChannel(ctx, channel, subtotal, now)
+	cartSubtotal := totalSubtotal(items)
+	candidates, err := s.discounts.ListActiveForChannel(ctx, channel, cartSubtotal, now)
 	if err != nil {
 		return nil, fmt.Errorf("list applicable discounts: %w", err)
 	}
@@ -245,14 +252,20 @@ func (s *Service) Applicable(ctx context.Context, channel string, subtotal int64
 		u := usage[d.ID]
 		scopedProducts := productMap[d.ID]
 		scopedCustomers := customerMap[d.ID]
-		if err := validateForUse(d, subtotal, channel, u, now,
-			productID, scopedProducts,
+		// §32.3 — basis hitung PER DISKON: "all" pakai seluruh keranjang,
+		// "selected" hanya item yang cocok cakupannya. SAMA PERSIS dengan
+		// yang dipakai resolveMasterDiscount saat order disimpan — kalau
+		// basisnya beda di sini, kasir akan melihat promo yang nanti
+		// ditolak (§32.3's exact bug report).
+		_, eligibleSubtotal, allProductIDs := splitEligibleItems(items, d, scopedProducts)
+		if err := validateForUse(d, eligibleSubtotal, channel, u, now,
+			allProductIDs, scopedProducts,
 			customerID, isActiveMember, membershipEnabled, scopedCustomers); err != nil {
 			continue
 		}
 		out = append(out, ApplicableView{
 			DiscountView:  toDiscountView(d, u, scopedProducts, scopedCustomers, now),
-			PreviewAmount: computeAmount(d, subtotal),
+			PreviewAmount: computeAmount(d, eligibleSubtotal),
 		})
 	}
 	return out, nil

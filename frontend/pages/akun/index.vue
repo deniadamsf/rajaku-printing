@@ -10,7 +10,7 @@
  * Design: patuh CLAUDE.md §26.
  */
 import { User, Package, Plus, Loader2, ChevronRight, Search, Crown } from '@lucide/vue'
-import type { Order, OrderStatus } from '~/types/order'
+import { orderPrimaryProductLabel, type Order, type OrderStatus } from '~/types/order'
 import { ApiError } from '~/composables/useApi'
 
 definePageMeta({
@@ -249,7 +249,7 @@ function needsAction(status: string): boolean {
                 <div>
                   <p class="font-mono text-xs text-ink-500">{{ o.resi }}</p>
                   <p class="mt-1 text-sm font-medium text-ink-900 group-hover:text-brand-500 transition-colors">
-                    {{ o.product_name }}
+                    {{ orderPrimaryProductLabel(o) }}
                   </p>
                 </div>
                 <div class="text-right">
@@ -265,12 +265,12 @@ function needsAction(status: string): boolean {
                   </span>
                 </div>
               </div>
-              <div class="mt-2 flex flex-wrap items-center gap-3 text-xs text-ink-500">
-                <span>{{ o.material_name }}</span>
+              <div v-if="o.items[0]" class="mt-2 flex flex-wrap items-center gap-3 text-xs text-ink-500">
+                <span>{{ o.items[0].material_name }}</span>
                 <span class="text-ink-400">·</span>
-                <span class="font-mono">{{ o.width_cm }}×{{ o.height_cm }}cm</span>
+                <span class="font-mono">{{ o.items[0].width_cm }}×{{ o.items[0].height_cm }}cm</span>
                 <span class="text-ink-400">·</span>
-                <span>{{ o.quantity }} pcs</span>
+                <span>{{ o.items[0].quantity }} pcs</span>
                 <span class="text-ink-400">·</span>
                 <span>{{ fmtDate(o.created_at) }}</span>
               </div>

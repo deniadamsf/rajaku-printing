@@ -6,6 +6,24 @@ import (
 	"github.com/google/uuid"
 )
 
+// CreateOrderItemInput — satu baris produk untuk CreateOrderInput (§32).
+// DesignSource/DesignBrief/ItemNotes sekarang PER ITEM (§32.5) — satu order
+// walk-in boleh campur: banner A bawa desain sendiri, banner B minta
+// dibuatkan. Harga dihitung ulang di order module lewat catalog.Quote —
+// service ini TIDAK trust unit_price dari client, jadi field itu sengaja
+// tidak ada di sini.
+type CreateOrderItemInput struct {
+	ProductID  uuid.UUID
+	MaterialID uuid.UUID
+	WidthCm    int
+	HeightCm   int
+	Quantity   int
+
+	DesignSource string // "upload" | "request"
+	DesignBrief  string
+	ItemNotes    string
+}
+
 // CreateOrderInput — payload dari kasir. Nomor WA raw (di-normalize di service).
 type CreateOrderInput struct {
 	KasirID uuid.UUID
@@ -14,12 +32,11 @@ type CreateOrderInput struct {
 	CustomerName  string
 	CustomerPhone string // raw, akan di-normalize
 
-	// Product spec
-	ProductID  uuid.UUID
-	MaterialID uuid.UUID
-	WidthCm    int
-	HeightCm   int
-	Quantity   int
+	// Items — 1..20 baris produk (§32.4). Handler memvalidasi shape
+	// (min=1,max=20); ErrNoItems/ErrTooManyItems tetap ditegakkan lagi di
+	// orderapi (§22 defense in depth — validasi bisnis bukan tanggung jawab
+	// binding tag).
+	Items []CreateOrderItemInput
 
 	// Fulfillment
 	MetodeAmbil            string // "pickup" | "kirim"
@@ -39,10 +56,9 @@ type CreateOrderInput struct {
 	ManualDiscountAmount int64
 	DiscountNote         string
 
-	// Design
-	DesignSource       string // "upload" | "request"
+	// DesignApprovalMode tetap PER ORDER (§11, §32.5) — walau item-nya
+	// banyak, mode approval walk-in satu untuk seluruh order.
 	DesignApprovalMode string // "instant_walkin" | "async_notify"
-	DesignBrief        string
 
 	Notes string
 }
@@ -69,21 +85,32 @@ type CreateOrderResult struct {
 	// pembeli & barang yang dibeli, bukan cuma resi/tanggal/total.
 	CustomerName  string `json:"customer_name"`
 	CustomerPhone string `json:"customer_phone"`
-	ProductName   string `json:"product_name"`
-	MaterialName  string `json:"material_name"`
-	WidthCm       int    `json:"width_cm"`
-	HeightCm      int    `json:"height_cm"`
-	Quantity      int    `json:"quantity"`
-	UnitPrice     int64  `json:"unit_price"`
-	Subtotal      int64  `json:"subtotal"`
-	// DiscountAmount/DiscountLabel — §28.7: struk kasir menampilkan baris
-	// diskon HANYA kalau DiscountAmount > 0 (frontend TIDAK boleh cetak
-	// "Diskon Rp 0"). DiscountLabel sudah final (nama snapshot, atau
-	// "Diskon" untuk manual — dihitung sekali di order module).
+	// Items — satu baris struk per produk (§32.7). Terurut sama seperti
+	// order_items (LineNo ASC) — lihat sum.Items di orderapi.OrderSummary.
+	Items []ReceiptItem `json:"items"`
+	// Subtotal — agregat order (Σ item.subtotal, §32.2), BUKAN item pertama.
+	// Layar uang selalu baca angka ini, tidak pernah menjumlahkan Items.
+	Subtotal int64 `json:"subtotal"`
+	// DiscountAmount/DiscountLabel — §28.7/§32.7: struk kasir menampilkan
+	// SATU baris diskon agregat (bukan per item) HANYA kalau DiscountAmount
+	// > 0 (frontend TIDAK boleh cetak "Diskon Rp 0"). DiscountLabel sudah
+	// final (nama snapshot, atau "Diskon" untuk manual — dihitung sekali di
+	// order module).
 	DiscountAmount int64  `json:"discount_amount"`
 	DiscountLabel  string `json:"discount_label,omitempty"`
 	// ShippingCost — nil kalau pickup / belum di-set (§8).
 	ShippingCost *int64 `json:"shipping_cost,omitempty"`
+}
+
+// ReceiptItem — satu baris produk untuk struk/tampilan kasir (§32.7).
+type ReceiptItem struct {
+	ProductName  string `json:"product_name"`
+	MaterialName string `json:"material_name"`
+	WidthCm      int    `json:"width_cm"`
+	HeightCm     int    `json:"height_cm"`
+	Quantity     int    `json:"quantity"`
+	UnitPrice    int64  `json:"unit_price"`
+	Subtotal     int64  `json:"subtotal"`
 }
 
 // ReconciliationReport — laporan harian POS (§11 rekonsiliasi).

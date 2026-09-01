@@ -170,11 +170,19 @@ func (f *fakeDiscountStore) CustomerIDs(_ context.Context, ids []uuid.UUID) (map
 	return out, nil
 }
 
+// singleItem builds a one-item ResolveInput.Items slice (line_no=1) — most
+// resolve_test.go cases exercise single-item orders; multi-item allocation
+// itself is tested separately in calc_test.go (allocate) and
+// order/service tests (§32.2 invariants).
+func singleItem(subtotal int64, productID uuid.UUID) []discountapi.ResolveItem {
+	return []discountapi.ResolveItem{{LineNo: 1, ProductID: productID, Subtotal: subtotal}}
+}
+
 // ---- ResolveForOrder ----
 
 func TestResolveForOrder_NoDiscountRequested(t *testing.T) {
 	svc := New(&fakeDiscountStore{})
-	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{Subtotal: 100_000, Channel: "pos"})
+	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{Items: singleItem(100_000, uuid.New()), Channel: "pos"})
 	if err != nil {
 		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
 	}
@@ -195,7 +203,7 @@ func TestResolveForOrder_MasterDiscount_HappyPath(t *testing.T) {
 	}
 	svc := New(store)
 	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 200_000, Channel: "pos",
+		DiscountID: &id, Items: singleItem(200_000, uuid.New()), Channel: "pos",
 	})
 	if err != nil {
 		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
@@ -210,7 +218,7 @@ func TestResolveForOrder_MasterDiscount_NotFound(t *testing.T) {
 	store := &fakeDiscountStore{findErr: repository.ErrNotFound}
 	svc := New(store)
 	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 200_000, Channel: "pos",
+		DiscountID: &id, Items: singleItem(200_000, uuid.New()), Channel: "pos",
 	})
 	if err != discountapi.ErrDiscountNotFound {
 		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountNotFound", err)
@@ -220,7 +228,7 @@ func TestResolveForOrder_MasterDiscount_NotFound(t *testing.T) {
 func TestResolveForOrder_ManualDiscount_HappyPath(t *testing.T) {
 	svc := New(&fakeDiscountStore{})
 	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		ManualAmount: 20_000, Note: "nego pelanggan lama", Subtotal: 100_000, Channel: "pos",
+		ManualAmount: 20_000, Note: "nego pelanggan lama", Items: singleItem(100_000, uuid.New()), Channel: "pos",
 	})
 	if err != nil {
 		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
@@ -235,7 +243,7 @@ func TestResolveForOrder_ManualDiscount_HappyPath(t *testing.T) {
 func TestResolveForOrder_ManualDiscount_NoteRequired(t *testing.T) {
 	svc := New(&fakeDiscountStore{})
 	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		ManualAmount: 20_000, Note: "   ", Subtotal: 100_000, Channel: "pos",
+		ManualAmount: 20_000, Note: "   ", Items: singleItem(100_000, uuid.New()), Channel: "pos",
 	})
 	if err != discountapi.ErrManualDiscountNoteRequired {
 		t.Fatalf("ResolveForOrder() error = %v, want ErrManualDiscountNoteRequired", err)
@@ -249,7 +257,7 @@ func TestResolveForOrder_ManualDiscount_NoteRequired(t *testing.T) {
 func TestResolveForOrder_ManualDiscount_ZeroAmountIsNoDiscount(t *testing.T) {
 	svc := New(&fakeDiscountStore{})
 	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		ManualAmount: 0, Note: "alasan", Subtotal: 100_000, Channel: "pos",
+		ManualAmount: 0, Note: "alasan", Items: singleItem(100_000, uuid.New()), Channel: "pos",
 	})
 	if err != nil {
 		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
@@ -267,7 +275,7 @@ func TestResolveForOrder_ManualDiscount_ZeroAmountIsNoDiscount(t *testing.T) {
 func TestResolveForOrder_ManualDiscount_NegativeAmountRejected(t *testing.T) {
 	svc := New(&fakeDiscountStore{})
 	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		ManualAmount: -5_000, Note: "alasan", Subtotal: 100_000, Channel: "pos",
+		ManualAmount: -5_000, Note: "alasan", Items: singleItem(100_000, uuid.New()), Channel: "pos",
 	})
 	if err != discountapi.ErrManualDiscountInvalidAmount {
 		t.Fatalf("ResolveForOrder() error = %v, want ErrManualDiscountInvalidAmount", err)
@@ -290,7 +298,7 @@ func TestResolveForOrder_MasterDiscount_ProductScope_Match(t *testing.T) {
 	}
 	svc := New(store)
 	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 100_000, Channel: "pos", ProductID: productID,
+		DiscountID: &id, Items: singleItem(100_000, productID), Channel: "pos",
 	})
 	if err != nil {
 		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
@@ -317,10 +325,117 @@ func TestResolveForOrder_MasterDiscount_ProductScope_Mismatch(t *testing.T) {
 	}
 	svc := New(store)
 	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 100_000, Channel: "pos", ProductID: otherProductID,
+		DiscountID: &id, Items: singleItem(100_000, otherProductID), Channel: "pos",
 	})
 	if err != discountapi.ErrDiscountProductMismatch {
 		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountProductMismatch", err)
+	}
+}
+
+// TestResolveForOrder_MasterDiscount_SelectedScope_MixedOrder_OnlyCutsMatchingItem
+// is the §32.3 regression guard: an order with a MIX of items (some matching
+// the discount's product scope, some not) must only discount the subtotal of
+// the matching item(s) — the non-matching item's Allocation stays 0, and the
+// eligible_subtotal basis (NOT the whole order's subtotal) is what
+// computeAmount sees.
+func TestResolveForOrder_MasterDiscount_SelectedScope_MixedOrder_OnlyCutsMatchingItem(t *testing.T) {
+	id := uuid.New()
+	scopedProductID := uuid.New()
+	otherProductID := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "PRODUKA", Name: "Diskon Produk A",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToSelected,
+		},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {scopedProductID}},
+	}
+	svc := New(store)
+	items := []discountapi.ResolveItem{
+		{LineNo: 1, ProductID: scopedProductID, Subtotal: 100_000}, // eligible
+		{LineNo: 2, ProductID: otherProductID, Subtotal: 50_000},   // NOT eligible
+	}
+	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Items: items, Channel: "pos",
+	})
+	if err != nil {
+		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
+	}
+	// 10% of eligible_subtotal (100000) = 10000 — NOT 10% of the whole
+	// order's 150000, which would leak the promo onto the non-matching item.
+	if snap.Amount != 10_000 {
+		t.Fatalf("ResolveForOrder() amount = %d, want 10000 (eligible_subtotal basis only)", snap.Amount)
+	}
+	if len(snap.Allocations) != 2 {
+		t.Fatalf("ResolveForOrder() allocations = %+v, want 2 entries (one per item)", snap.Allocations)
+	}
+	byLine := map[int]int64{}
+	for _, a := range snap.Allocations {
+		byLine[a.LineNo] = a.Amount
+	}
+	if byLine[1] != 10_000 {
+		t.Errorf("line 1 (eligible) allocation = %d, want 10000", byLine[1])
+	}
+	if byLine[2] != 0 {
+		t.Errorf("line 2 (NOT eligible) allocation = %d, want 0 — promo must not leak to it", byLine[2])
+	}
+}
+
+// TestResolveForOrder_MasterDiscount_MinSubtotal_ComparedToEligibleSubtotal
+// is the §32.3 regression guard for the exact scenario the spec calls out:
+// flexi Rp10.000 + vinyl Rp500.000, diskon "min Rp200.000, 20% khusus flexi"
+// — subtotal SELURUH order (510.000) lolos syarat minimum, tapi
+// eligible_subtotal (cuma flexi, 10.000) TIDAK — harus DITOLAK.
+func TestResolveForOrder_MasterDiscount_MinSubtotal_ComparedToEligibleSubtotal(t *testing.T) {
+	id := uuid.New()
+	flexiID := uuid.New()
+	vinylID := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "FLEXI20", Name: "Diskon Flexi",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(20),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo:   model.AppliesToSelected,
+			MinSubtotal: 200_000,
+		},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {flexiID}},
+	}
+	svc := New(store)
+	items := []discountapi.ResolveItem{
+		{LineNo: 1, ProductID: flexiID, Subtotal: 10_000},
+		{LineNo: 2, ProductID: vinylID, Subtotal: 500_000},
+	}
+	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Items: items, Channel: "pos",
+	})
+	if err != discountapi.ErrDiscountMinSubtotal {
+		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountMinSubtotal (eligible_subtotal 10000 < min 200000, even though order total is 510000)", err)
+	}
+}
+
+// TestResolveForOrder_MasterDiscount_EligibleSubtotalZero_Rejected — §32.3:
+// produk cocok cakupannya, tapi item itu bernilai Rp0 (eligible_subtotal 0)
+// — harus ditolak eksplisit (ErrDiscountProductMismatch), bukan lolos dengan
+// potongan Rp0 yang tetap memakan satu slot kuota (§28.4).
+func TestResolveForOrder_MasterDiscount_EligibleSubtotalZero_Rejected(t *testing.T) {
+	id := uuid.New()
+	productID := uuid.New()
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID: id, Code: "PRODUKA", Name: "Diskon Produk A",
+			Type: model.DiscountTypePercent, ValuePercent: floatPtr(10),
+			IsActive: true, ChannelScope: model.ChannelScopeAll,
+			AppliesTo: model.AppliesToSelected,
+		},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{id: {productID}},
+	}
+	svc := New(store)
+	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &id, Items: singleItem(0, productID), Channel: "pos",
+	})
+	if err != discountapi.ErrDiscountProductMismatch {
+		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountProductMismatch (eligible_subtotal 0)", err)
 	}
 }
 
@@ -343,7 +458,7 @@ func TestResolveForOrder_MasterDiscount_SelectedScopeEmpty_Rejected(t *testing.T
 	}
 	svc := New(store)
 	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 100_000, Channel: "pos", ProductID: uuid.New(),
+		DiscountID: &id, Items: singleItem(100_000, uuid.New()), Channel: "pos",
 	})
 	if err != discountapi.ErrDiscountScopeEmpty {
 		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountScopeEmpty", err)
@@ -364,7 +479,7 @@ func TestResolveForOrder_MasterDiscount_AppliesToAll_IgnoresProductID(t *testing
 	}
 	svc := New(store)
 	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 100_000, Channel: "pos", ProductID: uuid.New(),
+		DiscountID: &id, Items: singleItem(100_000, uuid.New()), Channel: "pos",
 	})
 	if err != nil {
 		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
@@ -378,7 +493,7 @@ func TestResolveForOrder_AmbiguousInput(t *testing.T) {
 	id := uuid.New()
 	svc := New(&fakeDiscountStore{})
 	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, ManualAmount: 10_000, Subtotal: 100_000, Channel: "pos",
+		DiscountID: &id, ManualAmount: 10_000, Items: singleItem(100_000, uuid.New()), Channel: "pos",
 	})
 	if err != discountapi.ErrDiscountAmbiguousInput {
 		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountAmbiguousInput", err)
@@ -403,7 +518,7 @@ func TestResolveForOrder_MasterDiscount_Member_HappyPath(t *testing.T) {
 	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
 	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: true})
 	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 100_000, Channel: "pos", CustomerID: customerID,
+		DiscountID: &id, Items: singleItem(100_000, uuid.New()), Channel: "pos", CustomerID: customerID,
 	})
 	if err != nil {
 		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
@@ -430,7 +545,7 @@ func TestResolveForOrder_MasterDiscount_Member_NotActiveMember_Rejected(t *testi
 	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
 	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: false})
 	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 100_000, Channel: "pos", CustomerID: uuid.New(),
+		DiscountID: &id, Items: singleItem(100_000, uuid.New()), Channel: "pos", CustomerID: uuid.New(),
 	})
 	if err != discountapi.ErrDiscountMembershipRequired {
 		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountMembershipRequired", err)
@@ -452,7 +567,7 @@ func TestResolveForOrder_MasterDiscount_Member_Disabled_Rejected(t *testing.T) {
 	svc.SetSettingsReader(&fakeSettingsReader{boolValue: false})
 	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: true})
 	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 100_000, Channel: "pos", CustomerID: uuid.New(),
+		DiscountID: &id, Items: singleItem(100_000, uuid.New()), Channel: "pos", CustomerID: uuid.New(),
 	})
 	if err != discountapi.ErrDiscountMembershipDisabled {
 		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountMembershipDisabled", err)
@@ -478,7 +593,7 @@ func TestResolveForOrder_MasterDiscount_Member_SelectedScope_Match(t *testing.T)
 	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
 	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: true})
 	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 100_000, Channel: "pos", CustomerID: customerID,
+		DiscountID: &id, Items: singleItem(100_000, uuid.New()), Channel: "pos", CustomerID: customerID,
 	})
 	if err != nil {
 		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
@@ -506,7 +621,7 @@ func TestResolveForOrder_MasterDiscount_Member_SelectedScope_Mismatch_Rejected(t
 	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
 	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: true})
 	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 100_000, Channel: "pos", CustomerID: otherCustomerID,
+		DiscountID: &id, Items: singleItem(100_000, uuid.New()), Channel: "pos", CustomerID: otherCustomerID,
 	})
 	if err != discountapi.ErrDiscountMemberMismatch {
 		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountMemberMismatch", err)
@@ -531,7 +646,7 @@ func TestResolveForOrder_MasterDiscount_Member_CheckerNotWired_Rejected(t *testi
 	}
 	svc := New(store) // sengaja TIDAK memanggil SetMembershipChecker/SetSettingsReader
 	_, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 100_000, Channel: "pos", CustomerID: uuid.New(),
+		DiscountID: &id, Items: singleItem(100_000, uuid.New()), Channel: "pos", CustomerID: uuid.New(),
 	})
 	if err != discountapi.ErrDiscountMembershipUnavailable {
 		t.Fatalf("ResolveForOrder() error = %v, want ErrDiscountMembershipUnavailable", err)
@@ -555,7 +670,7 @@ func TestResolveForOrder_MasterDiscount_AudienceAll_NoMembershipQuery(t *testing
 	}
 	svc := New(store) // TIDAK di-wire, dan seharusnya tidak masalah untuk diskon "all"
 	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
-		DiscountID: &id, Subtotal: 100_000, Channel: "pos",
+		DiscountID: &id, Items: singleItem(100_000, uuid.New()), Channel: "pos",
 	})
 	if err != nil {
 		t.Fatalf("ResolveForOrder() error = %v, want nil", err)

@@ -1,37 +1,58 @@
 <script setup lang="ts">
 /**
- * /admin/desain/[resi] — full design workflow untuk 1 order.
+ * /admin/desain/[resi] — full design workflow untuk 1 order (§32.5 per-item).
+ *
+ * Sejak §32 Order Multi-Item, satu order bisa memuat banyak baris produk
+ * (`order.items[]`), dan tiap file desain menempel ke SATU baris
+ * (`design_files.order_item_id`) — bukan ke order secara umum. Halaman ini
+ * mengelompokkan file PER ITEM supaya staf tidak salah cetak saat dua banner
+ * ukurannya mirip (§32.5 doc comment `model.DesignFile.OrderItemID`).
  *
  * Aksi state-aware:
- *   - Verifikasi Upload: kalau design_source=upload, status=dibayar, ada
- *     file customer_upload → tombol "Verifikasi & Lanjut Cetak" (perm design.approve)
- *   - Upload Draft: kalau design_source=request, status ∈ [dibayar,
- *     desain_dikerjakan, menunggu_approval_desain] → form upload draft
- *     (perm design.work). Auto-advance backend ke desain_dikerjakan /
- *     menunggu_approval_desain.
- *   - Walk-in Approve: kalau channel=pos, status=desain_dikerjakan, DAN
- *     design_approval_mode=instant_walkin → tombol shortcut (perm
- *     design.approve). Order request yang dipilih "Follow-up via WA" saat
- *     dibuat TIDAK dapat tombol ini — approve-nya lewat loop
- *     menunggu_approval_desain standar. Backend enforce ulang di service.
- *   - Skip Upload: kalau channel=pos, design_source=upload, status=dibayar,
- *     dan BELUM ada file customer_upload → tombol "Lewati Upload — Langsung
- *     Cetak" (perm design.approve). Untuk walk-in yang bawa desain siap
- *     cetak tapi filenya cuma ada di komputer desainer (tidak diupload ke
- *     sistem). Wajib isi catatan lokasi file — dikirim sbg `note` ke backend
- *     sebagai jejak audit. Aksi ini irreversible (order lanjut ke tahap cetak
- *     tanpa file tersimpan di sistem), jadi diamankan lewat
- *     `<AdminConfirmDialog>` (variant danger) yang menampilkan ulang catatan
- *     lokasi file sebelum staff menekan konfirmasi.
+ *   - Verifikasi Upload (ORDER-WIDE, §32.6 — status desain tetap satu per
+ *     order): kalau order.design_source='upload' (SEMUA item upload, bukan
+ *     'mixed'), status=dibayar → tombol "Verifikasi & Lanjut Cetak" (perm
+ *     design.approve). Backend menolak kalau ADA SATU SAJA item yang belum
+ *     punya file customer_upload sendiri — dihitung di `missingUploadItems`
+ *     supaya staf lihat item mana yang masih kurang SEBELUM menekan tombol,
+ *     bukan cuma dapat galat generik sesudahnya.
+ *   - Upload Draft (PER ITEM, request path): tiap baris item dengan
+ *     design_source='request' punya form upload draft sendiri (perm
+ *     design.work). Backend cuma mengizinkan SATU draft `pending` per ORDER
+ *     (bukan per item) — kalau ada draft lain sedang menunggu respons
+ *     customer, form baris lain dinonaktifkan (lihat `pendingDraftFile`).
+ *   - Walk-in Approve: kalau channel=pos, status=desain_dikerjakan → tombol
+ *     shortcut (perm design.approve). Field `design_approval_mode` yang
+ *     dulu jadi syarat tambahan TIDAK LAGI dikirim backend di level order
+ *     (lihat catatan di `types/order.ts`), jadi gating di sini dilonggarkan
+ *     ke channel+status saja — backend tetap menolak final kalau order ini
+ *     ternyata mode 'async_notify' (ErrWalkinOnlyForPOS).
+ *   - Skip Upload: kalau channel=pos, order.design_source='upload',
+ *     status=dibayar, DAN belum ada satu pun file customer_upload di order
+ *     ini → tombol "Lewati Upload — Langsung Cetak" (perm design.approve).
+ *
+ * Pengelompokan file per item mengandalkan `order_items.id` asli
+ * (`item.id`, dipetakan backend sejak 1 September 2026 — lihat doc comment
+ * `OrderItem.id` di `types/order.ts`), jadi selalu akurat untuk order 1
+ * maupun banyak item, tidak ada lagi jalur tebak-tebakan.
  *
  * File preview: image/pdf/webp langsung inline lewat blob URL (Bearer token
  * dikirim via fetch, bukan lewat <img src=…>). CDR/AI tidak previewable —
  * cukup download link.
  */
-import type { Order } from '~/types/order'
+import { orderPrimaryProductLabel, type Order, type OrderItem } from '~/types/order'
 import type { DesignFile } from '~/types/design'
 import { ApiError } from '~/composables/useApi'
-import { FileCheck2, Upload, Sparkles, Download, XCircle, Printer } from '@lucide/vue'
+import {
+  FileCheck2,
+  Upload,
+  Sparkles,
+  Download,
+  XCircle,
+  Printer,
+  AlertTriangle,
+  Loader2,
+} from '@lucide/vue'
 
 definePageMeta({
   middleware: ['staff-only'],
@@ -69,46 +90,6 @@ const canApprove = computed(() => auth.hasPermission('design.approve'))
 const canSkip = computed(() => auth.hasPermission('design.skip_upload'))
 const canWork = computed(() => auth.hasPermission('design.work'))
 
-// --- Derived state ---
-const customerUpload = computed(() =>
-  files.value.find((f) => f.role === 'customer_upload' && !f.is_purged),
-)
-const customerAssets = computed(() =>
-  files.value.filter((f) => f.role === 'customer_asset' && !f.is_purged),
-)
-const staffDrafts = computed(() =>
-  files.value.filter((f) => f.role === 'staff_draft').sort((a, b) => (a.uploaded_at < b.uploaded_at ? 1 : -1)),
-)
-const canVerifyUpload = computed(
-  () =>
-    canApprove.value &&
-    order.value?.design_source === 'upload' &&
-    order.value?.status === 'dibayar' &&
-    !!customerUpload.value,
-)
-const canUploadDraft = computed(
-  () =>
-    canWork.value &&
-    order.value?.design_source === 'request' &&
-    order.value !== null &&
-    ['dibayar', 'desain_dikerjakan', 'menunggu_approval_desain'].includes(order.value.status),
-)
-const canWalkinApprove = computed(
-  () =>
-    canApprove.value &&
-    order.value?.channel === 'pos' &&
-    order.value?.status === 'desain_dikerjakan' &&
-    order.value?.design_approval_mode === 'instant_walkin',
-)
-const canSkipUpload = computed(
-  () =>
-    canSkip.value &&
-    order.value?.channel === 'pos' &&
-    order.value?.design_source === 'upload' &&
-    order.value?.status === 'dibayar' &&
-    !customerUpload.value,
-)
-
 async function load() {
   loading.value = true
   errorMsg.value = null
@@ -128,7 +109,103 @@ async function load() {
 
 onMounted(load)
 
-// --- Actions ---
+// --- Pengelompokan file per item (§32.5) ---
+function filesForItem(item: OrderItem): DesignFile[] {
+  return files.value.filter((f) => f.order_item_id === item.id)
+}
+
+function itemUploadFile(item: OrderItem): DesignFile | undefined {
+  return filesForItem(item).find((f) => f.role === 'customer_upload' && !f.is_purged)
+}
+function itemAssets(item: OrderItem): DesignFile[] {
+  return filesForItem(item).filter((f) => f.role === 'customer_asset' && !f.is_purged)
+}
+function itemDrafts(item: OrderItem): DesignFile[] {
+  return filesForItem(item)
+    .filter((f) => f.role === 'staff_draft')
+    .sort((a, b) => (a.uploaded_at < b.uploaded_at ? 1 : -1))
+}
+
+// --- Derived state (order-wide) ---
+const anyUploadFileExists = computed(() =>
+  files.value.some((f) => f.role === 'customer_upload' && !f.is_purged),
+)
+
+interface MissingItemInfo { key: string; label: string }
+
+/**
+ * Item yang masih belum punya file customer_upload — dihitung SEBELUM staf
+ * menekan "Verifikasi & Lanjut Cetak" supaya galat backend (§32.5:
+ * StaffVerifyUpload menolak kalau ada satu saja item tanpa file) sudah
+ * terlihat lebih dulu, bukan cuma pesan generik sesudahnya.
+ */
+const missingUploadItems = computed<MissingItemInfo[]>(() => {
+  if (!order.value) return []
+  return order.value.items
+    .filter((it) => !itemUploadFile(it))
+    .map((it) => ({ key: `item-${it.line_no}`, label: `Item ${it.line_no} — ${it.product_name}` }))
+})
+
+const canVerifyUpload = computed(
+  () =>
+    canApprove.value &&
+    order.value?.design_source === 'upload' &&
+    order.value?.status === 'dibayar',
+)
+const canWalkinApprove = computed(
+  () =>
+    canApprove.value &&
+    order.value?.channel === 'pos' &&
+    order.value?.status === 'desain_dikerjakan',
+)
+const canSkipUpload = computed(
+  () =>
+    canSkip.value &&
+    order.value?.channel === 'pos' &&
+    order.value?.design_source === 'upload' &&
+    order.value?.status === 'dibayar' &&
+    !anyUploadFileExists.value,
+)
+
+const anyItemCanUploadDraft = computed(() =>
+  order.value ? order.value.items.some((it) => canUploadDraftForItem(it)) : false,
+)
+
+// --- Draft desain: aturan SATU pending draft per ORDER (bukan per item) ---
+const pendingDraftFile = computed(() =>
+  files.value.find((f) => f.role === 'staff_draft' && f.approval_status === 'pending'),
+)
+const pendingDraftItemLabel = computed(() => {
+  const f = pendingDraftFile.value
+  if (!f || !order.value) return null
+  const it = order.value.items.find((x) => x.id === f.order_item_id)
+  return it ? `Item ${it.line_no} (${it.product_name})` : 'item lain'
+})
+
+function canUploadDraftForItem(item: OrderItem): boolean {
+  if (!canWork.value || !order.value) return false
+  if (item.design_source !== 'request') return false
+  if (!['dibayar', 'desain_dikerjakan'].includes(order.value.status)) return false
+  return !pendingDraftFile.value
+}
+
+/**
+ * Alasan tombol upload draft TIDAK ditawarkan untuk baris request — cuma
+ * dihitung untuk item yang MEMANG relevan (request, status masih dalam
+ * jendela upload, staf punya permission) supaya tidak menampilkan pesan
+ * yang membingungkan untuk item yang memang tidak butuh aksi ini sekarang.
+ */
+function draftBlockedReason(item: OrderItem): string | null {
+  if (!order.value || !canWork.value) return null
+  if (item.design_source !== 'request') return null
+  if (!['dibayar', 'desain_dikerjakan'].includes(order.value.status)) return null
+  if (pendingDraftFile.value) {
+    return `Ada draft lain (${pendingDraftItemLabel.value}) masih menunggu respons customer — selesaikan itu dulu sebelum upload draft baru.`
+  }
+  return null
+}
+
+// --- Actions: verify / walk-in / skip (order-wide, tidak berubah dari §32.6) ---
 const verifyBusy = ref(false)
 const verifyNote = ref('')
 async function doVerify() {
@@ -157,7 +234,14 @@ async function doWalkin() {
     setTimeout(() => (successMsg.value = null), 3000)
     await load()
   } catch (e: unknown) {
-    errorMsg.value = e instanceof ApiError ? e.message : 'Gagal walk-in approve'
+    errorMsg.value =
+      e instanceof ApiError
+        ? // Backend masih menolak tegas order mode 'async_notify' (§11) —
+          // gating frontend sekarang cuma channel+status (lihat blocker
+          // design_approval_mode di doc comment atas), jadi penolakan ini
+          // BISA terjadi pada kondisi normal, bukan cuma bug.
+          e.message
+        : 'Gagal walk-in approve'
   } finally {
     walkinBusy.value = false
   }
@@ -190,34 +274,38 @@ async function doSkipUpload() {
   }
 }
 
-// Draft upload form
-const draftFileInput = ref<HTMLInputElement | null>(null)
-const draftFile = ref<File | null>(null)
-const draftNotes = ref('')
-const draftBusy = ref(false)
-function onDraftFileChange(ev: Event) {
-  const input = ev.target as HTMLInputElement
-  draftFile.value = input.files?.[0] ?? null
+// --- Draft upload form (PER ITEM, keyed by line_no — selalu ada, tidak
+// bergantung pada `item.id` yang bisa undefined) ---
+interface DraftFormState {
+  file: File | null
+  notes: string
+  busy: boolean
 }
-async function submitDraft() {
-  if (!draftFile.value) {
-    errorMsg.value = 'Pilih file draft dulu.'
-    return
-  }
-  draftBusy.value = true
+const draftForms = reactive<Record<number, DraftFormState>>({})
+function draftForm(lineNo: number): DraftFormState {
+  if (!draftForms[lineNo]) draftForms[lineNo] = { file: null, notes: '', busy: false }
+  return draftForms[lineNo]
+}
+function onDraftFileChange(lineNo: number, ev: Event) {
+  const input = ev.target as HTMLInputElement
+  draftForm(lineNo).file = input.files?.[0] ?? null
+}
+async function submitItemDraft(item: OrderItem) {
+  const state = draftForm(item.line_no)
+  if (!state.file || !item.id) return
+  state.busy = true
   errorMsg.value = null
   try {
-    await designSvc.uploadDraft(resi.value, draftFile.value, draftNotes.value || undefined)
-    successMsg.value = 'Draft terupload. Customer bisa review.'
+    await designSvc.uploadDraft(resi.value, item.id, state.file, state.notes.trim() || undefined)
+    successMsg.value = `Draft untuk item ${item.line_no} terupload. Customer bisa review.`
     setTimeout(() => (successMsg.value = null), 3000)
-    draftFile.value = null
-    draftNotes.value = ''
-    if (draftFileInput.value) draftFileInput.value.value = ''
+    state.file = null
+    state.notes = ''
     await load()
   } catch (e: unknown) {
     errorMsg.value = e instanceof ApiError ? e.message : 'Gagal upload draft'
   } finally {
-    draftBusy.value = false
+    state.busy = false
   }
 }
 
@@ -297,6 +385,12 @@ function fmtBytes(n: number): string {
 function statusLabel(s: string): string {
   return s.replace(/_/g, ' ')
 }
+function designSourceLabel(o: Order): string {
+  if (o.design_source !== 'mixed') return o.design_source
+  const uploadCount = o.items.filter((it) => it.design_source === 'upload').length
+  const requestCount = o.items.filter((it) => it.design_source === 'request').length
+  return `campuran — ${uploadCount} upload, ${requestCount} request`
+}
 </script>
 
 <template>
@@ -328,17 +422,17 @@ function statusLabel(s: string): string {
     </div>
 
     <div v-else class="grid gap-6 lg:grid-cols-3">
-      <!-- Left column: files & brief -->
+      <!-- Left column: order summary + per-item files & brief -->
       <div class="lg:col-span-2 space-y-4">
         <!-- Order summary card -->
         <div class="rounded-lg border border-hairline bg-canvas p-5">
           <h2 class="text-xs font-medium uppercase tracking-[0.14em] text-ink-500">Order</h2>
-          <p class="mt-2 font-serif text-lg font-semibold tracking-tight text-ink-950">{{ order.product_name }}</p>
+          <p class="mt-2 font-serif text-lg font-semibold tracking-tight text-ink-950">{{ orderPrimaryProductLabel(order) }}</p>
           <p class="mt-0.5 text-sm text-ink-600">
-            {{ order.material_name }} · {{ order.width_cm }}×{{ order.height_cm }}cm · {{ order.quantity }} pcs
+            {{ order.items.length }} {{ order.items.length > 1 ? 'item' : 'item' }}
           </p>
           <div class="mt-3 flex flex-wrap gap-3 text-xs text-ink-500">
-            <span><strong class="text-ink-900 uppercase">{{ order.design_source }}</strong> path</span>
+            <span><strong class="text-ink-900 uppercase">{{ designSourceLabel(order) }}</strong></span>
             <span>·</span>
             <span class="uppercase">Channel {{ order.channel }}</span>
             <span>·</span>
@@ -346,113 +440,174 @@ function statusLabel(s: string): string {
           </div>
         </div>
 
-        <!-- Brief (request path) -->
+        <!-- Per-item cards -->
         <div
-v-if="order.design_source === 'request' && (order.design_brief || customerAssets.length)"
-             class="rounded-lg border border-hairline bg-canvas p-5">
-          <h2 class="text-xs font-medium uppercase tracking-[0.14em] text-ink-500">Brief</h2>
-          <p v-if="order.design_brief" class="mt-3 text-sm text-ink-800 leading-relaxed border-l-2 border-gold-400 pl-3 whitespace-pre-line">
-            {{ order.design_brief }}
-          </p>
-          <p v-else class="mt-3 text-xs text-ink-500 italic">Tidak ada brief tekstual.</p>
-
-          <div v-if="customerAssets.length" class="mt-4">
-            <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-2">
-              Aset dari customer ({{ customerAssets.length }})
-            </p>
-            <ul class="space-y-2">
-              <li v-for="f in customerAssets" :key="f.id" class="flex items-center gap-3 text-sm">
-                <button
-                  type="button"
-                  class="text-ink-900 hover:text-brand-500 underline decoration-hairline underline-offset-2 truncate flex-1 text-left transition-colors"
-                  @click="openPreview(f)"
-                >
-                  {{ f.file_original_name }}
-                </button>
-                <span class="text-xs text-ink-500 shrink-0">{{ fmtBytes(f.file_size_bytes) }}</span>
-                <button
-                  type="button"
-                  class="rounded p-1 text-ink-500 hover:text-ink-950 transition-colors"
-                  aria-label="Download"
-                  @click="downloadFile(f)"
-                >
-                  <Download class="h-4 w-4" :stroke-width="1.75" />
-                </button>
-              </li>
-            </ul>
-          </div>
-        </div>
-
-        <!-- Customer upload file (upload path) -->
-        <div v-if="customerUpload" class="rounded-lg border border-hairline bg-canvas p-5">
-          <h2 class="text-xs font-medium uppercase tracking-[0.14em] text-ink-500">File siap cetak (customer upload)</h2>
-          <div class="mt-3 flex items-center gap-3 text-sm">
-            <button
-              type="button"
-              class="text-ink-900 hover:text-brand-500 underline decoration-hairline underline-offset-2 truncate flex-1 text-left transition-colors"
-              @click="openPreview(customerUpload)"
+          v-for="item in order.items"
+          :key="item.line_no"
+          class="rounded-lg border border-hairline bg-canvas p-5"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Item {{ item.line_no }}</p>
+              <p class="mt-0.5 font-serif text-base font-semibold text-ink-950">{{ item.product_name }}</p>
+              <p class="mt-0.5 text-xs text-ink-500">
+                {{ item.material_name }} · {{ item.width_cm }}×{{ item.height_cm }}cm · {{ item.quantity }} pcs
+              </p>
+            </div>
+            <span
+              class="inline-flex flex-none items-center rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.1em] ring-1 ring-inset ring-hairline bg-canvas-alt text-ink-700"
             >
-              {{ customerUpload.file_original_name }}
-            </button>
-            <span class="text-xs text-ink-500 shrink-0">
-              {{ fmtBytes(customerUpload.file_size_bytes) }} · {{ customerUpload.file_mime_type }}
+              {{ item.design_source }}
             </span>
-            <button
-              type="button"
-              class="rounded p-1 text-ink-500 hover:text-ink-950 transition-colors"
-              aria-label="Download"
-              @click="downloadFile(customerUpload)"
-            >
-              <Download class="h-4 w-4" :stroke-width="1.75" />
-            </button>
           </div>
-          <p v-if="!customerUpload.is_previewable" class="mt-2 text-xs text-ink-500">
-            <XCircle class="inline h-3 w-3 mr-1 text-ink-400" :stroke-width="2" />
-            Format {{ customerUpload.file_mime_type }} tidak preview di browser — download & buka manual (CorelDRAW/Illustrator).
-          </p>
-        </div>
 
-        <!-- Staff drafts history -->
-        <div v-if="staffDrafts.length" class="rounded-lg border border-hairline bg-canvas p-5">
-          <h2 class="text-xs font-medium uppercase tracking-[0.14em] text-ink-500">
-            Draft desain ({{ staffDrafts.length }})
-          </h2>
-          <ul class="mt-3 space-y-3">
-            <li
-              v-for="(f, i) in staffDrafts"
-              :key="f.id"
-              class="rounded-md border border-hairline bg-canvas-alt/50 p-3"
+          <!-- Upload path: file siap cetak dari customer -->
+          <template v-if="item.design_source === 'upload'">
+            <div v-if="itemUploadFile(item)" class="mt-4 flex items-center gap-3 rounded-md border border-hairline bg-canvas-alt/40 p-3 text-sm">
+              <button
+                type="button"
+                class="text-ink-900 hover:text-brand-500 underline decoration-hairline underline-offset-2 truncate flex-1 text-left transition-colors"
+                @click="openPreview(itemUploadFile(item)!)"
+              >
+                {{ itemUploadFile(item)!.file_original_name }}
+              </button>
+              <span class="text-xs text-ink-500 shrink-0">
+                {{ fmtBytes(itemUploadFile(item)!.file_size_bytes) }}
+              </span>
+              <button
+                type="button"
+                class="rounded p-1 text-ink-500 hover:text-ink-950 transition-colors"
+                aria-label="Download"
+                @click="downloadFile(itemUploadFile(item)!)"
+              >
+                <Download class="h-4 w-4" :stroke-width="1.75" />
+              </button>
+            </div>
+            <p v-else class="mt-3 flex items-center gap-2 text-xs text-ink-500">
+              <AlertTriangle class="h-3.5 w-3.5 text-ink-400" :stroke-width="1.75" />
+              Belum ada file dari customer untuk item ini.
+            </p>
+          </template>
+
+          <!-- Request path: brief + aset + draft history + form upload draft -->
+          <template v-else>
+            <p v-if="item.design_brief" class="mt-3 text-sm text-ink-800 leading-relaxed border-l-2 border-gold-400 pl-3 whitespace-pre-line">
+              {{ item.design_brief }}
+            </p>
+            <p v-else class="mt-3 text-xs text-ink-500 italic">Tidak ada brief tekstual.</p>
+
+            <div v-if="itemAssets(item).length" class="mt-3">
+              <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-2">
+                Aset dari customer ({{ itemAssets(item).length }})
+              </p>
+              <ul class="space-y-2">
+                <li v-for="f in itemAssets(item)" :key="f.id" class="flex items-center gap-3 text-sm">
+                  <button
+                    type="button"
+                    class="text-ink-900 hover:text-brand-500 underline decoration-hairline underline-offset-2 truncate flex-1 text-left transition-colors"
+                    @click="openPreview(f)"
+                  >
+                    {{ f.file_original_name }}
+                  </button>
+                  <span class="text-xs text-ink-500 shrink-0">{{ fmtBytes(f.file_size_bytes) }}</span>
+                  <button
+                    type="button"
+                    class="rounded p-1 text-ink-500 hover:text-ink-950 transition-colors"
+                    aria-label="Download"
+                    @click="downloadFile(f)"
+                  >
+                    <Download class="h-4 w-4" :stroke-width="1.75" />
+                  </button>
+                </li>
+              </ul>
+            </div>
+
+            <div v-if="itemDrafts(item).length" class="mt-4">
+              <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500 mb-2">
+                Draft desain ({{ itemDrafts(item).length }})
+              </p>
+              <ul class="space-y-3">
+                <li
+                  v-for="(f, i) in itemDrafts(item)"
+                  :key="f.id"
+                  class="rounded-md border border-hairline bg-canvas-alt/50 p-3"
+                >
+                  <div class="flex items-center gap-3">
+                    <span class="text-[10px] font-mono text-ink-500 shrink-0">v{{ itemDrafts(item).length - i }}</span>
+                    <button
+                      type="button"
+                      class="text-sm text-ink-900 hover:text-brand-500 underline decoration-hairline underline-offset-2 truncate flex-1 text-left transition-colors"
+                      @click="openPreview(f)"
+                    >
+                      {{ f.file_original_name }}
+                    </button>
+                    <AdminStatusBadge v-if="f.approval_status" :status="String(f.approval_status).replace(/_/g, ' ')" />
+                    <button
+                      type="button"
+                      class="rounded p-1 text-ink-500 hover:text-ink-950 transition-colors"
+                      aria-label="Download"
+                      @click="downloadFile(f)"
+                    >
+                      <Download class="h-4 w-4" :stroke-width="1.75" />
+                    </button>
+                  </div>
+                  <p class="mt-1 text-xs text-ink-500">
+                    {{ fmtDate(f.uploaded_at) }} · {{ fmtBytes(f.file_size_bytes) }}
+                  </p>
+                  <p v-if="f.notes" class="mt-2 text-xs text-ink-700 border-l-2 border-hairline pl-2">
+                    {{ f.notes }}
+                  </p>
+                  <p v-if="f.approval_status === 'revision_requested' && f.revision_notes" class="mt-2 rounded bg-brand-50 border border-brand-200 p-2 text-xs text-brand-800">
+                    <strong>Revisi diminta:</strong> {{ f.revision_notes }}
+                  </p>
+                </li>
+              </ul>
+            </div>
+
+            <!-- Upload draft form (per item) -->
+            <div v-if="canUploadDraftForItem(item)" class="mt-4 rounded-md border border-hairline bg-canvas-alt/40 p-4">
+              <h3 class="flex items-center gap-2 text-sm font-semibold text-ink-900">
+                <Upload class="h-4 w-4 text-brand-500" :stroke-width="1.75" />
+                Upload Draft — Item {{ item.line_no }}
+              </h3>
+              <p class="mt-1 text-xs text-ink-500 leading-relaxed">
+                Setelah simpan, order lanjut ke <strong>menunggu_approval_desain</strong> untuk direview customer.
+              </p>
+              <label class="mt-3 flex items-center justify-center rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-700 cursor-pointer hover:bg-canvas-alt transition-colors">
+                <span class="truncate">{{ draftForm(item.line_no).file ? draftForm(item.line_no).file!.name : 'Pilih file draft…' }}</span>
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,application/pdf,.cdr,.ai"
+                  class="hidden"
+                  @change="onDraftFileChange(item.line_no, $event)"
+                >
+              </label>
+              <p class="mt-1 text-[10px] text-ink-500">Format: JPG/PNG/WebP/PDF/CDR/AI. Max 25 MB.</p>
+              <input
+                v-model="draftForm(item.line_no).notes"
+                type="text"
+                maxlength="500"
+                placeholder="Catatan draft (opsional)"
+                class="mt-3 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+              >
+              <button
+                type="button"
+                class="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
+                :disabled="draftForm(item.line_no).busy || !draftForm(item.line_no).file"
+                @click="submitItemDraft(item)"
+              >
+                <Loader2 v-if="draftForm(item.line_no).busy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                Kirim Draft ke Customer
+              </button>
+            </div>
+            <p
+              v-else-if="draftBlockedReason(item)"
+              class="mt-4 flex items-start gap-2 rounded-md border border-hairline bg-canvas-alt/40 p-3 text-xs text-ink-500 leading-relaxed"
             >
-              <div class="flex items-center gap-3">
-                <span class="text-[10px] font-mono text-ink-500 shrink-0">v{{ staffDrafts.length - i }}</span>
-                <button
-                  type="button"
-                  class="text-sm text-ink-900 hover:text-brand-500 underline decoration-hairline underline-offset-2 truncate flex-1 text-left transition-colors"
-                  @click="openPreview(f)"
-                >
-                  {{ f.file_original_name }}
-                </button>
-                <AdminStatusBadge v-if="f.approval_status" :status="String(f.approval_status).replace(/_/g, ' ')" />
-                <button
-                  type="button"
-                  class="rounded p-1 text-ink-500 hover:text-ink-950 transition-colors"
-                  aria-label="Download"
-                  @click="downloadFile(f)"
-                >
-                  <Download class="h-4 w-4" :stroke-width="1.75" />
-                </button>
-              </div>
-              <p class="mt-1 text-xs text-ink-500">
-                {{ fmtDate(f.uploaded_at) }} · {{ fmtBytes(f.file_size_bytes) }}
-              </p>
-              <p v-if="f.notes" class="mt-2 text-xs text-ink-700 border-l-2 border-hairline pl-2">
-                {{ f.notes }}
-              </p>
-              <p v-if="f.approval_status === 'revision_requested' && f.revision_notes" class="mt-2 rounded bg-brand-50 border border-brand-200 p-2 text-xs text-brand-800">
-                <strong>Revisi diminta:</strong> {{ f.revision_notes }}
-              </p>
-            </li>
-          </ul>
+              <AlertTriangle class="h-3.5 w-3.5 flex-none mt-0.5 text-ink-400" :stroke-width="1.75" />
+              {{ draftBlockedReason(item) }}
+            </p>
+          </template>
         </div>
 
         <div v-if="!files.length && !loading" class="rounded-lg border border-dashed border-hairline bg-canvas p-6 text-center text-sm text-ink-500">
@@ -460,7 +615,7 @@ v-if="order.design_source === 'request' && (order.design_brief || customerAssets
         </div>
       </div>
 
-      <!-- Right column: actions -->
+      <!-- Right column: order-wide actions -->
       <aside class="space-y-4">
         <!-- Verify upload -->
         <div v-if="canVerifyUpload" class="rounded-lg border border-hairline bg-canvas p-5">
@@ -469,8 +624,20 @@ v-if="order.design_source === 'request' && (order.design_brief || customerAssets
             Verifikasi Upload
           </h3>
           <p class="mt-1 text-xs text-ink-500 leading-relaxed">
-            Cek file siap cetak di kolom kiri. Kalau OK, klik verify untuk lanjut ke <strong>desain_diverifikasi</strong> → proses cetak.
+            Cek file siap cetak di kolom kiri. Kalau semua item sudah oke, klik verify untuk lanjut ke
+            <strong>desain_diverifikasi</strong> → proses cetak.
           </p>
+
+          <div v-if="missingUploadItems.length" class="mt-3 rounded-md border border-brand-200 bg-brand-50/60 p-3">
+            <p class="flex items-start gap-2 text-xs text-brand-800 leading-relaxed">
+              <AlertTriangle class="h-3.5 w-3.5 flex-none mt-0.5" :stroke-width="1.75" />
+              Belum bisa diverifikasi — item berikut belum punya file:
+            </p>
+            <ul class="mt-1.5 ml-5 list-disc text-xs text-brand-800 space-y-0.5">
+              <li v-for="m in missingUploadItems" :key="m.key">{{ m.label }}</li>
+            </ul>
+          </div>
+
           <input
             v-model="verifyNote"
             type="text"
@@ -481,7 +648,7 @@ v-if="order.design_source === 'request' && (order.design_brief || customerAssets
           <button
             type="button"
             class="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
-            :disabled="verifyBusy"
+            :disabled="verifyBusy || missingUploadItems.length > 0"
             @click="doVerify"
           >
             <span
@@ -493,50 +660,6 @@ v-if="order.design_source === 'request' && (order.design_brief || customerAssets
           </button>
         </div>
 
-        <!-- Upload draft (request path) -->
-        <div v-if="canUploadDraft" class="rounded-lg border border-hairline bg-canvas p-5">
-          <h3 class="flex items-center gap-2 text-sm font-semibold text-ink-900">
-            <Upload class="h-4 w-4 text-brand-500" :stroke-width="1.75" />
-            Upload Draft
-          </h3>
-          <p class="mt-1 text-xs text-ink-500 leading-relaxed">
-            Upload hasil kerja desain. Setelah simpan, order otomatis lanjut ke <strong>menunggu_approval_desain</strong> untuk direview customer.
-          </p>
-          <label class="mt-3 flex items-center justify-center rounded-md border border-hairline bg-canvas-alt/40 px-3 py-2 text-sm text-ink-700 cursor-pointer hover:bg-canvas-alt transition-colors">
-            <span class="truncate">{{ draftFile ? draftFile.name : 'Pilih file draft…' }}</span>
-            <input
-              ref="draftFileInput"
-              type="file"
-              accept="image/jpeg,image/png,image/webp,application/pdf,.cdr,.ai"
-              class="hidden"
-              @change="onDraftFileChange"
-            >
-          </label>
-          <p class="mt-1 text-[10px] text-ink-500">
-            Format: JPG/PNG/WebP/PDF/CDR/AI. Max {{ Math.round(25) }} MB.
-          </p>
-          <input
-            v-model="draftNotes"
-            type="text"
-            maxlength="500"
-            placeholder="Catatan draft (opsional)"
-            class="mt-3 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
-          >
-          <button
-            type="button"
-            class="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
-            :disabled="draftBusy || !draftFile"
-            @click="submitDraft"
-          >
-            <span
-              v-if="draftBusy"
-              class="inline-block h-3 w-3 rounded-full border-2 border-canvas/70 border-t-transparent animate-spin"
-              aria-hidden="true"
-            />
-            Kirim Draft ke Customer
-          </button>
-        </div>
-
         <!-- Walk-in instant approve (POS §11) -->
         <div v-if="canWalkinApprove" class="rounded-lg border border-gold-200 bg-gold-50 p-5">
           <h3 class="flex items-center gap-2 text-sm font-semibold text-gold-900">
@@ -544,7 +667,9 @@ v-if="order.design_source === 'request' && (order.design_brief || customerAssets
             Walk-in Instant Approve
           </h3>
           <p class="mt-1 text-xs text-gold-800 leading-relaxed">
-            Order POS dengan mode instant_walkin — customer approve verbal di tempat, skip loop notif WA. Klik untuk lanjut ke <strong>desain_diverifikasi</strong>.
+            Order POS di tahap desain dikerjakan — customer approve verbal di tempat, skip loop notif WA. Klik untuk
+            lanjut ke <strong>desain_diverifikasi</strong>. Backend menolak kalau order ini ternyata mode
+            follow-up-via-WA (bukan instant) — pakai alur approval standar untuk kasus itu.
           </p>
           <button
             type="button"
@@ -568,7 +693,8 @@ v-if="order.design_source === 'request' && (order.design_brief || customerAssets
             Lewati Upload
           </h3>
           <p class="mt-1 text-xs text-ink-500 leading-relaxed">
-            Untuk walk-in yang bawa desain siap cetak tapi filenya cuma ada di komputer desainer, bukan diupload ke sistem.
+            Untuk walk-in yang bawa desain siap cetak tapi filenya cuma ada di komputer desainer, bukan diupload ke
+            sistem.
           </p>
           <label class="mt-3 block text-xs font-medium text-ink-700">Lokasi file desain</label>
           <textarea
@@ -594,7 +720,7 @@ v-if="order.design_source === 'request' && (order.design_brief || customerAssets
 
         <!-- Fallback: no actions available -->
         <div
-          v-if="!canVerifyUpload && !canUploadDraft && !canWalkinApprove && !canSkipUpload"
+          v-if="!canVerifyUpload && !canWalkinApprove && !canSkipUpload && !anyItemCanUploadDraft"
           class="rounded-lg border border-dashed border-hairline bg-canvas p-5 text-xs text-ink-500 leading-relaxed"
         >
           <p class="font-medium text-ink-700 mb-1">Tidak ada aksi tersedia</p>

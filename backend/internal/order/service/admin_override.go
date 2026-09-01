@@ -44,13 +44,31 @@ const (
 // rewrite contact info for every other order too, bypassing the phone_claim
 // OTP proof-of-ownership flow. What CAN be corrected here is the PER-ORDER
 // shipping recipient (who/where this one order should be delivered to).
+//
+// Subtotal is kept ONLY as a guard against a caller trying to WRITE a
+// different subtotal directly — rejected with
+// orderapi.ErrOrderSubtotalNotEditable (§22 — must fail loudly, not silently
+// drop the request) IF AND ONLY IF the value sent differs from the order's
+// CURRENT subtotal (see EditOrder). Since §32, orders.Subtotal is a DERIVED
+// aggregate (Σ order_items.subtotal, §32.2); the field is compared-not-just-
+// presence-checked (bug fix, was previously rejected merely for being
+// non-nil) because the admin frontend always echoes back the subtotal it
+// fetched in every PATCH body, even ones that only touch shipping_address —
+// treating "field present" as "field changed" made §32.9's whole "Koreksi
+// Data Pesanan" tool refuse every correction that wasn't itself a subtotal
+// edit. Real subtotal corrections go through Items below (§32.9).
+//
+// Items — nil = "don't touch the item list at all" (the pre-§32.9 default);
+// non-nil = "replace the order's item set with EXACTLY this list" (§32.9).
+// See EditOrderItemInput doc for per-row rules.
 type EditOrderInput struct {
 	ShippingRecipientName  *string
 	ShippingRecipientPhone *string // raw; normalized inside EditOrder
 	ShippingAddress        *string
 	Note                   *string
-	Subtotal               *int64
+	Subtotal               *int64 // see doc above — rejected only if it differs from o.Subtotal
 	ShippingCost           *int64
+	Items                  *[]EditOrderItemInput // §32.9 — nil = untouched
 }
 
 // AuditLogRow — projection of model.AdminAuditLog for the admin panel.
@@ -108,6 +126,14 @@ func (s *Service) EditOrder(ctx context.Context, resiStr string, actorID uuid.UU
 	if state.IsTerminal(o.Status) {
 		return nil, orderapi.ErrFieldNotEditable
 	}
+	// §32.2 — orders.Subtotal is a DERIVED aggregate (Σ item.subtotal),
+	// never writable directly. Reject explicitly (§22 no-silent-stub) ONLY
+	// when the caller actually asked for a DIFFERENT value than the order's
+	// current one — see EditOrderInput.Subtotal doc for why "field present"
+	// and "field changed" must not be conflated here.
+	if in.Subtotal != nil && *in.Subtotal != o.Subtotal {
+		return nil, orderapi.ErrOrderSubtotalNotEditable
+	}
 
 	fields := map[string]any{}
 	changes := model.ChangeSet{}
@@ -118,7 +144,22 @@ func (s *Service) EditOrder(ctx context.Context, resiStr string, actorID uuid.UU
 	if err := applyShippingRecipientFields(o, in, fields, changes); err != nil {
 		return nil, err
 	}
-	if err := applyFinancialFields(o, in, reason, fields, changes); err != nil {
+
+	// §32.9 — resolve the item-list diff FIRST (it may re-quote new rows via
+	// catalog), so applyFinancialFields below has the FINAL subtotal to
+	// recompute total/discount allocation against.
+	var itemsResult *editItemsResult
+	if in.Items != nil {
+		itemsResult, err = s.resolveItemsForEdit(ctx, o.Items, *in.Items)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range itemsResult.changes {
+			changes[k] = v
+		}
+	}
+
+	if err := applyFinancialFields(o, in, reason, itemsResult, fields, changes); err != nil {
 		return nil, err
 	}
 
@@ -129,19 +170,45 @@ func (s *Service) EditOrder(ctx context.Context, resiStr string, actorID uuid.UU
 	}
 
 	label := o.Resi
-	if err := s.orders.UpdateFields(ctx, repository.UpdateFieldsParams{
+	audit := &model.AdminAuditLog{
+		ActorUserID: actorID,
+		Action:      "order.edit",
+		EntityType:  "order",
+		EntityID:    o.ID,
+		EntityLabel: &label,
+		Changes:     changes,
+		Reason:      reason,
+	}
+
+	if itemsResult != nil {
+		// §32.9 — item mutation + orders aggregate columns + audit row, ALL
+		// in ONE transaction (pola §31.5): a partial write here would leave
+		// Σ item.subtotal out of sync with orders.subtotal with no audit
+		// trail explaining why.
+		if err := s.orders.UpdateItems(ctx, repository.UpdateItemsParams{
+			OrderID:        o.ID,
+			ExpectedStatus: string(o.Status),
+			OrderFields:    fields,
+			UpsertItems:    itemsResult.final,
+			DeleteItemIDs:  itemsResult.deletedIDs,
+			Audit:          audit,
+		}); err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return nil, orderapi.ErrOrderNotFound
+			}
+			if errors.Is(err, repository.ErrStaleState) {
+				return nil, orderapi.ErrOrderStateChanged
+			}
+			if errors.Is(err, repository.ErrItemHasDesignFiles) {
+				return nil, fmt.Errorf("edit order: %s: %w", err.Error(), orderapi.ErrOrderItemHasDesignFiles)
+			}
+			return nil, fmt.Errorf("edit order: update items: %w", err)
+		}
+	} else if err := s.orders.UpdateFields(ctx, repository.UpdateFieldsParams{
 		OrderID:        o.ID,
 		ExpectedStatus: string(o.Status),
 		Fields:         fields,
-		Audit: &model.AdminAuditLog{
-			ActorUserID: actorID,
-			Action:      "order.edit",
-			EntityType:  "order",
-			EntityID:    o.ID,
-			EntityLabel: &label,
-			Changes:     changes,
-			Reason:      reason,
-		},
+		Audit:          audit,
 	}); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			return nil, orderapi.ErrOrderNotFound
@@ -159,29 +226,35 @@ func (s *Service) EditOrder(ctx context.Context, resiStr string, actorID uuid.UU
 	return updated, nil
 }
 
-// applyFinancialFields validates & stages Subtotal/ShippingCost changes into
-// fields/changes, RECOMPUTING `total` from the result (never writing `total`
-// straight from caller input — see EditOrder doc). Returns
-// orderapi.ErrReasonRequired if the order is at/past `dibayar` and reason is
-// too short.
-func applyFinancialFields(o *model.Order, in EditOrderInput, reason string, fields map[string]any, changes model.ChangeSet) error {
-	touchesSubtotal := in.Subtotal != nil && *in.Subtotal != o.Subtotal
+// applyFinancialFields validates & stages ShippingCost AND item-driven
+// subtotal changes into fields/changes, RECOMPUTING `total` from the result
+// (never writing `total` straight from caller input — see EditOrder doc).
+// Returns orderapi.ErrReasonRequired if the order is at/past `dibayar` and
+// reason is too short.
+//
+// itemsResult is nil when EditOrderInput.Items was nil (item list untouched)
+// — in that case o.Subtotal/o.DiscountAmount are used as-is, exactly like
+// before §32.9. When non-nil (§32.9), it:
+//  1. recomputes `subtotal` from itemsResult.newSubtotal,
+//  2. refuses (orderapi.ErrOrderDiscountExceedsSubtotal) if the order's
+//     EXISTING discount_amount (never itself edited — §28.2) would now
+//     exceed the new subtotal,
+//  3. re-splits that SAME discount_amount across itemsResult.final via
+//     allocateDiscountAcrossItems (mutates the slice in place — the caller
+//     passes itemsResult.final straight to repository.UpdateItemsParams
+//     afterwards),
+//  4. recomputes `design_source` via deriveDesignSource.
+func applyFinancialFields(o *model.Order, in EditOrderInput, reason string, itemsResult *editItemsResult, fields map[string]any, changes model.ChangeSet) error {
 	touchesCost := in.ShippingCost != nil && (o.ShippingCost == nil || *o.ShippingCost != *in.ShippingCost)
-	if (touchesSubtotal || touchesCost) && !state.IsPreDibayar(o.Status) && len(reason) < minFinancialReasonLen {
+	touchesItems := itemsResult != nil
+	if (touchesCost || touchesItems) && !state.IsPreDibayar(o.Status) && len(reason) < minFinancialReasonLen {
 		return orderapi.ErrReasonRequired
 	}
-	if !touchesSubtotal && !touchesCost {
+	if !touchesCost && !touchesItems {
 		return nil
 	}
 
-	newSubtotal := o.Subtotal
-	if touchesSubtotal {
-		fields["subtotal"] = *in.Subtotal
-		changes["subtotal"] = model.FieldChange{From: o.Subtotal, To: *in.Subtotal}
-		newSubtotal = *in.Subtotal
-	}
-
-	var newShippingCost int64
+	newShippingCost := int64(0)
 	if o.ShippingCost != nil {
 		newShippingCost = *o.ShippingCost
 	}
@@ -191,26 +264,35 @@ func applyFinancialFields(o *model.Order, in EditOrderInput, reason string, fiel
 		newShippingCost = *in.ShippingCost
 	}
 
-	// Temuan review #1 — DiscountAmount cuma dijepit ke subtotal SAAT order
-	// dibuat, tidak pernah dijepit ulang di sini. Kalau subtotal dikoreksi
-	// turun di bawah DiscountAmount lama, total bisa negatif (ditolak CHECK
-	// `total >= 0` di DB → 500 mentah) atau, kalau masih di atas diskon,
-	// persentase diskon efektif membengkak tanpa jejak. Jepit ulang ke
-	// subtotal BARU dan simpan nilai jepitan itu ke kolom discount_amount
-	// (bukan cuma dipakai di hitungan lokal) supaya kolomnya tidak berbohong
-	// terhadap total, dan catat di audit log kalau berubah.
-	effectiveDiscount := o.DiscountAmount
-	if touchesSubtotal && effectiveDiscount > newSubtotal {
-		effectiveDiscount = newSubtotal
-	}
-	if effectiveDiscount != o.DiscountAmount {
-		fields["discount_amount"] = effectiveDiscount
-		changes["discount_amount"] = model.FieldChange{From: o.DiscountAmount, To: effectiveDiscount}
+	newSubtotal := o.Subtotal
+	if touchesItems {
+		newSubtotal = itemsResult.newSubtotal
+		// §32.9 — discount_amount itself is NEVER edited here (§28.2: it's
+		// what actually happened at transaction time), only its allocation
+		// across rows. If the new item composition makes the subtotal
+		// smaller than the discount already recorded, that's an admin
+		// mistake that must be refused explicitly, not silently clamped.
+		if o.DiscountAmount > newSubtotal {
+			return orderapi.ErrOrderDiscountExceedsSubtotal
+		}
+		allocateDiscountAcrossItems(o.DiscountAmount, itemsResult.final)
+
+		if newSubtotal != o.Subtotal {
+			fields["subtotal"] = newSubtotal
+			changes["subtotal"] = model.FieldChange{From: o.Subtotal, To: newSubtotal}
+		}
+		newDesignSource := deriveDesignSource(itemsResult.final)
+		if newDesignSource != o.DesignSource {
+			fields["design_source"] = string(newDesignSource)
+			changes["design_source"] = model.FieldChange{From: string(o.DesignSource), To: string(newDesignSource)}
+		}
 	}
 
 	// §28.3 — ongkir tidak pernah didiskon; diskon (kalau ada di order ini)
-	// tetap ikut mengurangi total hasil edit super admin.
-	newTotal := newSubtotal - effectiveDiscount + newShippingCost
+	// tetap ikut mengurangi total hasil edit super admin. DiscountAmount
+	// tidak pernah diedit langsung di sini — hanya subtotal (via item, di
+	// atas) dan shipping_cost yang menggerakkan total.
+	newTotal := newSubtotal - o.DiscountAmount + newShippingCost
 	if newTotal != o.Total {
 		fields["total"] = newTotal
 		changes["total"] = model.FieldChange{From: o.Total, To: newTotal}

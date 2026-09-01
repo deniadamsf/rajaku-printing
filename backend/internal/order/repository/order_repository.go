@@ -18,6 +18,19 @@ import (
 
 func gormForUpdate() clause.Locking { return clause.Locking{Strength: "UPDATE"} }
 
+// preloadItems is a GORM scope shared by every order-reading query in this
+// file (§32) — preloads order_items terurut `line_no ASC` in ONE extra
+// batch query (GORM's Preload issues a single `WHERE order_id IN (...)`
+// regardless of how many parent rows Find() returns), not one query per
+// order. Every FindByResi/FindByID/ListForAdmin/ListByCustomer/
+// ListPOSByDateRange call goes through this so callers never see an order
+// with a nil/stale Items slice.
+func preloadItems(db *gorm.DB) *gorm.DB {
+	return db.Preload("Items", func(db *gorm.DB) *gorm.DB {
+		return db.Order("line_no ASC")
+	})
+}
+
 var (
 	ErrNotFound     = errors.New("order/repository: not found")
 	ErrResiConflict = errors.New("order/repository: resi unique conflict")
@@ -31,6 +44,14 @@ var (
 	// even though the caller may have validated against an earlier read.
 	// Mapped by the service to orderapi.ErrDeleteNotAllowedPaid.
 	ErrDeleteForbiddenStatus = errors.New("order/repository: order status does not allow deletion")
+	// ErrItemHasDesignFiles — UpdateItems was asked to delete an order_items
+	// row that design_files.order_item_id still points to (migration 000034,
+	// FK is RESTRICT — no ON DELETE CASCADE, §19 keeps design_files rows
+	// forever for rekap). Checked explicitly BEFORE the DELETE so the caller
+	// gets a mappable sentinel instead of a raw Postgres FK-violation wrapped
+	// in a generic 500 (temuan review §32.9 #2). Mapped by the service to
+	// orderapi.ErrOrderItemHasDesignFiles.
+	ErrItemHasDesignFiles = errors.New("order/repository: order item still referenced by design_files")
 )
 
 // pgUniqueViolationCode is the SQLSTATE returned by Postgres on unique index
@@ -43,13 +64,26 @@ type OrderRepository struct {
 
 func NewOrderRepository(db *gorm.DB) *OrderRepository { return &OrderRepository{db: db} }
 
-// CreateWithHistory inserts an order + an initial state_history row in a single
-// transaction. Returns ErrResiConflict specifically when the resi UNIQUE
-// constraint is violated (so the service can retry with a new random resi).
-func (r *OrderRepository) CreateWithHistory(ctx context.Context, order *model.Order, initialHistory *model.OrderStateHistory) error {
+// CreateWithHistory inserts an order + its line items (§32) + an initial
+// state_history row in a SINGLE transaction. `items` must be non-empty
+// (service validates 1..20 — ErrNoItems/ErrTooManyItems, §32.4); each
+// element's OrderID is set here from the just-created order.ID before
+// insert, so callers don't need to know order.ID up front. Returns
+// ErrResiConflict specifically when the resi UNIQUE constraint is violated
+// (so the service can retry with a new random resi) — items are rolled back
+// along with the order in that case, no partial insert survives.
+func (r *OrderRepository) CreateWithHistory(ctx context.Context, order *model.Order, items []model.OrderItem, initialHistory *model.OrderStateHistory) error {
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(order).Error; err != nil {
 			return err
+		}
+		for i := range items {
+			items[i].OrderID = order.ID
+		}
+		if len(items) > 0 {
+			if err := tx.Create(&items).Error; err != nil {
+				return err
+			}
 		}
 		initialHistory.OrderID = order.ID
 		if err := tx.Create(initialHistory).Error; err != nil {
@@ -63,6 +97,7 @@ func (r *OrderRepository) CreateWithHistory(ctx context.Context, order *model.Or
 		}
 		return fmt.Errorf("create order with history: %w", err)
 	}
+	order.Items = items
 	return nil
 }
 
@@ -71,7 +106,7 @@ func (r *OrderRepository) CreateWithHistory(ctx context.Context, order *model.Or
 // is deleted it must vanish from every reading path, this one included.
 func (r *OrderRepository) FindByResi(ctx context.Context, resi string) (*model.Order, error) {
 	var o model.Order
-	err := r.db.WithContext(ctx).Where("resi = ? AND deleted_at IS NULL", resi).First(&o).Error
+	err := r.db.WithContext(ctx).Scopes(preloadItems).Where("resi = ? AND deleted_at IS NULL", resi).First(&o).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -87,7 +122,7 @@ func (r *OrderRepository) FindByResi(ctx context.Context, resi string) (*model.O
 // which is backed by FindByResi/FindByID, so this one filter covers them all.
 func (r *OrderRepository) FindByID(ctx context.Context, id uuid.UUID) (*model.Order, error) {
 	var o model.Order
-	err := r.db.WithContext(ctx).Where("deleted_at IS NULL").First(&o, "id = ?", id).Error
+	err := r.db.WithContext(ctx).Scopes(preloadItems).Where("deleted_at IS NULL").First(&o, "id = ?", id).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -154,6 +189,7 @@ func (r *OrderRepository) ListForAdmin(ctx context.Context, f AdminListFilter) (
 	var items []model.Order
 	offset := (f.Page - 1) * f.PageSize
 	if err := q.
+		Scopes(preloadItems).
 		Order("created_at DESC").
 		Offset(offset).
 		Limit(f.PageSize).
@@ -192,6 +228,7 @@ func (r *OrderRepository) ListByCustomer(ctx context.Context, f CustomerListFilt
 	var items []model.Order
 	offset := (f.Page - 1) * f.PageSize
 	if err := q.
+		Scopes(preloadItems).
 		Order("created_at DESC").
 		Offset(offset).
 		Limit(f.PageSize).
@@ -208,6 +245,7 @@ func (r *OrderRepository) ListByCustomer(ctx context.Context, f CustomerListFilt
 func (r *OrderRepository) ListPOSByDateRange(ctx context.Context, start, end time.Time) ([]model.Order, error) {
 	var items []model.Order
 	err := r.db.WithContext(ctx).
+		Scopes(preloadItems).
 		Where("channel = ? AND created_at >= ? AND created_at < ? AND deleted_at IS NULL", model.ChannelPOS, start, end).
 		Order("created_at ASC").
 		Find(&items).Error
@@ -545,6 +583,210 @@ func (r *OrderRepository) SoftDelete(ctx context.Context, p SoftDeleteParams) er
 		}
 		return insertAuditLog(tx, p.Audit)
 	})
+}
+
+// UpdateItemsParams — payload for a super-admin item-level correction
+// (order.edit_items, §32.9). Unlike UpdateFields (which only ever touches
+// `orders` columns), this ALSO replaces part of `order_items`:
+//   - UpsertItems — every item that survives the edit (both rows the caller
+//     changed and rows left untouched but re-allocated a different
+//     discount_amount, §32.9) — written unconditionally on every call, since
+//     the caller (service.resolveItemsForEdit) already computed the FINAL
+//     state of each surviving row; the repository doesn't diff.
+//   - DeleteItemIDs — existing order_items.id no longer present in the
+//     caller's wanted list (§32.9: a row not mentioned is a delete).
+//   - OrderFields — `orders` columns to update alongside (subtotal, total,
+//     design_source) — same map shape as UpdateFieldsParams.Fields.
+//
+// ExpectedStatus / row-lock / audit semantics are identical to UpdateFields
+// (see that doc) — this is a sibling method, not a replacement, kept
+// separate because item mutation needs extra queries UpdateFields has no
+// reason to carry (§22 one-function-one-responsibility).
+type UpdateItemsParams struct {
+	OrderID        uuid.UUID
+	ExpectedStatus string
+	OrderFields    map[string]any
+	UpsertItems    []model.OrderItem
+	DeleteItemIDs  []uuid.UUID
+	Audit          *model.AdminAuditLog
+}
+
+// UpdateItems applies a super-admin item-level correction (§32.9): deletes
+// removed rows, upserts surviving rows (insert if ID is zero, update
+// otherwise), updates the `orders` aggregate columns, and writes the
+// admin_audit_log row — ALL in the SAME transaction, row-locked first
+// exactly like UpdateFields (TOCTOU guard against a concurrent status
+// change — see EditOrder doc). Returns ErrNotFound / ErrStaleState with the
+// same meaning as UpdateFields.
+func (r *OrderRepository) UpdateItems(ctx context.Context, p UpdateItemsParams) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current struct{ Status string }
+		err := tx.Table("orders").
+			Select("status").
+			Where("id = ? AND deleted_at IS NULL", p.OrderID).
+			Clauses(gormForUpdate()).
+			Take(&current).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("lock order row: %w", err)
+		}
+		if p.ExpectedStatus != "" && current.Status != p.ExpectedStatus {
+			return ErrStaleState
+		}
+
+		if len(p.DeleteItemIDs) > 0 {
+			// §22/§32.9 review #2 — design_files.order_item_id → order_items(id)
+			// is RESTRICT (migration 000034, deliberately no ON DELETE CASCADE:
+			// §19 keeps design_files rows forever, only the physical blob is
+			// purged). Deleting a row still referenced there would otherwise
+			// bubble up as a raw Postgres FK-violation wrapped into a generic
+			// 500 by the caller's `default` branch. Check first, INSIDE this
+			// same transaction (so it sees a consistent snapshot alongside the
+			// row-lock above), and refuse with a sentinel that names the
+			// offending line(s) instead.
+			//
+			// This queries the `design_files` table by NAME rather than
+			// importing the design module's internal package: design/service
+			// already imports orderapi (design depends on order, §22), so
+			// order importing designapi back would make the two modules
+			// mutually dependent on each other's public contracts for a single
+			// existence check. A raw query against a physical table — no
+			// design Go types involved — is the narrower boundary crossing of
+			// the two options offered by review #2.
+			lineNos, err := orderItemLineNosWithDesignFiles(tx, p.OrderID, p.DeleteItemIDs)
+			if err != nil {
+				return fmt.Errorf("check design_files references: %w", err)
+			}
+			if len(lineNos) > 0 {
+				return fmt.Errorf("baris item %v masih punya file desain terkait (§19 — record dipertahankan untuk rekap): %w",
+					lineNos, ErrItemHasDesignFiles)
+			}
+			if err := tx.Where("id IN ? AND order_id = ?", p.DeleteItemIDs, p.OrderID).
+				Delete(&model.OrderItem{}).Error; err != nil {
+				return fmt.Errorf("delete order items: %w", err)
+			}
+		}
+
+		// Phase 1 — bump every SURVIVING existing row's line_no to a
+		// collision-free offset FIRST, before writing anyone's final line_no.
+		// UNIQUE(order_id, line_no) is checked immediately (not deferrable) —
+		// a caller that reorders items (e.g. swaps line_no 1<->2) would hit a
+		// unique-violation mid-transaction if rows were updated straight to
+		// their final line_no one at a time. The offset (100000+i) can never
+		// collide with a real line_no (§32.4 caps at 20 items) or with
+		// another row's temp value (i is unique within this call).
+		const lineNoOffset = 100_000
+		for i := range p.UpsertItems {
+			item := &p.UpsertItems[i]
+			if item.ID == uuid.Nil {
+				continue
+			}
+			res := tx.Model(&model.OrderItem{}).
+				Where("id = ? AND order_id = ?", item.ID, p.OrderID).
+				Update("line_no", lineNoOffset+i)
+			if res.Error != nil {
+				return fmt.Errorf("bump order item %s line_no: %w", item.ID, res.Error)
+			}
+			// §32.9 review #3 — the row-lock above only locks `orders`; a row
+			// this call's caller computed against (resolveItemsForEdit, called
+			// BEFORE this transaction opens) may have been deleted by a
+			// CONCURRENT edit in the meantime. Matching 0 rows here means the
+			// item list this call is about to write is already stale — abort
+			// now rather than let Phase 2/3 build on top of a list that no
+			// longer reflects reality.
+			if res.RowsAffected == 0 {
+				return ErrStaleState
+			}
+		}
+
+		// Phase 2 — insert new rows (ID zero) directly at their FINAL
+		// line_no: safe now, every surviving existing row is parked at the
+		// offset above, so no collision is possible.
+		for i := range p.UpsertItems {
+			item := &p.UpsertItems[i]
+			item.OrderID = p.OrderID
+			if item.ID != uuid.Nil {
+				continue
+			}
+			if err := tx.Create(item).Error; err != nil {
+				return fmt.Errorf("insert order item (line_no %d): %w", item.LineNo, err)
+			}
+		}
+
+		// Phase 3 — move every surviving existing row from its temp offset to
+		// its FINAL line_no + write its other columns.
+		for i := range p.UpsertItems {
+			item := &p.UpsertItems[i]
+			if item.ID == uuid.Nil {
+				continue
+			}
+			res := tx.Model(&model.OrderItem{}).
+				Where("id = ? AND order_id = ?", item.ID, p.OrderID).
+				Updates(map[string]any{
+					"line_no":         item.LineNo,
+					"width_cm":        item.WidthCm,
+					"height_cm":       item.HeightCm,
+					"quantity":        item.Quantity,
+					"unit_price":      item.UnitPrice,
+					"subtotal":        item.Subtotal,
+					"discount_amount": item.DiscountAmount,
+					"item_notes":      item.ItemNotes,
+					"updated_at":      gorm.Expr("NOW()"),
+				})
+			if res.Error != nil {
+				return fmt.Errorf("update order item %s: %w", item.ID, res.Error)
+			}
+			// §32.9 review #3 — Updates() matching zero rows is NOT an error to
+			// GORM (no unique/FK violation, just an empty WHERE match), so
+			// without this check a row deleted by a CONCURRENT admin between
+			// resolveItemsForEdit's read and this write would silently vanish
+			// from the write while its Subtotal/DiscountAmount still counted
+			// toward `orders.subtotal`/`orders.discount_amount` below —
+			// exactly the Σ item != aggregate drift §32.2 forbids. Surface it
+			// as the same "refresh & retry" signal as the row-lock above
+			// instead of writing a mismatched aggregate.
+			if res.RowsAffected == 0 {
+				return ErrStaleState
+			}
+		}
+
+		if len(p.OrderFields) > 0 {
+			updates := make(map[string]any, len(p.OrderFields)+1)
+			for k, v := range p.OrderFields {
+				updates[k] = v
+			}
+			updates["updated_at"] = gorm.Expr("NOW()")
+			if err := tx.Model(&model.Order{}).
+				Where("id = ?", p.OrderID).
+				Updates(updates).Error; err != nil {
+				return fmt.Errorf("update order fields: %w", err)
+			}
+		}
+		return insertAuditLog(tx, p.Audit)
+	})
+}
+
+// orderItemLineNosWithDesignFiles returns the line_no of every row in
+// candidateItemIDs that design_files.order_item_id still references (§32.9
+// review #2) — used by UpdateItems to refuse a delete with a sentinel that
+// names the offending line(s), instead of letting Postgres reject it as a
+// bare FK-violation. Queried by table name (not through the design module's
+// Go package, see UpdateItems call site comment) inside the caller's open
+// transaction `tx` so it sees the same snapshot as the row-lock above.
+func orderItemLineNosWithDesignFiles(tx *gorm.DB, orderID uuid.UUID, candidateItemIDs []uuid.UUID) ([]int, error) {
+	var lineNos []int
+	err := tx.Table("order_items").
+		Joins("JOIN design_files ON design_files.order_item_id = order_items.id").
+		Where("order_items.order_id = ? AND order_items.id IN ?", orderID, candidateItemIDs).
+		Distinct().
+		Order("order_items.line_no ASC").
+		Pluck("order_items.line_no", &lineNos).Error
+	if err != nil {
+		return nil, fmt.Errorf("query design_files references: %w", err)
+	}
+	return lineNos, nil
 }
 
 // insertAuditLog writes one admin_audit_log row inside the caller's open

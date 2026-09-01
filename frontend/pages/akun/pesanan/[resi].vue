@@ -37,7 +37,7 @@ import {
   Clock,
   XCircle,
 } from '@lucide/vue'
-import type { Order } from '~/types/order'
+import { orderPrimaryProductLabel, type Order } from '~/types/order'
 import type { PaymentProofCustomer } from '~/types/payment'
 import type { DesignFile } from '~/types/design'
 import { ApiError } from '~/composables/useApi'
@@ -143,28 +143,76 @@ const canReviewDraft = computed(
   () => order.value?.status === 'menunggu_approval_desain' && !!pendingDraft.value,
 )
 
-// -------------------- customer design upload (§6) --------------------
+// -------------------- customer design upload (§6, per-item §32.5) --------------------
 // Batas ukuran mengikuti env backend DESIGN_MAX_UPLOAD_MB (default 25MB).
 const DESIGN_MAX_UPLOAD_MB = 25
 const DESIGN_ALLOWED_EXT = ['jpg', 'jpeg', 'png', 'webp', 'pdf', 'cdr', 'ai']
 
-// null = tidak ada aksi upload yang relevan untuk status order saat ini.
-const customerUploadKind = computed<'upload' | 'request' | null>(() => {
+interface CustomerUploadableItem {
+  id: string
+  kind: 'upload' | 'request'
+  label: string
+}
+
+/**
+ * Baris item yang boleh diunggahi customer sekarang — aturan gating per item
+ * (bukan lagi per order, §32.5) HARUS sama persis dengan guard backend
+ * (design_service.go `UploadCustomerFile`), kalau tidak kartu tampil tapi
+ * upload ditolak 400:
+ *   design_source 'upload'  → hanya status order 'dibayar'
+ *   design_source 'request' → 'dibayar' / 'desain_dikerjakan' / 'menunggu_approval_desain'
+ * Order campuran ('mixed') otomatis kebagian baris yang memenuhi syarat saja
+ * dari masing-masing jenis — tidak perlu dicek terpisah.
+ */
+const customerUploadableItems = computed<CustomerUploadableItem[]>(() => {
   const o = order.value
-  if (!o) return null
-  if (o.design_source === 'upload' && o.status === 'dibayar') return 'upload'
-  if (
-    o.design_source === 'request' &&
-    ['dibayar', 'desain_dikerjakan', 'menunggu_approval_desain'].includes(o.status)
-  ) {
-    return 'request'
+  if (!o) return []
+  const out: CustomerUploadableItem[] = []
+  for (const it of o.items) {
+    const label = `${it.product_name} · ${it.material_name} · ${it.width_cm}×${it.height_cm}cm`
+    if (it.design_source === 'upload' && o.status === 'dibayar') {
+      out.push({ id: it.id, kind: 'upload', label })
+    } else if (
+      it.design_source === 'request' &&
+      ['dibayar', 'desain_dikerjakan', 'menunggu_approval_desain'].includes(o.status)
+    ) {
+      out.push({ id: it.id, kind: 'request', label })
+    }
   }
-  return null
+  return out
 })
+
+/**
+ * Baris terpilih untuk diupload — auto-pilih satu-satunya baris yang
+ * memenuhi syarat supaya order 1-item tetap sederhana (tidak dipaksa
+ * memilih dari daftar berisi 1 opsi).
+ */
+const customerUploadSelectedItemId = ref('')
+watch(
+  customerUploadableItems,
+  (items) => {
+    if (items.length === 1) {
+      customerUploadSelectedItemId.value = items[0].id
+    } else if (!items.some((it) => it.id === customerUploadSelectedItemId.value)) {
+      customerUploadSelectedItemId.value = ''
+    }
+  },
+  { immediate: true },
+)
+const selectedUploadItem = computed(
+  () => customerUploadableItems.value.find((it) => it.id === customerUploadSelectedItemId.value) ?? null,
+)
 
 const customerUploadedFiles = computed(() =>
   designFiles.value.filter((f) => f.role === 'customer_upload' || f.role === 'customer_asset'),
 )
+
+/** Label banner pemilik sebuah file — cuma ditampilkan untuk order >1 item. */
+function customerFileItemLabel(f: DesignFile): string | null {
+  if (!order.value || order.value.items.length <= 1) return null
+  const it = order.value.items.find((x) => x.id === f.order_item_id)
+  return it ? it.product_name : null
+}
 
 // -------------------- upload proof form --------------------
 const proofFile = ref<File | null>(null)
@@ -228,6 +276,10 @@ function validateCustomerDesignFile(file: File): string | null {
 }
 
 async function submitCustomerDesign() {
+  if (!customerUploadSelectedItemId.value) {
+    errorMsg.value = 'Pilih banner yang mau diupload filenya dulu.'
+    return
+  }
   if (!customerDesignFile.value) {
     errorMsg.value = 'Pilih file desain dulu.'
     return
@@ -242,6 +294,7 @@ async function submitCustomerDesign() {
   try {
     await designApi.uploadCustomerFile(
       resi.value,
+      customerUploadSelectedItemId.value,
       customerDesignFile.value,
       customerDesignNotes.value.trim() || undefined,
     )
@@ -404,7 +457,7 @@ function proofStatusBadgeClass(s: string): string {
         <p class="font-mono text-xs text-ink-500">{{ order.resi }}</p>
         <div class="mt-1 flex flex-wrap items-start justify-between gap-3">
           <h1 class="font-serif text-2xl md:text-3xl font-semibold tracking-tight text-ink-950">
-            {{ order.product_name }}
+            {{ orderPrimaryProductLabel(order) }}
           </h1>
           <span
             :class="[
@@ -673,26 +726,50 @@ function proofStatusBadgeClass(s: string): string {
         </div>
       </div>
 
-      <!-- ============ ACTION AREA: Upload customer design ============ -->
+      <!-- ============ ACTION AREA: Upload customer design (per item, §32.5) ============ -->
       <div
-        v-if="customerUploadKind"
+        v-if="customerUploadableItems.length"
         class="rounded-lg border-2 border-gold-400 bg-gold-50/50 p-6"
       >
         <div class="flex items-start gap-3">
           <Upload class="h-5 w-5 text-gold-700 flex-none mt-0.5" :stroke-width="1.75" />
           <div class="flex-1">
             <h2 class="font-serif text-lg font-semibold text-ink-950">
-              {{ customerUploadKind === 'upload' ? 'Upload desain siap cetak' : 'Upload aset desain (logo / foto)' }}
+              {{ selectedUploadItem?.kind === 'request' ? 'Upload aset desain (logo / foto)' : 'Upload desain siap cetak' }}
             </h2>
             <p class="mt-1 text-sm text-ink-700 leading-relaxed">
-              <template v-if="customerUploadKind === 'upload'">
-                Upload file desain final Anda. Format yang diterima: JPG, PNG, WebP, PDF, CDR, AI — maksimal
-                {{ DESIGN_MAX_UPLOAD_MB }} MB. Tim kami akan memverifikasi file sebelum masuk proses cetak.
-              </template>
-              <template v-else>
+              <template v-if="selectedUploadItem?.kind === 'request'">
                 Upload logo/foto yang ingin dipakai desainer untuk mengerjakan draft Anda. Boleh upload lebih
                 dari satu file — cukup ulangi proses ini satu per satu. Maksimal {{ DESIGN_MAX_UPLOAD_MB }} MB per file.
               </template>
+              <template v-else>
+                Upload file desain final Anda. Format yang diterima: JPG, PNG, WebP, PDF, CDR, AI — maksimal
+                {{ DESIGN_MAX_UPLOAD_MB }} MB. Tim kami akan memverifikasi file sebelum masuk proses cetak.
+              </template>
+            </p>
+
+            <!-- Pemilih baris — HANYA muncul kalau ada >1 item yang boleh
+                 diupload. Order 1 item tetap sederhana: langsung ke form. -->
+            <div v-if="customerUploadableItems.length > 1" class="mt-4">
+              <p class="text-sm font-medium text-ink-900">Pilih banner yang mau diupload filenya</p>
+              <div class="mt-1.5 space-y-1.5">
+                <label
+                  v-for="it in customerUploadableItems"
+                  :key="it.id"
+                  :class="[
+                    'flex cursor-pointer items-center gap-2 rounded-md border p-2.5 text-sm transition-colors',
+                    customerUploadSelectedItemId === it.id
+                      ? 'border-brand-500 bg-brand-50/50 text-ink-950'
+                      : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                  ]"
+                >
+                  <input v-model="customerUploadSelectedItemId" type="radio" :value="it.id" class="accent-brand-500">
+                  <span>{{ it.label }} <span class="text-xs uppercase text-ink-500">· {{ it.kind }}</span></span>
+                </label>
+              </div>
+            </div>
+            <p v-else-if="customerUploadableItems.length === 1" class="mt-2 text-xs text-ink-500">
+              Untuk: <strong class="text-ink-900">{{ customerUploadableItems[0].label }}</strong>
             </p>
 
             <form class="mt-4 space-y-3" @submit.prevent="submitCustomerDesign">
@@ -722,7 +799,7 @@ function proofStatusBadgeClass(s: string): string {
 
               <button
                 type="button"
-                :disabled="customerDesignUploading || !customerDesignFile"
+                :disabled="customerDesignUploading || !customerDesignFile || !customerUploadSelectedItemId"
                 class="inline-flex items-center gap-2 rounded-md bg-brand-500 px-4 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 @click="submitCustomerDesign"
               >
@@ -751,6 +828,9 @@ function proofStatusBadgeClass(s: string): string {
               <FileWarning v-if="f.is_purged" class="h-3.5 w-3.5 text-ink-400 flex-none mt-0.5" :stroke-width="1.75" />
               <FileText v-else class="h-3.5 w-3.5 text-ink-500 flex-none mt-0.5" :stroke-width="1.75" />
               <div class="min-w-0 flex-1">
+                <p v-if="customerFileItemLabel(f)" class="text-[10px] font-medium uppercase tracking-[0.1em] text-ink-500">
+                  {{ customerFileItemLabel(f) }}
+                </p>
                 <p class="text-xs text-ink-900 truncate font-mono">{{ f.file_original_name }}</p>
                 <p class="mt-1 text-[10px] text-ink-500">
                   {{ formatBytes(f.file_size_bytes) }} · {{ fmtDate(f.uploaded_at) }}
@@ -767,19 +847,16 @@ function proofStatusBadgeClass(s: string): string {
         </ul>
       </div>
 
-      <!-- Ringkasan produk -->
+      <!-- Ringkasan produk (§32 — tabel multi-item) -->
       <div class="rounded-lg border border-hairline bg-canvas p-6">
-        <div class="flex items-center gap-2 mb-3">
-          <PackageIcon class="h-4 w-4 text-ink-500" :stroke-width="1.75" />
-          <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Detail pesanan</p>
+        <div class="flex items-center justify-between gap-2 mb-3">
+          <div class="flex items-center gap-2">
+            <PackageIcon class="h-4 w-4 text-ink-500" :stroke-width="1.75" />
+            <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Detail pesanan</p>
+          </div>
+          <span class="text-xs text-ink-500">{{ order.items.length }} item</span>
         </div>
-        <p class="text-sm text-ink-500">
-          {{ order.material_name }}
-          <span class="text-ink-400">·</span>
-          <span class="font-mono text-xs text-ink-700">{{ order.width_cm }} × {{ order.height_cm }} cm</span>
-          <span class="text-ink-400">·</span>
-          {{ order.quantity }} pcs
-        </p>
+        <OrderItemsTable :items="order.items" />
         <p v-if="order.notes" class="mt-3 text-sm text-ink-700 leading-relaxed border-l-2 border-gold-300 pl-3">
           "{{ order.notes }}"
         </p>

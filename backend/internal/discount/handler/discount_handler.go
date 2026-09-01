@@ -88,35 +88,37 @@ func (h *Handler) Create(c *gin.Context) {
 	httpx.Created(c, view)
 }
 
-// GET /admin/discounts/applicable?channel=pos&subtotal=250000&product_id=...&customer_id=...
+// GET /admin/discounts/applicable?channel=pos&product_id=...&item_subtotal=...&product_id=...&item_subtotal=...&customer_id=...
 // — dipakai layar kasir (§28.5/§28.8/§30.3). Permission BERBEDA dari CRUD
 // lain (discount.apply, bukan discount.manage) — dicek di routes.go.
 //
-// product_id (§28.9) opsional — kalau dikirim, WAJIB UUID valid DAN bukan
-// UUID kosong (temuan review #4 — 00000000-...-0000 ditolak 400, supaya
-// tidak diam-diam disamakan dengan "tidak dikirim"), lalu hasilnya disaring
-// supaya diskon applies_to="selected" yang cakupannya tidak menyertakan
-// produk itu tidak ikut muncul. Tidak dikirim sama sekali = tidak difilter
-// berdasarkan produk (kompatibel dgn pemanggil lama).
+// product_id + item_subtotal (§28.9/§32.3) — DUA array berulang, DIPASANGKAN
+// SECARA POSISI: baris ke-i keranjang kasir adalah (product_id[i],
+// item_subtotal[i]). Wajib jumlahnya SAMA PERSIS, dan minimal satu baris
+// (pesanan selalu punya >= 1 item, §32.4). Ini GANTI kontrak lama (subtotal
+// tunggal + product_id tanpa nilainya) — kontrak lama tidak bisa menghitung
+// eligible_subtotal per diskon applies_to="selected" (basis yang dipakai
+// resolveMasterDiscount saat order disimpan, §32.3), jadi promo "khusus
+// produk A, min Rp200rb" bisa muncul di kasir untuk keranjang [A: Rp10rb,
+// B: Rp500rb] lalu ditolak saat "Buat Pesanan" ditekan — persis bug yang
+// diperbaiki di sini. SETIAP product_id WAJIB UUID valid DAN bukan UUID
+// kosong (temuan review #4 — 00000000-...-0000 ditolak 400, supaya tidak
+// diam-diam disamakan dengan "tidak dikirim").
 //
 // customer_id (§30.3) opsional — validasi sintaks SAMA persis dengan
-// product_id (UUID valid, bukan UUID kosong kalau dikirim eksplisit). Tidak
-// dikirim sama sekali = diskon audience_scope="member" TIDAK ikut muncul di
-// hasil (§30.3 — beda dari product_id, di sini "tidak dikirim" TIDAK
-// membuat diskon member lolos, karena tanpa customer_id tidak ada cara
-// mengecek status membernya).
+// product_id (UUID valid, bukan UUID kosong kalau dikirim eksplisit), TAPI
+// tetap satu nilai saja (member scope tidak per-item). Tidak dikirim sama
+// sekali = diskon audience_scope="member" TIDAK ikut muncul di hasil (§30.3
+// — beda dari product_id, di sini "tidak dikirim" TIDAK membuat diskon
+// member lolos, karena tanpa customer_id tidak ada cara mengecek status
+// membernya).
 func (h *Handler) Applicable(c *gin.Context) {
 	channel := c.Query("channel")
 	if channel != "online" && channel != "pos" {
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "channel wajib 'online' atau 'pos'")
 		return
 	}
-	subtotal, err := strconv.ParseInt(c.Query("subtotal"), 10, 64)
-	if err != nil || subtotal < 0 {
-		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "subtotal wajib angka >= 0")
-		return
-	}
-	productID, err := parseOptionalUUIDQuery(c, "product_id")
+	items, err := parseApplicableItems(c)
 	if err != nil {
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, err.Error())
 		return
@@ -126,12 +128,74 @@ func (h *Handler) Applicable(c *gin.Context) {
 		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, err.Error())
 		return
 	}
-	views, err := h.svc.Applicable(c.Request.Context(), channel, subtotal, productID, customerID)
+	views, err := h.svc.Applicable(c.Request.Context(), channel, items, customerID)
 	if err != nil {
 		h.mapErr(c, err)
 		return
 	}
 	httpx.OK(c, gin.H{"items": views})
+}
+
+// parseApplicableItems reads the `product_id` + `item_subtotal` repeated
+// query param PAIR (§32.3, see Applicable doc) and builds the
+// discountapi.ResolveItem slice the service needs. LineNo is assigned from
+// array position (1-based), matching every other §32 item list in this
+// codebase (order/service.quoteOnlineItems, etc).
+func parseApplicableItems(c *gin.Context) ([]discountapi.ResolveItem, error) {
+	productIDs, err := parseUUIDQueryArray(c, "product_id")
+	if err != nil {
+		return nil, err
+	}
+	// temuan review §32.3 #5 — product_id/item_subtotal WAJIB minimal satu
+	// baris (doc di atas). Tanpa penolakan eksplisit ini, request yang lupa
+	// mengirim keduanya sama sekali lolos sebagai "0 baris cocok 0 baris" dan
+	// mendapat 200 dengan daftar diskon kosong — kasir membacanya sebagai
+	// "memang tidak ada promo", bukan sebagai kesalahan permintaan.
+	if len(productIDs) == 0 {
+		return nil, fmt.Errorf("product_id (beserta item_subtotal berpasangan) wajib dikirim minimal 1 baris")
+	}
+	rawSubtotals := c.QueryArray("item_subtotal")
+	if len(rawSubtotals) != len(productIDs) {
+		return nil, fmt.Errorf("item_subtotal harus dikirim sejumlah product_id (satu subtotal per baris keranjang), dapat %d product_id dan %d item_subtotal",
+			len(productIDs), len(rawSubtotals))
+	}
+	items := make([]discountapi.ResolveItem, 0, len(productIDs))
+	for i, raw := range rawSubtotals {
+		subtotal, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || subtotal < 0 {
+			return nil, fmt.Errorf("item_subtotal baris %d wajib angka >= 0", i+1)
+		}
+		items = append(items, discountapi.ResolveItem{
+			LineNo:    i + 1,
+			ProductID: productIDs[i],
+			Subtotal:  subtotal,
+		})
+	}
+	return items, nil
+}
+
+// parseUUIDQueryArray reads a REPEATED optional UUID query param (§32.3 —
+// `?product_id=a&product_id=b`) — no values sent returns an empty (nil)
+// slice with no error; any value that's syntactically invalid OR the
+// zero-UUID (mirrors parseOptionalUUIDQuery's reasoning) returns an error,
+// so a typo'd product_id is never silently dropped from the filter.
+func parseUUIDQueryArray(c *gin.Context, param string) ([]uuid.UUID, error) {
+	raws := c.QueryArray(param)
+	if len(raws) == 0 {
+		return nil, nil
+	}
+	out := make([]uuid.UUID, 0, len(raws))
+	for _, raw := range raws {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s bukan UUID valid", param)
+		}
+		if id == uuid.Nil {
+			return nil, fmt.Errorf("%s tidak boleh UUID kosong", param)
+		}
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 // parseOptionalUUIDQuery reads an optional UUID query param — "" (not sent)

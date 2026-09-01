@@ -85,11 +85,7 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (*Create
 	sum, err := s.orderCmd.CreatePOSOrder(ctx, orderapi.POSCreateOrderInput{
 		CustomerID:             identity.UserID,
 		KasirID:                in.KasirID,
-		ProductID:              in.ProductID,
-		MaterialID:             in.MaterialID,
-		WidthCm:                in.WidthCm,
-		HeightCm:               in.HeightCm,
-		Quantity:               in.Quantity,
+		Items:                  toPOSItemInputs(in.Items),
 		MetodeAmbil:            in.MetodeAmbil,
 		ShippingAddress:        in.ShippingAddress,
 		ShippingRecipientName:  in.ShippingRecipientName,
@@ -99,9 +95,7 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (*Create
 		DiscountID:             in.DiscountID,
 		ManualDiscountAmount:   in.ManualDiscountAmount,
 		DiscountNote:           in.DiscountNote,
-		DesignSource:           in.DesignSource,
 		DesignApprovalMode:     in.DesignApprovalMode,
-		DesignBrief:            in.DesignBrief,
 		Notes:                  in.Notes,
 	})
 	if err != nil {
@@ -160,12 +154,7 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (*Create
 		// versi ternormalisasi 62xxx (§13).
 		CustomerName:   strings.TrimSpace(in.CustomerName),
 		CustomerPhone:  identity.Phone,
-		ProductName:    sum.ProductName,
-		MaterialName:   sum.MaterialName,
-		WidthCm:        sum.WidthCm,
-		HeightCm:       sum.HeightCm,
-		Quantity:       sum.Quantity,
-		UnitPrice:      sum.UnitPrice,
+		Items:          toReceiptItems(sum.Items),
 		Subtotal:       sum.Subtotal,
 		DiscountAmount: sum.DiscountAmount,
 		DiscountLabel:  sum.DiscountLabel,
@@ -260,6 +249,48 @@ func (s *Service) SearchCustomers(ctx context.Context, q string) ([]CustomerSear
 }
 
 // ---- helpers ----
+
+// toPOSItemInputs projects the kasir-facing CreateOrderItemInput slice into
+// orderapi.POSOrderItemInput (§32). Harga TIDAK ikut — order module
+// menghitung ulang lewat catalog.Quote per baris, tidak pernah trust harga
+// dari client.
+func toPOSItemInputs(items []CreateOrderItemInput) []orderapi.POSOrderItemInput {
+	out := make([]orderapi.POSOrderItemInput, 0, len(items))
+	for _, it := range items {
+		out = append(out, orderapi.POSOrderItemInput{
+			ProductID:    it.ProductID,
+			MaterialID:   it.MaterialID,
+			WidthCm:      it.WidthCm,
+			HeightCm:     it.HeightCm,
+			Quantity:     it.Quantity,
+			DesignSource: it.DesignSource,
+			DesignBrief:  it.DesignBrief,
+			ItemNotes:    it.ItemNotes,
+		})
+	}
+	return out
+}
+
+// toReceiptItems projects orderapi.OrderItemView (sudah terurut LineNo ASC)
+// ke ReceiptItem untuk struk kasir (§32.7 — satu baris per item). Angka
+// diambil APA ADANYA dari OrderSummary, bukan dihitung ulang di sini —
+// orders.Subtotal/DiscountAmount tetap satu-satunya sumber kebenaran uang
+// (§32.2).
+func toReceiptItems(items []orderapi.OrderItemView) []ReceiptItem {
+	out := make([]ReceiptItem, 0, len(items))
+	for _, it := range items {
+		out = append(out, ReceiptItem{
+			ProductName:  it.ProductName,
+			MaterialName: it.MaterialName,
+			WidthCm:      it.WidthCm,
+			HeightCm:     it.HeightCm,
+			Quantity:     it.Quantity,
+			UnitPrice:    it.UnitPrice,
+			Subtotal:     it.Subtotal,
+		})
+	}
+	return out
+}
 
 // resolveReceiptWidthMM membaca setting pos.receipt_width_mm; fallback ke
 // defaultReceiptWidthMM kalau reader belum di-wire, GetInt error (row hilang/

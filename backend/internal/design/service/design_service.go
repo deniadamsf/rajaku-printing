@@ -170,9 +170,13 @@ func (s *Service) SetNotifier(n notificationapi.Enqueuer) { s.notifier = n }
 // ---- Customer flow ----
 
 // UploadCustomerFile — customer upload file. Service derive role dari
-// order.design_source:
+// order_items.design_source milik item yang dituju (in.OrderItemID, §32.5):
 //   - design_source=upload  → role=customer_upload (siap-cetak; staff akan verifikasi)
 //   - design_source=request → role=customer_asset  (aset/brief; staff akan kerjakan)
+//
+// TIDAK dari orders.design_source — kolom itu sejak §32.1 adalah turunan yang
+// bisa bernilai "mixed" pada order campuran, dan memvalidasi terhadapnya akan
+// salah menolak upload yang sah untuk item yang cocok.
 //
 // Ownership: caller wajib pemilik order (kecuali staff bypass, mis. kasir POS
 // upload atas nama customer).
@@ -195,10 +199,14 @@ func (s *Service) UploadCustomerFile(ctx context.Context, in UploadInput) (*mode
 	if err := checkScopedOrder(in.ScopedOrderID, order.ID); err != nil {
 		return nil, err
 	}
+	item, err := resolveOrderItem(order, in.OrderItemID)
+	if err != nil {
+		return nil, err
+	}
 
-	// Derive role + state guard.
+	// Derive role + state guard dari item.DesignSource (§32.5).
 	var role model.Role
-	switch order.DesignSource {
+	switch item.DesignSource {
 	case "upload":
 		role = model.RoleCustomerUpload
 		if order.Status != "dibayar" {
@@ -216,7 +224,7 @@ func (s *Service) UploadCustomerFile(ctx context.Context, in UploadInput) (*mode
 		return nil, designapi.ErrDesignSourceMismatch
 	}
 
-	saved, err := s.persistBlobAndRow(ctx, order.ID, role, in /* approvalPending */, false, nil /* notes */, in.Notes)
+	saved, err := s.persistBlobAndRow(ctx, order.ID, item.ID, role, in /* approvalPending */, false, nil /* notes */, in.Notes)
 	if err != nil {
 		return nil, err
 	}
@@ -373,9 +381,14 @@ func (s *Service) RequestRevision(ctx context.Context, in RevisionInput) (*model
 // ---- Staff flow ----
 
 // StaffVerifyUpload — staff verifikasi file customer_upload valid → advance
-// ke desain_diverifikasi (upload path).
-// Wajib: order.design_source=upload, minimal ada 1 file customer_upload,
-// order status = dibayar.
+// ke desain_diverifikasi (upload path). Ini aksi SATU KALI untuk SELURUH
+// order (§32.6 — status desain tetap satu per order, bukan per item), jadi
+// hanya berlaku kalau SEMUA item order ini ber-design_source=upload — order
+// campuran (ada item request) tidak bisa lewat jalur pintas ini; item
+// request-nya harus selesai lewat StaffUploadDraft/ApproveDraft dulu.
+// Wajib: seluruh order_items.design_source=upload (§32.5, bukan
+// orders.design_source yang bisa "mixed"), SETIAP item minimal punya 1 file
+// customer_upload, order status = dibayar.
 func (s *Service) StaffVerifyUpload(ctx context.Context, in StaffVerifyInput) error {
 	order, err := s.orderCmd.FindSummaryByResi(ctx, in.Resi)
 	if err != nil {
@@ -384,26 +397,30 @@ func (s *Service) StaffVerifyUpload(ctx context.Context, in StaffVerifyInput) er
 		}
 		return fmt.Errorf("verify: lookup order: %w", err)
 	}
-	if order.DesignSource != "upload" {
+	if !allItemsDesignSource(order.Items, "upload") {
 		return designapi.ErrDesignSourceMismatch
 	}
 	if order.Status != "dibayar" {
 		return designapi.ErrOrderNotDesignReady
 	}
-	// Confirm at least 1 file exists — mencegah staff verify order kosong.
+	// Confirm SETIAP item punya minimal 1 file customer_upload (§32.5) —
+	// bukan cuma "ada satu file di suatu tempat di order ini", yang pada
+	// order multi-item bisa lolos walau item lain belum ada filenya sama
+	// sekali.
 	list, err := s.files.ListByOrder(ctx, order.ID)
 	if err != nil {
 		return fmt.Errorf("verify: list files: %w", err)
 	}
-	hasCustomerUpload := false
+	uploadedItems := make(map[uuid.UUID]bool, len(list))
 	for _, f := range list {
 		if f.Role == model.RoleCustomerUpload && !f.IsPurged {
-			hasCustomerUpload = true
-			break
+			uploadedItems[f.OrderItemID] = true
 		}
 	}
-	if !hasCustomerUpload {
-		return designapi.ErrFileNotFound
+	for _, it := range order.Items {
+		if !uploadedItems[it.ID] {
+			return designapi.ErrFileNotFound
+		}
 	}
 	actor := in.StaffID
 	if err := s.orderCmd.MarkDesainDiverifikasi(ctx, order.ID, &actor, in.Note); err != nil {
@@ -419,8 +436,10 @@ func (s *Service) StaffVerifyUpload(ctx context.Context, in StaffVerifyInput) er
 
 // StaffUploadDraft — staff upload draft desain (request path). Insert row
 // dgn approval_status=pending; advance order ke menunggu_approval_desain.
-// Guard: order.design_source=request; status = dibayar (initial) atau
-// desain_dikerjakan (revisi berikutnya). Cegah double-pending via unique index.
+// Guard: order_items.design_source milik item yang dituju (in.OrderItemID)
+// harus "request" (BUKAN orders.design_source — bisa "mixed", §32.1/§32.5);
+// status order = dibayar (initial) atau desain_dikerjakan (revisi berikutnya).
+// Cegah double-pending via unique index.
 func (s *Service) StaffUploadDraft(ctx context.Context, in UploadInput) (*model.DesignFile, error) {
 	order, err := s.orderCmd.FindSummaryByResi(ctx, in.Resi)
 	if err != nil {
@@ -429,7 +448,11 @@ func (s *Service) StaffUploadDraft(ctx context.Context, in UploadInput) (*model.
 		}
 		return nil, fmt.Errorf("staff upload: lookup order: %w", err)
 	}
-	if order.DesignSource != "request" {
+	item, err := resolveOrderItem(order, in.OrderItemID)
+	if err != nil {
+		return nil, err
+	}
+	if item.DesignSource != "request" {
 		return nil, designapi.ErrDesignSourceMismatch
 	}
 	switch order.Status {
@@ -440,7 +463,7 @@ func (s *Service) StaffUploadDraft(ctx context.Context, in UploadInput) (*model.
 	}
 
 	pending := model.ApprovalPending
-	draft, err := s.persistBlobAndRow(ctx, order.ID, model.RoleStaffDraft, in, true, &pending, in.Notes)
+	draft, err := s.persistBlobAndRow(ctx, order.ID, item.ID, model.RoleStaffDraft, in, true, &pending, in.Notes)
 	if err != nil {
 		return nil, err
 	}
@@ -517,8 +540,10 @@ func (s *Service) StaffApproveWalkinInstant(ctx context.Context, in WalkinInstan
 //
 // Wajib: order.channel=pos (order online TIDAK boleh lewat jalur ini —
 // kalau staff salah klik, order online tanpa file desain akan maju ke cetak
-// tanpa ada yang tahu harus mencetak apa), order.design_source=upload,
-// status=dibayar.
+// tanpa ada yang tahu harus mencetak apa), SEMUA order_items.design_source
+// milik order ini = upload (§32.5 — bukan orders.design_source yang bisa
+// "mixed"; order campuran punya item request yang belum tentu siap
+// dilewatkan begitu saja), status=dibayar.
 //
 // Sengaja NO notif WA — sama alasan dengan StaffApproveWalkinInstant:
 // pelanggan ada di depan kasir.
@@ -533,7 +558,7 @@ func (s *Service) StaffSkipUpload(ctx context.Context, in SkipUploadInput) error
 	if order.Channel != "pos" {
 		return designapi.ErrSkipUploadOnlyForPOS
 	}
-	if order.DesignSource != "upload" {
+	if !allItemsDesignSource(order.Items, "upload") {
 		return designapi.ErrDesignSourceMismatch
 	}
 	if order.Status != "dibayar" {
@@ -650,9 +675,46 @@ func checkScopedOrder(scopedOrderID *uuid.UUID, orderID uuid.UUID) error {
 	return nil
 }
 
+// resolveOrderItem finds the item identified by itemID within order.Items —
+// the ONLY way this service is allowed to know about order items (§22: no
+// direct import of the order module's internal packages; orderapi.
+// OrderSummary.Items is the public projection). Not found here means either
+// the item doesn't exist at all, or it belongs to a DIFFERENT order — both
+// indistinguishable from this side of the boundary, and both must be
+// rejected identically (§32.5, designapi.ErrOrderItemMismatch).
+func resolveOrderItem(order *orderapi.OrderSummary, itemID uuid.UUID) (*orderapi.OrderItemView, error) {
+	for i := range order.Items {
+		if order.Items[i].ID == itemID {
+			return &order.Items[i], nil
+		}
+	}
+	return nil, designapi.ErrOrderItemMismatch
+}
+
+// allItemsDesignSource reports whether EVERY item of the order carries the
+// given design_source (§32.5). Used by the order-wide shortcuts
+// (StaffVerifyUpload, StaffSkipUpload) that advance the WHOLE order in one
+// state transition (§32.6 — design status stays one-per-order) — those
+// shortcuts only make sense when the order isn't "mixed" (has no request-
+// desain item still needing its own draft/approval loop). An order with zero
+// items is never valid (§32.4) so this reports false rather than vacuously
+// true.
+func allItemsDesignSource(items []orderapi.OrderItemView, source string) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, it := range items {
+		if it.DesignSource != source {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Service) persistBlobAndRow(
 	ctx context.Context,
 	orderID uuid.UUID,
+	orderItemID uuid.UUID,
 	role model.Role,
 	in UploadInput,
 	setApproval bool,
@@ -692,6 +754,7 @@ func (s *Service) persistBlobAndRow(
 	row := &model.DesignFile{
 		ID:               fileID,
 		OrderID:          orderID,
+		OrderItemID:      orderItemID,
 		Role:             role,
 		FilePath:         subpath,
 		FileOriginalName: safeOriginalName(in.OriginalName),

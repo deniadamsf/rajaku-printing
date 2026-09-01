@@ -28,7 +28,7 @@ const resiRetryAttempts = 8
 // what CreateOnlineOrder + tracking + admin need, so tests can supply a fake
 // without pulling GORM. *repository.OrderRepository satisfies this.
 type OrderStore interface {
-	CreateWithHistory(ctx context.Context, order *model.Order, initialHistory *model.OrderStateHistory) error
+	CreateWithHistory(ctx context.Context, order *model.Order, items []model.OrderItem, initialHistory *model.OrderStateHistory) error
 	FindByResi(ctx context.Context, resi string) (*model.Order, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*model.Order, error)
 	FindHistoryByOrderID(ctx context.Context, orderID uuid.UUID) ([]model.OrderStateHistory, error)
@@ -52,6 +52,8 @@ type OrderStore interface {
 
 	// --- Super admin order tools (§ super admin order tools) ---
 	UpdateFields(ctx context.Context, p repository.UpdateFieldsParams) error
+	// UpdateItems — koreksi baris item pesanan oleh super admin (§32.9).
+	UpdateItems(ctx context.Context, p repository.UpdateItemsParams) error
 	OverrideStatus(ctx context.Context, p repository.OverrideStatusParams) (string, error)
 	SoftDelete(ctx context.Context, p repository.SoftDeleteParams) error
 
@@ -143,7 +145,10 @@ func (s *Service) CreateOnlineOrder(ctx context.Context, in CreateOnlineOrderInp
 		return nil, err
 	}
 
-	// 2. Validate design/pickup fields
+	// 2. Validate item count (§32.4) + design/pickup fields
+	if err := validateItemCount(len(in.Items)); err != nil {
+		return nil, err
+	}
 	if err := s.validateOnlineInput(in); err != nil {
 		return nil, err
 	}
@@ -157,58 +162,91 @@ func (s *Service) CreateOnlineOrder(ctx context.Context, in CreateOnlineOrderInp
 		}
 	}
 
-	// 4. Quote price via catalog (single source of truth — jangan trust harga dari client)
-	if in.Quantity <= 0 {
-		in.Quantity = 1
-	}
-	quote, err := s.catalog.Quote(ctx, catalogapi.QuoteRequest{
-		ProductID:  in.ProductID,
-		MaterialID: in.MaterialID,
-		WidthCm:    in.WidthCm,
-		HeightCm:   in.HeightCm,
-	})
+	// 4. Quote setiap item via catalog (single source of truth — jangan
+	// trust harga dari client) + build order_items (§32).
+	items, subtotal, err := s.quoteOnlineItems(ctx, in.Items)
 	if err != nil {
-		return nil, err // catalog errors bubble as-is (handler maps ke HTTP)
+		return nil, err
 	}
-	subtotal := quote.TotalPrice * int64(in.Quantity)
 	total := subtotal // shipping_cost belum ada di create — diisi admin nanti
 
 	// 5. Build order struct
 	order := &model.Order{
-		CustomerID:           customerID,
-		Channel:              model.ChannelOnline,
-		Status:               state.OrderMasuk,
-		ProductID:            &quote.ProductID,
-		ProductNameSnapshot:  quote.ProductName,
-		MaterialID:           &quote.MaterialID,
-		MaterialNameSnapshot: quote.MaterialName,
-		PricingTypeSnapshot:  string(quote.PricingType),
-		WidthCm:              in.WidthCm,
-		HeightCm:             in.HeightCm,
-		Quantity:             in.Quantity,
-		UnitPrice:            quote.TotalPrice,
-		Subtotal:             subtotal,
-		MetodeAmbil:          in.MetodeAmbil,
-		DesignSource:         in.DesignSource,
-		Total:                total,
+		CustomerID:   customerID,
+		Channel:      model.ChannelOnline,
+		Status:       state.OrderMasuk,
+		Subtotal:     subtotal,
+		MetodeAmbil:  in.MetodeAmbil,
+		DesignSource: deriveDesignSource(items),
+		Total:        total,
 	}
 	if in.MetodeAmbil == model.MetodeAmbilKirim {
 		order.ShippingAddress = strPtr(in.ShippingAddress)
 		order.ShippingRecipientName = strPtr(in.ShippingRecipientName)
 		order.ShippingRecipientPhone = strPtr(shippingPhoneNorm)
 	}
-	if in.DesignBrief != "" {
-		order.DesignBrief = strPtr(in.DesignBrief)
-	}
 	if in.Notes != "" {
 		order.Notes = strPtr(in.Notes)
 	}
 
 	// 6. Insert with retry-on-collision (resi unique)
-	if err := s.createWithResiRetry(ctx, order, state.OrderMasuk, nil, nil); err != nil {
+	if err := s.createWithResiRetry(ctx, order, items, state.OrderMasuk, nil, nil); err != nil {
 		return nil, err
 	}
 	return order, nil
+}
+
+// quoteOnlineItems quotes each requested item via catalog (authoritative
+// pricing — jangan trust harga dari client) and builds the model.OrderItem
+// rows + aggregate subtotal for CreateOnlineOrder. LineNo starts at 1 in
+// request order.
+func (s *Service) quoteOnlineItems(ctx context.Context, in []CreateOnlineOrderItemInput) ([]model.OrderItem, int64, error) {
+	items := make([]model.OrderItem, 0, len(in))
+	var subtotal int64
+	for i, it := range in {
+		if it.DesignSource != model.DesignSourceUpload && it.DesignSource != model.DesignSourceRequest {
+			return nil, 0, fmt.Errorf("item %d: design_source %q: %w", i+1, it.DesignSource, orderapi.ErrInvalidDesignSource)
+		}
+		qty := it.Quantity
+		if qty <= 0 {
+			qty = 1
+		}
+		quote, err := s.catalog.Quote(ctx, catalogapi.QuoteRequest{
+			ProductID:  it.ProductID,
+			MaterialID: it.MaterialID,
+			WidthCm:    it.WidthCm,
+			HeightCm:   it.HeightCm,
+		})
+		if err != nil {
+			// §22 — dibungkus dengan nomor baris: dengan sampai 20 item per
+			// order, "produk tidak ditemukan" polos tidak memberi tahu baris
+			// mana yang bermasalah. %w tetap dipertahankan supaya
+			// errors.Is(err, catalogapi.Err...) di handler.mapErr tetap
+			// bekerja lewat rantai wrapping.
+			return nil, 0, fmt.Errorf("item %d: quote: %w", i+1, err)
+		}
+		lineSubtotal := quote.TotalPrice * int64(qty)
+		subtotal += lineSubtotal
+		item := model.OrderItem{
+			LineNo:               i + 1,
+			ProductID:            &quote.ProductID,
+			ProductNameSnapshot:  quote.ProductName,
+			MaterialID:           &quote.MaterialID,
+			MaterialNameSnapshot: quote.MaterialName,
+			PricingTypeSnapshot:  string(quote.PricingType),
+			WidthCm:              it.WidthCm,
+			HeightCm:             it.HeightCm,
+			Quantity:             qty,
+			UnitPrice:            quote.TotalPrice,
+			Subtotal:             lineSubtotal,
+			DesignSource:         it.DesignSource,
+		}
+		if it.DesignBrief != "" {
+			item.DesignBrief = strPtr(it.DesignBrief)
+		}
+		items = append(items, item)
+	}
+	return items, subtotal, nil
 }
 
 // GetByResiForOwner returns full order details for the requesting identity.
@@ -264,8 +302,7 @@ func (s *Service) GetByResiPublic(ctx context.Context, resiStr string) (*PublicT
 		Channel:      string(o.Channel),
 		MetodeAmbil:  string(o.MetodeAmbil),
 		DesignSource: string(o.DesignSource),
-		ProductName:  o.ProductNameSnapshot,
-		MaterialName: o.MaterialNameSnapshot,
+		Items:        publicTrackingItems(o.Items),
 		CreatedAt:    o.CreatedAt.UTC().Format(time.RFC3339),
 		History:      rows,
 	}
@@ -582,12 +619,7 @@ func orderToInvoiceView(o *model.Order) *orderapi.OrderInvoiceView {
 		Channel:            string(o.Channel),
 		Status:             string(o.Status),
 		MetodeAmbil:        string(o.MetodeAmbil),
-		ProductName:        o.ProductNameSnapshot,
-		MaterialName:       o.MaterialNameSnapshot,
-		WidthCm:            o.WidthCm,
-		HeightCm:           o.HeightCm,
-		Quantity:           o.Quantity,
-		UnitPrice:          o.UnitPrice,
+		Items:              itemsToView(o.Items),
 		Subtotal:           o.Subtotal,
 		DiscountAmount:     o.DiscountAmount,
 		DiscountLabel:      discountLabel(o),
@@ -604,6 +636,62 @@ func orderToInvoiceView(o *model.Order) *orderapi.OrderInvoiceView {
 		v.MetodeBayar = string(*o.MetodeBayar)
 	}
 	return v
+}
+
+// itemsToView projects order_items (§32) into the orderapi-safe
+// OrderItemView slice — shared by orderToSummary/orderToInvoiceView so the
+// projection rule lives in exactly one place.
+func itemsToView(items []model.OrderItem) []orderapi.OrderItemView {
+	out := make([]orderapi.OrderItemView, 0, len(items))
+	for i := range items {
+		it := &items[i]
+		view := orderapi.OrderItemView{
+			ID:             it.ID,
+			LineNo:         it.LineNo,
+			ProductID:      it.ProductID,
+			ProductName:    it.ProductNameSnapshot,
+			MaterialName:   it.MaterialNameSnapshot,
+			PricingType:    it.PricingTypeSnapshot,
+			WidthCm:        it.WidthCm,
+			HeightCm:       it.HeightCm,
+			Quantity:       it.Quantity,
+			UnitPrice:      it.UnitPrice,
+			Subtotal:       it.Subtotal,
+			DiscountAmount: it.DiscountAmount,
+			DesignSource:   string(it.DesignSource),
+		}
+		if it.DesignBrief != nil {
+			view.DesignBrief = *it.DesignBrief
+		}
+		if it.ItemNotes != nil {
+			view.ItemNotes = *it.ItemNotes
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
+// publicTrackingItems projects every order_item (§32) into the
+// PublicTrackingResultItem shape safe for the no-login tracking endpoint
+// (§5) — SEMUA baris, bukan cuma yang pertama (lihat PublicTrackingResult
+// doc untuk kenapa proyeksi lama "+N lainnya" diganti dengan daftar lengkap).
+// Order TIDAK PERNAH punya 0 item (§32.4); items kosong di sini berarti
+// caller lupa preload, jadi mengembalikan slice kosong apa adanya (tidak
+// panic) supaya gagalnya kelihatan di data, bukan crash.
+func publicTrackingItems(items []model.OrderItem) []PublicTrackingResultItem {
+	out := make([]PublicTrackingResultItem, 0, len(items))
+	for i := range items {
+		out = append(out, PublicTrackingResultItem{
+			ID:           items[i].ID.String(),
+			ProductName:  items[i].ProductNameSnapshot,
+			MaterialName: items[i].MaterialNameSnapshot,
+			WidthCm:      items[i].WidthCm,
+			HeightCm:     items[i].HeightCm,
+			Quantity:     items[i].Quantity,
+			DesignSource: string(items[i].DesignSource),
+		})
+	}
+	return out
 }
 
 // discountLabel implements §28.7's "nama apa yang ditampilkan" rule ONCE
@@ -634,12 +722,7 @@ func orderToSummary(o *model.Order) *orderapi.OrderSummary {
 		DesignSource:   string(o.DesignSource),
 		CreatedBy:      o.CreatedBy,
 		CreatedAt:      o.CreatedAt,
-		ProductName:    o.ProductNameSnapshot,
-		MaterialName:   o.MaterialNameSnapshot,
-		WidthCm:        o.WidthCm,
-		HeightCm:       o.HeightCm,
-		Quantity:       o.Quantity,
-		UnitPrice:      o.UnitPrice,
+		Items:          itemsToView(o.Items),
 		Subtotal:       o.Subtotal,
 		DiscountAmount: o.DiscountAmount,
 		DiscountLabel:  discountLabel(o),
@@ -882,13 +965,56 @@ func (s *Service) validateOnlineInput(in CreateOnlineOrderInput) error {
 			return orderapi.ErrShippingFieldsRequired
 		}
 	}
-	if in.DesignSource != model.DesignSourceUpload && in.DesignSource != model.DesignSourceRequest {
-		return fmt.Errorf("design_source invalid: %q", in.DesignSource)
+	return nil
+}
+
+// maxItemsPerOrder / minItemsPerOrder — §32.4: batas jumlah item per order,
+// ditolak eksplisit (bukan dibiarkan lewat lalu meledak di tempat lain, mis.
+// ratusan panggilan catalog.Quote dalam satu request).
+const (
+	minItemsPerOrder = 1
+	maxItemsPerOrder = 20
+)
+
+// validateItemCount implements §32.4's item-count guard — shared by
+// CreateOnlineOrder & CreatePOSOrder so the bound lives in exactly one place.
+func validateItemCount(n int) error {
+	if n < minItemsPerOrder {
+		return orderapi.ErrNoItems
+	}
+	if n > maxItemsPerOrder {
+		return orderapi.ErrTooManyItems
 	}
 	return nil
 }
 
-func (s *Service) createWithResiRetry(ctx context.Context, order *model.Order, initialStatus state.Status, initialNote *string, changedBy *uuid.UUID) error {
+// deriveDesignSource implements §32.1's rule for orders.DesignSource: it is
+// a DERIVED summary of order_items.DesignSource, written by the order
+// service every time the item list changes — upload only → "upload",
+// request only → "request", a mix of both → "mixed". This is the ONLY place
+// this rule may live (§22) — every order-creation path (CreateOnlineOrder,
+// CreatePOSOrder) MUST funnel through it instead of re-deriving its own copy.
+func deriveDesignSource(items []model.OrderItem) model.DesignSource {
+	hasUpload, hasRequest := false, false
+	for i := range items {
+		switch items[i].DesignSource {
+		case model.DesignSourceUpload:
+			hasUpload = true
+		case model.DesignSourceRequest:
+			hasRequest = true
+		}
+	}
+	switch {
+	case hasUpload && hasRequest:
+		return model.DesignSourceMixed
+	case hasRequest:
+		return model.DesignSourceRequest
+	default:
+		return model.DesignSourceUpload
+	}
+}
+
+func (s *Service) createWithResiRetry(ctx context.Context, order *model.Order, items []model.OrderItem, initialStatus state.Status, initialNote *string, changedBy *uuid.UUID) error {
 	for attempt := 0; attempt < resiRetryAttempts; attempt++ {
 		r, err := resi.Generate()
 		if err != nil {
@@ -900,7 +1026,7 @@ func (s *Service) createWithResiRetry(ctx context.Context, order *model.Order, i
 			Note:      initialNote,
 			ChangedBy: changedBy,
 		}
-		err = s.orders.CreateWithHistory(ctx, order, hist)
+		err = s.orders.CreateWithHistory(ctx, order, items, hist)
 		if err == nil {
 			return nil
 		}
@@ -919,14 +1045,13 @@ func strPtr(s string) *string { return &s }
 // row: from=null, to=dibayar dgn note POS instant payment. Tidak trigger WA
 // atau invoice — itu tanggung jawab modul POS (yg lebih tahu context UX).
 func (s *Service) CreatePOSOrder(ctx context.Context, in orderapi.POSCreateOrderInput) (*orderapi.OrderSummary, error) {
-	// Validate design_source & metode_ambil basic shape.
+	// Validate item count (§32.4) & metode_ambil basic shape.
+	if err := validateItemCount(len(in.Items)); err != nil {
+		return nil, err
+	}
 	metodeAmbil := model.MetodeAmbil(in.MetodeAmbil)
 	if metodeAmbil != model.MetodeAmbilPickup && metodeAmbil != model.MetodeAmbilKirim {
 		return nil, fmt.Errorf("metode_ambil invalid: %q", in.MetodeAmbil)
-	}
-	designSource := model.DesignSource(in.DesignSource)
-	if designSource != model.DesignSourceUpload && designSource != model.DesignSourceRequest {
-		return nil, fmt.Errorf("design_source invalid: %q", in.DesignSource)
 	}
 	metodeBayar := model.MetodeBayar(in.MetodeBayar)
 	if metodeBayar != model.MetodeBayarCash && metodeBayar != model.MetodeBayarQRISPOS {
@@ -959,56 +1084,40 @@ func (s *Service) CreatePOSOrder(ctx context.Context, in orderapi.POSCreateOrder
 		shippingCost = in.ShippingCost
 	}
 
-	// Quote via catalog (authoritative).
-	if in.Quantity <= 0 {
-		in.Quantity = 1
-	}
-	quote, err := s.catalog.Quote(ctx, catalogapi.QuoteRequest{
-		ProductID:  in.ProductID,
-		MaterialID: in.MaterialID,
-		WidthCm:    in.WidthCm,
-		HeightCm:   in.HeightCm,
-	})
+	// Quote setiap item via catalog (authoritative) + build order_items (§32).
+	items, subtotal, err := s.quotePOSItems(ctx, in.Items)
 	if err != nil {
 		return nil, err
 	}
-	subtotal := quote.TotalPrice * int64(in.Quantity)
 
-	// Discount (§28.3) — resolved AFTER subtotal, BEFORE total. Ongkir tidak
-	// pernah didiskon: total = subtotal - discount_amount + shipping_cost.
+	// Discount (§28.3/§32.3) — resolved AFTER subtotal, BEFORE total. Ongkir
+	// tidak pernah didiskon: total = subtotal - discount_amount + shipping_cost.
 	discountSnap, err := s.resolveDiscount(ctx, discountapi.ResolveInput{
 		DiscountID:   in.DiscountID,
 		ManualAmount: in.ManualDiscountAmount,
 		Note:         in.DiscountNote,
-		Subtotal:     subtotal,
+		Items:        resolveItemsFrom(items),
 		Channel:      string(model.ChannelPOS),
-		ProductID:    quote.ProductID,
 		CustomerID:   in.CustomerID,
 	})
 	if err != nil {
 		return nil, err
 	}
 	total := subtotal - discountSnap.Amount + shippingCost
+	if err := applyItemDiscountAllocations(items, discountSnap); err != nil {
+		return nil, err
+	}
 
 	order := &model.Order{
-		CustomerID:           in.CustomerID,
-		Channel:              model.ChannelPOS,
-		Status:               state.Dibayar, // POS langsung dibayar
-		ProductID:            &quote.ProductID,
-		ProductNameSnapshot:  quote.ProductName,
-		MaterialID:           &quote.MaterialID,
-		MaterialNameSnapshot: quote.MaterialName,
-		PricingTypeSnapshot:  string(quote.PricingType),
-		WidthCm:              in.WidthCm,
-		HeightCm:             in.HeightCm,
-		Quantity:             in.Quantity,
-		UnitPrice:            quote.TotalPrice,
-		Subtotal:             subtotal,
-		MetodeAmbil:          metodeAmbil,
-		MetodeBayar:          &metodeBayar,
-		DesignSource:         designSource,
-		Total:                total,
-		CreatedBy:            &in.KasirID,
+		CustomerID:   in.CustomerID,
+		Channel:      model.ChannelPOS,
+		Status:       state.Dibayar, // POS langsung dibayar
+		Subtotal:     subtotal,
+		MetodeAmbil:  metodeAmbil,
+		MetodeBayar:  &metodeBayar,
+		DesignSource: deriveDesignSource(items),
+		Total:        total,
+		CreatedBy:    &in.KasirID,
 	}
 	applyDiscountSnapshot(order, discountSnap)
 	if metodeAmbil == model.MetodeAmbilKirim {
@@ -1024,19 +1133,140 @@ func (s *Service) CreatePOSOrder(ctx context.Context, in orderapi.POSCreateOrder
 		}
 		order.DesignApprovalMode = &mode
 	}
-	if in.DesignBrief != "" {
-		order.DesignBrief = strPtr(in.DesignBrief)
-	}
 	if in.Notes != "" {
 		order.Notes = strPtr(in.Notes)
 	}
 
 	initialNote := "POS instant payment (" + in.MetodeBayar + ")"
 	kasir := in.KasirID
-	if err := s.createWithResiRetry(ctx, order, state.Dibayar, &initialNote, &kasir); err != nil {
+	if err := s.createWithResiRetry(ctx, order, items, state.Dibayar, &initialNote, &kasir); err != nil {
 		return nil, err
 	}
+	order.Items = items
 	return orderToSummary(order), nil
+}
+
+// quotePOSItems quotes each requested item via catalog (authoritative
+// pricing) and builds the model.OrderItem rows + aggregate subtotal for
+// CreatePOSOrder. Mirror of quoteOnlineItems, kept separate because POS
+// items carry their own ItemNotes field (§11) that the online form doesn't.
+func (s *Service) quotePOSItems(ctx context.Context, in []orderapi.POSOrderItemInput) ([]model.OrderItem, int64, error) {
+	items := make([]model.OrderItem, 0, len(in))
+	var subtotal int64
+	for i, it := range in {
+		designSource := model.DesignSource(it.DesignSource)
+		if designSource != model.DesignSourceUpload && designSource != model.DesignSourceRequest {
+			return nil, 0, fmt.Errorf("item %d: design_source %q: %w", i+1, it.DesignSource, orderapi.ErrInvalidDesignSource)
+		}
+		qty := it.Quantity
+		if qty <= 0 {
+			qty = 1
+		}
+		quote, err := s.catalog.Quote(ctx, catalogapi.QuoteRequest{
+			ProductID:  it.ProductID,
+			MaterialID: it.MaterialID,
+			WidthCm:    it.WidthCm,
+			HeightCm:   it.HeightCm,
+		})
+		if err != nil {
+			// §22 — dibungkus dengan nomor baris (POS bisa sampai 20 item
+			// dalam satu order sekaligus).
+			return nil, 0, fmt.Errorf("item %d: quote: %w", i+1, err)
+		}
+		lineSubtotal := quote.TotalPrice * int64(qty)
+		subtotal += lineSubtotal
+		item := model.OrderItem{
+			LineNo:               i + 1,
+			ProductID:            &quote.ProductID,
+			ProductNameSnapshot:  quote.ProductName,
+			MaterialID:           &quote.MaterialID,
+			MaterialNameSnapshot: quote.MaterialName,
+			PricingTypeSnapshot:  string(quote.PricingType),
+			WidthCm:              it.WidthCm,
+			HeightCm:             it.HeightCm,
+			Quantity:             qty,
+			UnitPrice:            quote.TotalPrice,
+			Subtotal:             lineSubtotal,
+			DesignSource:         designSource,
+		}
+		if it.DesignBrief != "" {
+			item.DesignBrief = strPtr(it.DesignBrief)
+		}
+		if it.ItemNotes != "" {
+			item.ItemNotes = strPtr(it.ItemNotes)
+		}
+		items = append(items, item)
+	}
+	return items, subtotal, nil
+}
+
+// resolveItemsFrom projects quoted order_items into the discountapi.ResolveItem
+// shape the discount module's Resolver expects (§32.3) — order module never
+// imports discount/model, only discountapi.
+func resolveItemsFrom(items []model.OrderItem) []discountapi.ResolveItem {
+	out := make([]discountapi.ResolveItem, len(items))
+	for i := range items {
+		pid := uuid.Nil
+		if items[i].ProductID != nil {
+			pid = *items[i].ProductID
+		}
+		out[i] = discountapi.ResolveItem{
+			LineNo:    items[i].LineNo,
+			ProductID: pid,
+			Subtotal:  items[i].Subtotal,
+		}
+	}
+	return out
+}
+
+// applyItemDiscountAllocations copies discountapi.Snapshot.Allocations
+// (§32.3, largest-remainder method) onto each order_item's DiscountAmount —
+// a no-op when snap describes "no discount" (Amount 0, Allocations empty).
+//
+// Before copying anything, it enforces §32.2's invariant ITSELF, on the
+// order module's own side of the boundary — it does NOT just trust that
+// discount/service/calc.go got the math right: if Allocations is empty while
+// Amount > 0, or Σ Allocations.Amount != Amount, that is EXACTLY the silent
+// failure class §22 forbids (rekap/struk would show a discount_amount that
+// no item actually reflects), so it refuses to save the order at all
+// (orderapi.ErrDiscountAllocationMismatch) instead of writing whatever the
+// resolver handed back.
+func applyItemDiscountAllocations(items []model.OrderItem, snap *discountapi.Snapshot) error {
+	if len(snap.Allocations) == 0 {
+		if snap.Amount != 0 {
+			return fmt.Errorf("alokasi diskon: discount_amount %d tapi resolver tidak mengembalikan alokasi apa pun: %w",
+				snap.Amount, orderapi.ErrDiscountAllocationMismatch)
+		}
+		return nil
+	}
+	var reported int64
+	byLine := make(map[int]int64, len(snap.Allocations))
+	for _, a := range snap.Allocations {
+		byLine[a.LineNo] = a.Amount
+		reported += a.Amount
+	}
+	if reported != snap.Amount {
+		return fmt.Errorf("alokasi diskon: Σ alokasi %d != discount_amount %d: %w",
+			reported, snap.Amount, orderapi.ErrDiscountAllocationMismatch)
+	}
+	// §22 review #4 — the guard above only proves the RESOLVER's own report
+	// sums correctly; it does NOT prove any allocation actually landed on a
+	// real item. A resolver returning LineNo values that don't match any
+	// items[i].LineNo (e.g. 0-based instead of 1-based) would pass the check
+	// above while leaving every items[i].DiscountAmount at 0. Track what was
+	// actually APPLIED and compare that against snap.Amount instead.
+	var applied int64
+	for i := range items {
+		if amt, ok := byLine[items[i].LineNo]; ok {
+			items[i].DiscountAmount = amt
+			applied += amt
+		}
+	}
+	if applied != snap.Amount {
+		return fmt.Errorf("alokasi diskon: Σ alokasi yang benar-benar diterapkan ke item %d != discount_amount %d (LineNo dari resolver tidak cocok item manapun): %w",
+			applied, snap.Amount, orderapi.ErrDiscountAllocationMismatch)
+	}
+	return nil
 }
 
 // resolveDiscount is the single gate every order-creation path (currently

@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/rajaku-printing/backend/internal/auth/authapi"
+	"github.com/rajaku-printing/backend/internal/catalog/catalogapi"
 	"github.com/rajaku-printing/backend/internal/httpx"
 	"github.com/rajaku-printing/backend/internal/order/orderapi"
 	"github.com/rajaku-printing/backend/internal/order/service"
@@ -195,6 +196,45 @@ func (h *Handler) mapAdminErr(c *gin.Context, err error) {
 	case errors.Is(err, orderapi.ErrDeleteNotAllowedPaid):
 		httpx.Error(c, http.StatusConflict, httpx.CodeConflict,
 			"pesanan sudah dibayar — batalkan dulu (override status ke dibatalkan) sebelum bisa dihapus")
+	case errors.Is(err, orderapi.ErrOrderSubtotalNotEditable):
+		httpx.Error(c, http.StatusUnprocessableEntity, httpx.CodeUnprocessable,
+			"subtotal tidak bisa diedit langsung — diturunkan dari item pesanan")
+
+	// --- Koreksi baris item (§32.9) ---
+	case errors.Is(err, orderapi.ErrOrderItemNotFound):
+		httpx.Error(c, http.StatusNotFound, httpx.CodeNotFound, "baris item pesanan tidak ditemukan")
+	case errors.Is(err, orderapi.ErrOrderItemProductNotEditable):
+		httpx.Error(c, http.StatusUnprocessableEntity, httpx.CodeUnprocessable,
+			"produk/bahan/desain baris item yang sudah ada tidak bisa diubah — hapus baris ini lalu tambah baris baru")
+	case errors.Is(err, orderapi.ErrOrderItemInvalid):
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "baris item pesanan tidak valid")
+	case errors.Is(err, orderapi.ErrOrderDiscountExceedsSubtotal):
+		httpx.Error(c, http.StatusUnprocessableEntity, httpx.CodeUnprocessable,
+			"subtotal hasil edit lebih kecil dari diskon yang sudah tercatat pada pesanan ini")
+	case errors.Is(err, orderapi.ErrOrderItemDuplicate):
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation,
+			"id baris item pesanan dikirim lebih dari sekali")
+	case errors.Is(err, orderapi.ErrOrderItemHasDesignFiles):
+		httpx.Error(c, http.StatusConflict, httpx.CodeConflict,
+			"baris item ini masih punya file desain terkait, tidak bisa dihapus")
+	case errors.Is(err, orderapi.ErrNoItems):
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "pesanan wajib punya minimal 1 item")
+	case errors.Is(err, orderapi.ErrTooManyItems):
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "maksimal 20 item per pesanan")
+	case errors.Is(err, orderapi.ErrInvalidDesignSource):
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "design_source baris item harus 'upload' atau 'request'")
+	case errors.Is(err, catalogapi.ErrProductNotFound):
+		httpx.Error(c, http.StatusNotFound, httpx.CodeNotFound, "produk tidak ditemukan")
+	case errors.Is(err, catalogapi.ErrMaterialNotFound):
+		httpx.Error(c, http.StatusNotFound, httpx.CodeNotFound, "bahan tidak ditemukan")
+	case errors.Is(err, catalogapi.ErrPricingNotAvailable):
+		httpx.Error(c, http.StatusUnprocessableEntity, httpx.CodeUnprocessable,
+			"harga belum tersedia untuk kombinasi produk & bahan ini")
+	case errors.Is(err, catalogapi.ErrDimensionsOutOfRange):
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation,
+			"ukuran di luar rentang yg didukung produk")
+	case errors.Is(err, catalogapi.ErrDimensionsInvalid):
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "ukuran harus bilangan positif")
 
 	default:
 		h.mapErr(c, err)

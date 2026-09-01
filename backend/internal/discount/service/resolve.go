@@ -44,6 +44,17 @@ func (s *Service) ResolveForOrder(ctx context.Context, in discountapi.ResolveInp
 	return s.resolveMasterDiscount(ctx, in)
 }
 
+// totalSubtotal sums every item's Subtotal — the basis for a MANUAL discount
+// (§32.3: diskon manual tidak punya cakupan produk, jadi basisnya SELURUH
+// order, dialokasikan ke semua item).
+func totalSubtotal(items []discountapi.ResolveItem) int64 {
+	var sum int64
+	for i := range items {
+		sum += items[i].Subtotal
+	}
+	return sum
+}
+
 func resolveManualDiscount(in discountapi.ResolveInput) (*discountapi.Snapshot, error) {
 	note := strings.TrimSpace(in.Note)
 	if note == "" {
@@ -52,10 +63,13 @@ func resolveManualDiscount(in discountapi.ResolveInput) (*discountapi.Snapshot, 
 	if in.ManualAmount <= 0 {
 		return nil, discountapi.ErrManualDiscountInvalidAmount
 	}
+	subtotal := totalSubtotal(in.Items)
+	amount := clampAmount(in.ManualAmount, subtotal)
 	return &discountapi.Snapshot{
-		Type:   string(model.DiscountTypeManual),
-		Amount: clampAmount(in.ManualAmount, in.Subtotal),
-		Note:   note,
+		Type:        string(model.DiscountTypeManual),
+		Amount:      amount,
+		Note:        note,
+		Allocations: allocate(amount, in.Items),
 	}, nil
 }
 
@@ -110,20 +124,33 @@ func (s *Service) resolveMasterDiscount(ctx context.Context, in discountapi.Reso
 		}
 	}
 
-	if err := validateForUse(d, in.Subtotal, in.Channel, usage, time.Now(),
-		in.ProductID, scopedProductIDs,
+	// §32.3 — basis hitung tergantung applies_to: "all" memakai SELURUH
+	// item, "selected" HANYA item yang product_id-nya ada di
+	// scopedProductIDs. Dihitung SEBELUM validateForUse supaya min_subtotal
+	// dibandingkan ke basis yang benar (eligible_subtotal), bukan subtotal
+	// seluruh order.
+	eligibleItems, eligibleSubtotal, allItemProductIDs := splitEligibleItems(in.Items, d, scopedProductIDs)
+
+	if err := validateForUse(d, eligibleSubtotal, in.Channel, usage, time.Now(),
+		allItemProductIDs, scopedProductIDs,
 		in.CustomerID, isActiveMember, membershipEnabled, scopedCustomerIDs); err != nil {
 		return nil, err
 	}
 
+	amount := computeAmount(d, eligibleSubtotal)
 	snap := &discountapi.Snapshot{
-		DiscountID: &d.ID,
-		Code:       d.Code,
-		Name:       d.Name,
-		Type:       string(d.Type),
-		Amount:     computeAmount(d, in.Subtotal),
-		Note:       strings.TrimSpace(in.Note),
+		DiscountID:  &d.ID,
+		Code:        d.Code,
+		Name:        d.Name,
+		Type:        string(d.Type),
+		Amount:      amount,
+		Note:        strings.TrimSpace(in.Note),
+		Allocations: allocate(amount, eligibleItems),
 	}
+	// allocate() only produced entries for eligibleItems — merge in the
+	// non-eligible ones at Amount 0 so callers see one entry per LineNo in
+	// in.Items, exactly as documented on discountapi.Snapshot.
+	snap.Allocations = fillZeroAllocations(snap.Allocations, in.Items)
 	switch d.Type {
 	case model.DiscountTypePercent:
 		if d.ValuePercent != nil {
@@ -135,4 +162,48 @@ func (s *Service) resolveMasterDiscount(ctx context.Context, in discountapi.Reso
 		}
 	}
 	return snap, nil
+}
+
+// splitEligibleItems implements §32.3's "item eligible" rule: applies_to=
+// 'all' → every item is eligible; applies_to='selected' → only items whose
+// ProductID is in scopedProductIDs. Also returns the full (unfiltered) list
+// of every item's ProductID, used by validateForUse's §28.9 scope-match
+// check (which needs to know "did ANY of the order's items match", not just
+// the eligible subset — an order with zero matching items must fail with
+// ErrDiscountProductMismatch, not silently compute a 0 eligible_subtotal).
+func splitEligibleItems(items []discountapi.ResolveItem, d *model.Discount, scopedProductIDs []uuid.UUID) (eligible []discountapi.ResolveItem, eligibleSubtotal int64, allProductIDs []uuid.UUID) {
+	allProductIDs = make([]uuid.UUID, 0, len(items))
+	for i := range items {
+		allProductIDs = append(allProductIDs, items[i].ProductID)
+	}
+	if d.AppliesTo != model.AppliesToSelected {
+		eligible = items
+		eligibleSubtotal = totalSubtotal(items)
+		return eligible, eligibleSubtotal, allProductIDs
+	}
+	eligible = make([]discountapi.ResolveItem, 0, len(items))
+	for i := range items {
+		if containsUUID(scopedProductIDs, items[i].ProductID) {
+			eligible = append(eligible, items[i])
+			eligibleSubtotal += items[i].Subtotal
+		}
+	}
+	return eligible, eligibleSubtotal, allProductIDs
+}
+
+// fillZeroAllocations merges `computed` (allocations for eligible items
+// only) with a zero entry for every item in `all` that isn't already present
+// — guarantees the final Snapshot.Allocations has exactly one entry per
+// LineNo in `all`, in `all`'s original order (§32.3 doc on discountapi.
+// Snapshot: "item yang tidak eligible dapat alokasi 0, TETAP muncul").
+func fillZeroAllocations(computed []discountapi.ItemAllocation, all []discountapi.ResolveItem) []discountapi.ItemAllocation {
+	byLine := make(map[int]int64, len(computed))
+	for _, a := range computed {
+		byLine[a.LineNo] = a.Amount
+	}
+	out := make([]discountapi.ItemAllocation, len(all))
+	for i := range all {
+		out[i] = discountapi.ItemAllocation{LineNo: all[i].LineNo, Amount: byLine[all[i].LineNo]}
+	}
+	return out
 }

@@ -11,27 +11,33 @@ import (
 
 // ---- Request ----
 
-type createOrderRequest struct {
-	// Guest fields — required kalau caller belum login.
-	GuestPhone string `json:"guest_phone" binding:"omitempty,min=8,max=20"`
-	GuestName  string `json:"guest_name"  binding:"omitempty,min=1,max=255"`
-
-	// Product spec:
+// orderItemRequest — satu baris produk untuk createOrderRequest (§32).
+// DesignSource/DesignBrief sekarang PER ITEM (§32.5).
+type orderItemRequest struct {
 	ProductID  uuid.UUID `json:"product_id"  binding:"required"`
 	MaterialID uuid.UUID `json:"material_id" binding:"required"`
 	WidthCm    int       `json:"width_cm"    binding:"required,gt=0"`
 	HeightCm   int       `json:"height_cm"   binding:"required,gt=0"`
 	Quantity   int       `json:"quantity"    binding:"omitempty,gt=0"`
 
+	DesignSource string `json:"design_source" binding:"required,oneof=upload request"`
+	DesignBrief  string `json:"design_brief"  binding:"omitempty,max=2000"`
+}
+
+type createOrderRequest struct {
+	// Guest fields — required kalau caller belum login.
+	GuestPhone string `json:"guest_phone" binding:"omitempty,min=8,max=20"`
+	GuestName  string `json:"guest_name"  binding:"omitempty,min=1,max=255"`
+
+	// Items — 1..20 baris produk (§32.4). Shape divalidasi di sini
+	// (binding), aturan bisnis (quote katalog, dll) tetap di service (§22).
+	Items []orderItemRequest `json:"items" binding:"required,min=1,max=20,dive"`
+
 	// Fulfillment:
 	MetodeAmbil            string `json:"metode_ambil"              binding:"required,oneof=pickup kirim"`
 	ShippingAddress        string `json:"shipping_address"          binding:"omitempty,max=1000"`
 	ShippingRecipientName  string `json:"shipping_recipient_name"   binding:"omitempty,max=255"`
 	ShippingRecipientPhone string `json:"shipping_recipient_phone"  binding:"omitempty,min=8,max=20"`
-
-	// Design flow:
-	DesignSource string `json:"design_source" binding:"required,oneof=upload request"`
-	DesignBrief  string `json:"design_brief"  binding:"omitempty,max=2000"`
 
 	// Meta:
 	Notes string `json:"notes" binding:"omitempty,max=1000"`
@@ -54,27 +60,71 @@ type cancelOrderRequest struct {
 
 // ---- Response ----
 
+// orderItemResponse — satu baris produk untuk orderResponse (§32).
+type orderItemResponse struct {
+	// ID wajib ikut: frontend memakainya untuk menempelkan berkas desain ke
+	// baris yang benar (§32.5 — order_item_id wajib saat unggah) dan untuk
+	// membedakan "ubah baris ini" dari "tambah baris baru" di editor item
+	// super admin (§32.9). Tanpa ini keduanya mati diam-diam.
+	ID             string `json:"id"`
+	LineNo         int    `json:"line_no"`
+	ProductID      string `json:"product_id,omitempty"`
+	ProductName    string `json:"product_name"`
+	MaterialName   string `json:"material_name"`
+	PricingType    string `json:"pricing_type"`
+	WidthCm        int    `json:"width_cm"`
+	HeightCm       int    `json:"height_cm"`
+	Quantity       int    `json:"quantity"`
+	UnitPrice      int64  `json:"unit_price"`
+	Subtotal       int64  `json:"subtotal"`
+	DiscountAmount int64  `json:"discount_amount"`
+	DesignSource   string `json:"design_source"`
+	DesignBrief    string `json:"design_brief,omitempty"`
+	ItemNotes      string `json:"item_notes,omitempty"`
+}
+
+func toOrderItemResponse(it *model.OrderItem) orderItemResponse {
+	r := orderItemResponse{
+		ID:             it.ID.String(),
+		LineNo:         it.LineNo,
+		ProductName:    it.ProductNameSnapshot,
+		MaterialName:   it.MaterialNameSnapshot,
+		PricingType:    it.PricingTypeSnapshot,
+		WidthCm:        it.WidthCm,
+		HeightCm:       it.HeightCm,
+		Quantity:       it.Quantity,
+		UnitPrice:      it.UnitPrice,
+		Subtotal:       it.Subtotal,
+		DiscountAmount: it.DiscountAmount,
+		DesignSource:   string(it.DesignSource),
+	}
+	if it.ProductID != nil {
+		r.ProductID = it.ProductID.String()
+	}
+	if it.DesignBrief != nil {
+		r.DesignBrief = *it.DesignBrief
+	}
+	if it.ItemNotes != nil {
+		r.ItemNotes = *it.ItemNotes
+	}
+	return r
+}
+
 type orderResponse struct {
-	ID                     uuid.UUID `json:"id"`
-	Resi                   string    `json:"resi"`
-	Status                 string    `json:"status"`
-	Channel                string    `json:"channel"`
-	ProductName            string    `json:"product_name"`
-	MaterialName           string    `json:"material_name"`
-	PricingType            string    `json:"pricing_type"`
-	WidthCm                int       `json:"width_cm"`
-	HeightCm               int       `json:"height_cm"`
-	Quantity               int       `json:"quantity"`
-	UnitPrice              int64     `json:"unit_price"`
-	Subtotal               int64     `json:"subtotal"`
-	MetodeAmbil            string    `json:"metode_ambil"`
-	ShippingCost           *int64    `json:"shipping_cost,omitempty"`
-	ShippingAddress        string    `json:"shipping_address,omitempty"`
-	ShippingRecipientName  string    `json:"shipping_recipient_name,omitempty"`
-	ShippingRecipientPhone string    `json:"shipping_recipient_phone,omitempty"`
-	MetodeBayar            string    `json:"metode_bayar,omitempty"`
-	DesignSource           string    `json:"design_source"`
-	DesignBrief            string    `json:"design_brief,omitempty"`
+	ID          uuid.UUID           `json:"id"`
+	Resi        string              `json:"resi"`
+	Status      string              `json:"status"`
+	Channel     string              `json:"channel"`
+	Items       []orderItemResponse `json:"items"`
+	Subtotal    int64               `json:"subtotal"`
+	MetodeAmbil string              `json:"metode_ambil"`
+
+	ShippingCost           *int64 `json:"shipping_cost,omitempty"`
+	ShippingAddress        string `json:"shipping_address,omitempty"`
+	ShippingRecipientName  string `json:"shipping_recipient_name,omitempty"`
+	ShippingRecipientPhone string `json:"shipping_recipient_phone,omitempty"`
+	MetodeBayar            string `json:"metode_bayar,omitempty"`
+	DesignSource           string `json:"design_source"`
 	// Discount (§28) — DiscountAmount 0 (default) berarti order ini tidak
 	// pakai diskon; field snapshot lain dibiarkan omitempty dalam kondisi itu.
 	DiscountID            *uuid.UUID `json:"discount_id,omitempty"`
@@ -90,18 +140,16 @@ type orderResponse struct {
 }
 
 func toOrderResponse(o *model.Order) orderResponse {
+	items := make([]orderItemResponse, 0, len(o.Items))
+	for i := range o.Items {
+		items = append(items, toOrderItemResponse(&o.Items[i]))
+	}
 	r := orderResponse{
 		ID:                    o.ID,
 		Resi:                  o.Resi,
 		Status:                string(o.Status),
 		Channel:               string(o.Channel),
-		ProductName:           o.ProductNameSnapshot,
-		MaterialName:          o.MaterialNameSnapshot,
-		PricingType:           o.PricingTypeSnapshot,
-		WidthCm:               o.WidthCm,
-		HeightCm:              o.HeightCm,
-		Quantity:              o.Quantity,
-		UnitPrice:             o.UnitPrice,
+		Items:                 items,
 		Subtotal:              o.Subtotal,
 		MetodeAmbil:           string(o.MetodeAmbil),
 		ShippingCost:          o.ShippingCost,
@@ -135,9 +183,6 @@ func toOrderResponse(o *model.Order) orderResponse {
 	}
 	if o.MetodeBayar != nil {
 		r.MetodeBayar = string(*o.MetodeBayar)
-	}
-	if o.DesignBrief != nil {
-		r.DesignBrief = *o.DesignBrief
 	}
 	if o.Notes != nil {
 		r.Notes = *o.Notes

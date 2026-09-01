@@ -10,7 +10,7 @@ import (
 //
 // Customer-facing (auth req, tanpa permission check — ownership di service):
 //
-//	POST   /orders/:resi/design-files             upload file (upload path atau asset)
+//	POST   /orders/:resi/design-files             upload file (upload path atau asset) — form field order_item_id wajib (§32.5)
 //	GET    /orders/:resi/design-files             list file untuk order
 //	POST   /design-drafts/:id/approve             approve staff draft (request path)
 //	POST   /design-drafts/:id/revision            request revision (request path)
@@ -25,7 +25,7 @@ import (
 //
 // Staff/admin (permission-based):
 //
-//	POST   /admin/orders/:resi/design-drafts          staff upload draft (design.work)
+//	POST   /admin/orders/:resi/design-drafts          staff upload draft (design.work) — form field order_item_id wajib (§32.5)
 //	POST   /admin/orders/:resi/design-verify          staff verify customer upload (design.approve)
 //	POST   /admin/orders/:resi/design-walkin-approve  POS instant approve (§11) (design.approve)
 //	POST   /admin/orders/:resi/design-skip-upload     POS skip upload — file sudah ada di komputer desainer (§11) (design.skip_upload)

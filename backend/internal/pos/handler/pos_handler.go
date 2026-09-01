@@ -32,6 +32,9 @@ func mapDomainErr(c *gin.Context, err error) {
 		errors.Is(err, posapi.ErrInvalidDate),
 		errors.Is(err, orderapi.ErrShippingFieldsRequired),
 		errors.Is(err, orderapi.ErrInvalidShippingCost),
+		errors.Is(err, orderapi.ErrInvalidDesignSource),
+		errors.Is(err, orderapi.ErrNoItems),
+		errors.Is(err, orderapi.ErrTooManyItems),
 		errors.Is(err, discountapi.ErrDiscountAmbiguousInput),
 		errors.Is(err, discountapi.ErrManualDiscountNoteRequired),
 		errors.Is(err, discountapi.ErrManualDiscountInvalidAmount),
@@ -68,15 +71,30 @@ func mapDomainErr(c *gin.Context, err error) {
 	}
 }
 
+// posOrderItemRequest — satu baris produk untuk createOrderBody (§32).
+// DesignSource/DesignBrief/ItemNotes sekarang PER ITEM (§32.5) — pola sama
+// dengan orderItemRequest (order/handler/dto.go), plus item_notes yang
+// khusus kasir POS.
+type posOrderItemRequest struct {
+	ProductID  uuid.UUID `json:"product_id"  binding:"required"`
+	MaterialID uuid.UUID `json:"material_id" binding:"required"`
+	WidthCm    int       `json:"width_cm"    binding:"required,gt=0"`
+	HeightCm   int       `json:"height_cm"   binding:"required,gt=0"`
+	Quantity   int       `json:"quantity"    binding:"omitempty,gt=0"`
+
+	DesignSource string `json:"design_source" binding:"required,oneof=upload request"`
+	DesignBrief  string `json:"design_brief"  binding:"omitempty,max=2000"`
+	ItemNotes    string `json:"item_notes"    binding:"omitempty,max=1000"`
+}
+
 type createOrderBody struct {
 	CustomerName  string `json:"customer_name"`
 	CustomerPhone string `json:"customer_phone"`
 
-	ProductID  string `json:"product_id"`
-	MaterialID string `json:"material_id"`
-	WidthCm    int    `json:"width_cm"`
-	HeightCm   int    `json:"height_cm"`
-	Quantity   int    `json:"quantity"`
+	// Items — 1..20 baris produk (§32.4). Shape divalidasi di sini
+	// (binding), aturan bisnis (quote katalog, dll) tetap di service (§22,
+	// §23.3).
+	Items []posOrderItemRequest `json:"items" binding:"required,min=1,max=20,dive"`
 
 	MetodeAmbil            string `json:"metode_ambil"`
 	ShippingAddress        string `json:"shipping_address"`
@@ -96,9 +114,8 @@ type createOrderBody struct {
 	ManualDiscountAmount int64  `json:"manual_discount_amount" binding:"gte=0"`
 	DiscountNote         string `json:"discount_note"`
 
-	DesignSource       string `json:"design_source"`
+	// DesignApprovalMode tetap PER ORDER (§11, §32.5).
 	DesignApprovalMode string `json:"design_approval_mode"`
-	DesignBrief        string `json:"design_brief"`
 
 	Notes string `json:"notes"`
 }
@@ -112,17 +129,7 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 	}
 	var body createOrderBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "invalid json body")
-		return
-	}
-	productID, perr := uuid.Parse(body.ProductID)
-	if perr != nil {
-		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "invalid product_id")
-		return
-	}
-	materialID, merr := uuid.Parse(body.MaterialID)
-	if merr != nil {
-		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, "invalid material_id")
+		httpx.Error(c, http.StatusBadRequest, httpx.CodeValidation, err.Error())
 		return
 	}
 
@@ -149,15 +156,25 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 		discountID = &parsed
 	}
 
+	items := make([]service.CreateOrderItemInput, 0, len(body.Items))
+	for _, it := range body.Items {
+		items = append(items, service.CreateOrderItemInput{
+			ProductID:    it.ProductID,
+			MaterialID:   it.MaterialID,
+			WidthCm:      it.WidthCm,
+			HeightCm:     it.HeightCm,
+			Quantity:     it.Quantity,
+			DesignSource: it.DesignSource,
+			DesignBrief:  it.DesignBrief,
+			ItemNotes:    it.ItemNotes,
+		})
+	}
+
 	result, err := h.svc.CreateOrder(c.Request.Context(), service.CreateOrderInput{
 		KasirID:                id.UserID,
 		CustomerName:           body.CustomerName,
 		CustomerPhone:          body.CustomerPhone,
-		ProductID:              productID,
-		MaterialID:             materialID,
-		WidthCm:                body.WidthCm,
-		HeightCm:               body.HeightCm,
-		Quantity:               body.Quantity,
+		Items:                  items,
 		MetodeAmbil:            body.MetodeAmbil,
 		ShippingAddress:        body.ShippingAddress,
 		ShippingRecipientName:  body.ShippingRecipientName,
@@ -167,9 +184,7 @@ func (h *Handler) CreateOrder(c *gin.Context) {
 		ManualDiscountAmount:   body.ManualDiscountAmount,
 		DiscountNote:           body.DiscountNote,
 		MetodeBayar:            body.MetodeBayar,
-		DesignSource:           body.DesignSource,
 		DesignApprovalMode:     body.DesignApprovalMode,
-		DesignBrief:            body.DesignBrief,
 		Notes:                  body.Notes,
 	})
 	if err != nil {

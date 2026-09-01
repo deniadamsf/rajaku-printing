@@ -45,11 +45,17 @@ type RecapSummary struct {
 // nullable persis seperti kolom snapshot di orders (§28.2) — nama/label
 // akhirnya dihitung di service (order/service, fungsi discountLabel yang
 // sama dipakai POS/invoice), bukan di sini.
+//
+// ProductName (§32.8, sejak order boleh multi-item) adalah nama produk baris
+// line_no=1 SAJA — service yang menambahkan akhiran "+N lainnya" memakai
+// ItemCount, supaya SQL di sini tetap satu LEFT JOIN sederhana, bukan
+// string-building di database.
 type RecapRow struct {
 	CreatedAt            time.Time
 	Resi                 string
 	CustomerName         *string
 	ProductName          string
+	ItemCount            int64
 	Channel              string
 	Status               string
 	Subtotal             int64
@@ -97,10 +103,17 @@ func (r *OrderRepository) RecapSummary(ctx context.Context, f RecapFilter) (*Rec
 
 // recapRowSelect is the shared SELECT list for RecapList/RecapListBatch —
 // factored out so both callers stay in sync (temuan review #4b).
+//
+// product_name/item_count (§32.8) come from order_items: oi1 is the
+// line_no=1 row (LEFT JOIN in recapBaseQuery), item_count is a scalar
+// subquery counting every item belonging to the order — no order is ever
+// without at least one item (§32.4), but LEFT JOIN + COALESCE keeps this
+// query defensive against a data anomaly rather than silently emitting NULL.
 const recapRowSelect = `orders.created_at,
 	orders.resi,
 	cu.name AS customer_name,
-	orders.product_name_snapshot AS product_name,
+	COALESCE(oi1.product_name_snapshot, '') AS product_name,
+	(SELECT COUNT(*) FROM order_items WHERE order_items.order_id = orders.id) AS item_count,
 	orders.channel,
 	orders.status,
 	orders.subtotal,
@@ -234,6 +247,7 @@ func recapBaseQuery(db *gorm.DB, ctx context.Context, f RecapFilter) *gorm.DB {
 		Table("orders").
 		Joins("LEFT JOIN users cu ON cu.id = orders.customer_id").
 		Joins("LEFT JOIN users su ON su.id = orders.created_by").
+		Joins("LEFT JOIN order_items oi1 ON oi1.order_id = orders.id AND oi1.line_no = 1").
 		Where("orders.deleted_at IS NULL").
 		Where("orders.created_at >= ? AND orders.created_at < ?", f.From, f.To)
 	if f.Channel != "" {

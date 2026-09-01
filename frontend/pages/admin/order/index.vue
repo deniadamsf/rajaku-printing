@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Order, OrderChannel, OrderStatus } from '~/types/order'
+import { orderPrimaryProductLabel, type Order, type OrderChannel, type OrderStatus } from '~/types/order'
 import type { DataTableColumn } from '~/components/admin/DataTable.vue'
 import { ApiError } from '~/composables/useApi'
 
@@ -164,9 +164,10 @@ function statusLabel(s: string): string {
         </NuxtLink>
       </template>
       <template #cell-product="{ row }">
-        <p class="text-sm text-ink-900">{{ (row as Order).product_name }}</p>
-        <p class="text-xs text-ink-500">
-          {{ (row as Order).width_cm }}×{{ (row as Order).height_cm }}cm · {{ (row as Order).material_name }} · {{ (row as Order).quantity }} pcs
+        <p class="text-sm text-ink-900">{{ orderPrimaryProductLabel(row as Order) }}</p>
+        <p v-if="(row as Order).items[0]" class="text-xs text-ink-500">
+          {{ (row as Order).items[0].width_cm }}×{{ (row as Order).items[0].height_cm }}cm
+          · {{ (row as Order).items[0].material_name }} · {{ (row as Order).items[0].quantity }} pcs
         </p>
       </template>
       <template #cell-total="{ row }">

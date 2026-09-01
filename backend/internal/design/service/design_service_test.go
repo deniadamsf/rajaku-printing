@@ -245,7 +245,7 @@ func TestUploadCustomerFile_HappyPath_UploadSource(t *testing.T) {
 	store := &fakeStore{}
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: orderID, Resi: "RJK-ABC", CustomerID: cust,
-		Status: "dibayar", DesignSource: "upload",
+		Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 
@@ -274,7 +274,7 @@ func TestUploadCustomerFile_HappyPath_RequestSource_AutoAdvance(t *testing.T) {
 	store := &fakeStore{}
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: orderID, Resi: "RJK-DEF", CustomerID: cust,
-		Status: "dibayar", DesignSource: "request",
+		Status: "dibayar", DesignSource: "request", Items: []orderapi.OrderItemView{{DesignSource: "request"}},
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 
@@ -295,7 +295,7 @@ func TestUploadCustomerFile_NotOwner_Rejected(t *testing.T) {
 	other := uuid.New()
 	store := &fakeStore{}
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
-		ID: uuid.New(), CustomerID: cust, Status: "dibayar", DesignSource: "upload",
+		ID: uuid.New(), CustomerID: cust, Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 
@@ -322,7 +322,7 @@ func TestUploadCustomerFile_ScopedToDifferentOrder_Rejected(t *testing.T) {
 	// upload to orderB — same owner (cust), different order.
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: orderB, Resi: "RJK-ORDERB", CustomerID: cust,
-		Status: "dibayar", DesignSource: "upload",
+		Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 
@@ -346,7 +346,7 @@ func TestUploadCustomerFile_ScopedToSameOrder_Allowed(t *testing.T) {
 	store := &fakeStore{}
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: orderID, Resi: "RJK-SAME", CustomerID: cust,
-		Status: "dibayar", DesignSource: "upload",
+		Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 
@@ -364,7 +364,7 @@ func TestUploadCustomerFile_ScopedToSameOrder_Allowed(t *testing.T) {
 func TestUploadCustomerFile_WrongStatus_Rejected(t *testing.T) {
 	cust := uuid.New()
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
-		ID: uuid.New(), CustomerID: cust, Status: "menunggu_pembayaran", DesignSource: "upload",
+		ID: uuid.New(), CustomerID: cust, Status: "menunggu_pembayaran", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 	}}
 	store := &fakeStore{}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
@@ -378,7 +378,7 @@ func TestUploadCustomerFile_WrongStatus_Rejected(t *testing.T) {
 func TestUploadCustomerFile_InvalidMime_Rejected(t *testing.T) {
 	cust := uuid.New()
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
-		ID: uuid.New(), CustomerID: cust, Status: "dibayar", DesignSource: "upload",
+		ID: uuid.New(), CustomerID: cust, Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 	}}
 	svc := newSvc(&fakeStore{}, &fakeBlobs{}, cmd)
 
@@ -396,7 +396,7 @@ func TestUploadCustomerFile_GenericMimeRequiresAllowedExtension(t *testing.T) {
 	cust := uuid.New()
 	newCmd := func() *fakeOrderCmd {
 		return &fakeOrderCmd{summary: &orderapi.OrderSummary{
-			ID: uuid.New(), CustomerID: cust, Status: "dibayar", DesignSource: "upload",
+			ID: uuid.New(), CustomerID: cust, Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 		}}
 	}
 
@@ -456,7 +456,7 @@ func TestUploadCustomerFile_GenericMimeRequiresAllowedExtension(t *testing.T) {
 func TestUploadCustomerFile_TooLarge_Rejected(t *testing.T) {
 	cust := uuid.New()
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
-		ID: uuid.New(), CustomerID: cust, Status: "dibayar", DesignSource: "upload",
+		ID: uuid.New(), CustomerID: cust, Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 	}}
 	svc := newSvc(&fakeStore{}, &fakeBlobs{}, cmd)
 
@@ -469,12 +469,112 @@ func TestUploadCustomerFile_TooLarge_Rejected(t *testing.T) {
 	}
 }
 
+// ---------- §32.5: order campuran (mixed upload/request per item) ----------
+
+// TestUploadCustomerFile_MixedOrder_UploadItem_Succeeds (tugas B, kasus a) —
+// order.DesignSource turunan bisa "mixed" begitu item-nya campur, tapi
+// upload untuk item yang MEMANG design_source=upload wajib tetap sukses:
+// validasi harus membaca order_items.design_source milik item yang dituju,
+// bukan orders.design_source (yang di sini sengaja "mixed" untuk menguji ini
+// bukan lolos kebetulan).
+func TestUploadCustomerFile_MixedOrder_UploadItem_Succeeds(t *testing.T) {
+	cust := uuid.New()
+	uploadItemID := uuid.New()
+	requestItemID := uuid.New()
+	store := &fakeStore{}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-MIX1", CustomerID: cust,
+		Status: "dibayar", DesignSource: "mixed",
+		Items: []orderapi.OrderItemView{
+			{ID: uploadItemID, LineNo: 1, DesignSource: "upload"},
+			{ID: requestItemID, LineNo: 2, DesignSource: "request"},
+		},
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	in := newUpload("RJK-MIX1", cust, false, "PDFDATA", "application/pdf")
+	in.OrderItemID = uploadItemID
+	saved, err := svc.UploadCustomerFile(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if saved.Role != model.RoleCustomerUpload {
+		t.Errorf("role want customer_upload, got %s", saved.Role)
+	}
+	if saved.OrderItemID != uploadItemID {
+		t.Errorf("order_item_id want %s, got %s", uploadItemID, saved.OrderItemID)
+	}
+}
+
+// TestUploadCustomerFile_MixedOrder_RoleMismatch_Rejected (tugas B, kasus b)
+// — pada order yang sama, staff/customer mencoba upload file "siap-cetak"
+// (role customer_upload, derived dari state guard status=dibayar terpenuhi)
+// untuk item yang justru design_source=request. Item request menerima file
+// via role customer_asset, bukan customer_upload — tapi keduanya sama-sama
+// lewat UploadCustomerFile (role diturunkan dari item, bukan dipilih
+// caller), jadi kasus "role tidak cocok" yang bisa terjadi dari sisi caller
+// adalah menunjuk item yang design_source-nya tidak dikenal / tidak sesuai
+// alur yang dipakai. Di sini we simulate lewat StaffUploadDraft (yang HANYA
+// valid utk item request) dipakai atas item upload — mismatch harus ditolak
+// walau order.DesignSource="mixed" (bukan "upload" murni yang dulu jadi
+// dasar reject).
+func TestStaffUploadDraft_MixedOrder_ItemDesignSourceUpload_Rejected(t *testing.T) {
+	staff := uuid.New()
+	uploadItemID := uuid.New()
+	requestItemID := uuid.New()
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-MIX2", CustomerID: uuid.New(),
+		Status: "dibayar", DesignSource: "mixed",
+		Items: []orderapi.OrderItemView{
+			{ID: uploadItemID, LineNo: 1, DesignSource: "upload"},
+			{ID: requestItemID, LineNo: 2, DesignSource: "request"},
+		},
+	}}
+	svc := newSvc(&fakeStore{}, &fakeBlobs{}, cmd)
+
+	in := newUpload("RJK-MIX2", staff, true, "DRAFT", "application/pdf")
+	in.OrderItemID = uploadItemID // item ini design_source=upload, bukan request
+	_, err := svc.StaffUploadDraft(context.Background(), in)
+	if !errors.Is(err, designapi.ErrDesignSourceMismatch) {
+		t.Fatalf("want ErrDesignSourceMismatch, got %v", err)
+	}
+}
+
+// TestUploadCustomerFile_OrderItemFromDifferentOrder_Rejected (tugas B,
+// kasus c) — order_item_id yang valid tapi milik order LAIN wajib ditolak
+// dengan ErrOrderItemMismatch, bukan diam-diam diterima (design service
+// hanya boleh melihat order.Items dari order yang diresolve dari resi
+// permintaan ini — §32.5/§22).
+func TestUploadCustomerFile_OrderItemFromDifferentOrder_Rejected(t *testing.T) {
+	cust := uuid.New()
+	itemFromOtherOrder := uuid.New()
+	store := &fakeStore{}
+	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
+		ID: uuid.New(), Resi: "RJK-MIX3", CustomerID: cust,
+		Status: "dibayar", DesignSource: "upload",
+		Items: []orderapi.OrderItemView{
+			{ID: uuid.New(), LineNo: 1, DesignSource: "upload"},
+		},
+	}}
+	svc := newSvc(store, &fakeBlobs{}, cmd)
+
+	in := newUpload("RJK-MIX3", cust, false, "PDF", "application/pdf")
+	in.OrderItemID = itemFromOtherOrder
+	_, err := svc.UploadCustomerFile(context.Background(), in)
+	if !errors.Is(err, designapi.ErrOrderItemMismatch) {
+		t.Fatalf("want ErrOrderItemMismatch, got %v", err)
+	}
+	if store.createCalls != 0 {
+		t.Errorf("must not create file when order_item_id belongs to a different order")
+	}
+}
+
 func TestStaffUploadDraft_HappyPath_AdvancesToApprovalState(t *testing.T) {
 	staff := uuid.New()
 	orderID := uuid.New()
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: orderID, Resi: "RJK-Q", CustomerID: uuid.New(),
-		Status: "dibayar", DesignSource: "request",
+		Status: "dibayar", DesignSource: "request", Items: []orderapi.OrderItemView{{DesignSource: "request"}},
 	}}
 	store := &fakeStore{}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
@@ -502,7 +602,7 @@ func TestStaffUploadDraft_WrongDesignSource_Rejected(t *testing.T) {
 	staff := uuid.New()
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: uuid.New(), CustomerID: uuid.New(),
-		Status: "dibayar", DesignSource: "upload", // wrong: staff draft hanya utk request
+		Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}}, // wrong: staff draft hanya utk request
 	}}
 	svc := newSvc(&fakeStore{}, &fakeBlobs{}, cmd)
 
@@ -687,7 +787,7 @@ func TestStaffVerifyUpload_HappyPath(t *testing.T) {
 	}}
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: orderID, Resi: "RJK-Y", CustomerID: uuid.New(),
-		Status: "dibayar", DesignSource: "upload",
+		Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 
@@ -707,7 +807,7 @@ func TestStaffVerifyUpload_NoFileYet_Rejected(t *testing.T) {
 	store := &fakeStore{listByOrder: []model.DesignFile{}}
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: uuid.New(), CustomerID: uuid.New(),
-		Status: "dibayar", DesignSource: "upload",
+		Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 
@@ -794,7 +894,7 @@ func TestListForOrder_ScopedToDifferentOrder_Rejected(t *testing.T) {
 	cust := uuid.New()
 	orderA, orderB := uuid.New(), uuid.New()
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
-		ID: orderB, Resi: "RJK-B", CustomerID: cust, Status: "dibayar", DesignSource: "upload",
+		ID: orderB, Resi: "RJK-B", CustomerID: cust, Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 	}}
 	store := &fakeStore{listByOrder: []model.DesignFile{{ID: uuid.New(), OrderID: orderB}}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
@@ -808,7 +908,7 @@ func TestListForOrder_ScopedToSameOrder_Allowed(t *testing.T) {
 	cust := uuid.New()
 	orderB := uuid.New()
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
-		ID: orderB, Resi: "RJK-B", CustomerID: cust, Status: "dibayar", DesignSource: "upload",
+		ID: orderB, Resi: "RJK-B", CustomerID: cust, Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 	}}
 	store := &fakeStore{listByOrder: []model.DesignFile{{ID: uuid.New(), OrderID: orderB}}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
@@ -875,7 +975,7 @@ func TestUploadCustomerFile_StoresCanonicalMimeNotClientMime(t *testing.T) {
 	cust := uuid.New()
 	store := &fakeStore{}
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
-		ID: uuid.New(), CustomerID: cust, Status: "dibayar", DesignSource: "upload",
+		ID: uuid.New(), CustomerID: cust, Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}},
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 
@@ -901,7 +1001,7 @@ func TestStaffSkipUpload_HappyPath(t *testing.T) {
 	store := &fakeStore{}
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: orderID, Resi: "RJK-POS1", CustomerID: uuid.New(),
-		Status: "dibayar", DesignSource: "upload", Channel: "pos",
+		Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}}, Channel: "pos",
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 	notifier := &fakeNotifier{}
@@ -934,7 +1034,7 @@ func TestStaffSkipUpload_RequestSource_Rejected(t *testing.T) {
 	store := &fakeStore{}
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: uuid.New(), Resi: "RJK-POS3", CustomerID: uuid.New(),
-		Status: "dibayar", DesignSource: "request", Channel: "pos",
+		Status: "dibayar", DesignSource: "request", Items: []orderapi.OrderItemView{{DesignSource: "request"}}, Channel: "pos",
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 
@@ -953,7 +1053,7 @@ func TestStaffSkipUpload_WrongStatus_Rejected(t *testing.T) {
 	store := &fakeStore{}
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: uuid.New(), Resi: "RJK-POS4", CustomerID: uuid.New(),
-		Status: "desain_diverifikasi", DesignSource: "upload", Channel: "pos",
+		Status: "desain_diverifikasi", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}}, Channel: "pos",
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 
@@ -973,7 +1073,7 @@ func TestStaffSkipUpload_ConcurrentStateChange_MapsToOrderStateChanged(t *testin
 	cmd := &fakeOrderCmd{
 		summary: &orderapi.OrderSummary{
 			ID: uuid.New(), Resi: "RJK-POS5", CustomerID: uuid.New(),
-			Status: "dibayar", DesignSource: "upload", Channel: "pos",
+			Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}}, Channel: "pos",
 		},
 		diverifikasiErr: orderapi.ErrOrderStateChanged,
 	}
@@ -991,7 +1091,7 @@ func TestStaffSkipUpload_OnlineChannel_Rejected(t *testing.T) {
 	store := &fakeStore{}
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: uuid.New(), Resi: "RJK-ONLINE1", CustomerID: uuid.New(),
-		Status: "dibayar", DesignSource: "upload", Channel: "online",
+		Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}}, Channel: "online",
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 
@@ -1010,7 +1110,7 @@ func TestStaffSkipUpload_EmptyNote_Rejected(t *testing.T) {
 	store := &fakeStore{}
 	cmd := &fakeOrderCmd{summary: &orderapi.OrderSummary{
 		ID: uuid.New(), Resi: "RJK-POS2", CustomerID: uuid.New(),
-		Status: "dibayar", DesignSource: "upload", Channel: "pos",
+		Status: "dibayar", DesignSource: "upload", Items: []orderapi.OrderItemView{{DesignSource: "upload"}}, Channel: "pos",
 	}}
 	svc := newSvc(store, &fakeBlobs{}, cmd)
 

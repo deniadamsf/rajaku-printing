@@ -345,6 +345,15 @@ perangkat login" (struktur tabel `refresh_tokens` sudah menampung lewat
 ## 24. Status Keputusan
 Tidak ada lagi item TBD terbuka. Seluruh keputusan arsitektur & fitur (section 1-23) sudah final per tanggal dokumen ini disepakati. Spec ini siap dijadikan acuan penuh untuk mulai development.
 
+> **Addendum (2026-08-31):** Section 32 (Order Multi-Item) ditambahkan.
+> Kolom item pindah dari `orders` ke tabel baru `order_items` — asumsi
+> "satu order = satu produk" yang dipakai §28.9 **sudah tidak berlaku**.
+> Dua aturan di §32 binding: invarian penjumlahan di §32.2 (`Σ item ==
+> kolom agregat orders`), dan alokasi diskon metode sisa terbesar di §32.3
+> (pembagian rata dengan pembulatan per baris meleset dan merusak invarian
+> itu). Angka uang tetap dibaca dari kolom agregat `orders`, bukan dari
+> penjumlahan `order_items` — §28.2 lapis 3 tidak berubah.
+>
 > **Addendum (2026-08-29):** Section 31 (Manajemen Pelanggan) ditambahkan.
 > Dua aturan di §31 **binding**: setiap query pelanggan wajib menyaring
 > `user_type='customer'` (§31.2), dan mengubah nomor WA lewat admin wajib
@@ -424,7 +433,7 @@ Logo Rajaku Printing pakai merah crimson + emas mahkota + hitam ribbon di atas l
 Emoji (📦 💳 🎨 dst) **dilarang** muncul di UI aplikasi (sidebar, dashboard card, badge). Emoji terlihat playful, inkonsisten lintas OS/font, tidak scale rapi, dan langsung menghancurkan kesan premium.
 
 **Ganti dengan** salah satu:
-1. **Lucide** (`lucide-vue-next`) — icon library monoline, stroke 1.5-2px, geometric — cocok untuk premium minimalist. Preferensi utama.
+1. **Lucide** (`@lucide/vue`) — icon library monoline, stroke 1.5-2px, geometric — cocok untuk premium minimalist. Preferensi utama. Nama paketnya `@lucide/vue` (v1+), **bukan** `lucide-vue-next` yang tertulis di versi awal dokumen ini — seluruh kode sudah memakai yang pertama, jadi jangan memasang paket kedua berdampingan.
 2. **Heroicons outline** — mirip, dari Tailwind team.
 3. **Custom SVG inline** — untuk logo, ilustrasi bespoke. Selalu monoline atau flat 2-tone (brand + ink).
 
@@ -865,10 +874,19 @@ Awalnya diskon berlaku global — disaring hanya oleh `channel_scope`,
 `min_subtotal`, dan masa berlaku. Ditambahkan kemampuan membatasi sebuah
 diskon hanya untuk produk tertentu.
 
-Yang membuat ini murah: **satu order = satu produk** di sistem ini. `orders`
-menyimpan satu `product_id`, satu bahan, satu ukuran, satu `subtotal` — tidak
-ada tabel item baris. Jadi "diskon per produk" tidak menuntut pembongkaran
-struktur order, cukup penyaringan saat diskon dipakai.
+Yang membuat ini murah **saat ditulis**: satu order = satu produk, `orders`
+menyimpan satu `product_id`/bahan/ukuran/`subtotal` tanpa tabel item baris.
+Jadi "diskon per produk" waktu itu tidak menuntut pembongkaran struktur
+order, cukup penyaringan saat diskon dipakai.
+
+> **Sudah tidak berlaku sejak §32 (31 Agustus 2026).** Satu order kini bisa
+> memuat banyak item (`order_items`), jadi penyaringan "product_id order
+> ada di daftar cakupan?" di bawah ini **digantikan** oleh basis hitung
+> `eligible_subtotal` + alokasi per baris di §32.3. Yang tetap berlaku dari
+> sub-section ini: struktur `discounts.applies_to` + `discount_products`,
+> aturan daftar-kosong-bukan-berarti-semua, dan sentinel
+> `ErrDiscountProductMismatch` (artinya bergeser jadi "tidak ada satu pun
+> item yang cocok").
 
 **Struktur**
 - `discounts.applies_to` — `all` (default) atau `selected`. Default `all`
@@ -1375,3 +1393,221 @@ Seperti permission lain (§10), keduanya bisa di-toggle ke role manapun lewat
 "Kelola Role". Yang perlu disadari sebelum memberikan `customer.manage`:
 pemegangnya bisa mengubah nomor WA pelanggan, yaitu matching key identitas
 lintas channel (§11).
+
+## 32. Order Multi-Item (31 Agustus 2026)
+
+Sampai §31, satu order **hanya bisa memuat satu produk** — kolom item
+(`product_id`, `material_id`, `width_cm`, `height_cm`, `quantity`,
+`unit_price`) menempel langsung di baris `orders`, dan §28.9 memakai fakta
+itu sebagai alasan kenapa cakupan diskon per produk boleh dibuat murah.
+
+Batas itu tidak sesuai kenyataan toko: pelanggan yang memesan banner 1×2m
+dan 3×1m sekaligus harus dipecah jadi dua order — dua resi, dua nota, ongkir
+terhitung dua kali, dan diskon dihitung terpisah padahal satu transaksi.
+Section ini menghapus batas tersebut.
+
+### 32.1. Struktur — kolom item pindah ke `order_items`
+
+Tabel baru `order_items` (migration `000033`):
+
+| Kolom | Isi |
+|---|---|
+| `id` | UUID PK |
+| `order_id` | FK ke `orders`, **tanpa** `ON DELETE CASCADE` (order tidak pernah di-hard-delete, migration `000025`) |
+| `line_no` | Urutan tampil, mulai 1. `UNIQUE (order_id, line_no)` |
+| `product_id` / `material_id` | Nullable, sama seperti sebelumnya |
+| `product_name_snapshot` / `material_name_snapshot` / `pricing_type_snapshot` | Snapshot katalog per baris |
+| `width_cm` / `height_cm` / `quantity` | `CHECK > 0` |
+| `unit_price` / `subtotal` | `CHECK >= 0` |
+| `discount_amount` | Bagian diskon order yang jatuh ke baris ini (§32.3). `CHECK >= 0 AND <= subtotal` |
+| `design_source` | `upload` \| `request` — **per item** (§32.5) |
+| `design_brief` | Brief request desain untuk baris ini |
+| `item_notes` | Catatan kasir untuk baris ini |
+
+**Dihapus dari `orders`**: `product_id`, `product_name_snapshot`,
+`material_id`, `material_name_snapshot`, `pricing_type_snapshot`,
+`width_cm`, `height_cm`, `quantity`, `unit_price`, `design_brief`.
+
+**Tetap di `orders`**: `subtotal`, `discount_amount`, `shipping_cost`,
+`total`, dan seluruh kolom snapshot diskon §28.2 — tidak satu pun berubah
+artinya.
+
+`orders.design_source` **tetap ada** tapi berubah arti: ia sekarang
+**turunan**, dengan nilai `upload` \| `request` \| `mixed`, ditulis ulang
+oleh order service setiap kali daftar item berubah. Ia hanya untuk
+menampilkan ringkasan & memilih alur; **jangan** dipakai memvalidasi file
+desain — itu dibaca dari `order_items.design_source` (§32.5).
+
+**Backfill wajib di migration up**: setiap order lama disalin jadi satu baris
+`order_items` dengan `line_no = 1`, `discount_amount` = `orders.discount_amount`
+milik order itu. Tidak boleh ada order tanpa item.
+
+Migration `down`-nya **lossy dan memang begitu**: ia mengembalikan kolom lama
+dari `line_no = 1` saja, jadi order dengan lebih dari satu item kehilangan
+item ke-2 dan seterusnya. Tulis apa adanya di komentar file `.down.sql` —
+jangan berpura-pura reversibel penuh.
+
+### 32.2. Aturan uang
+
+```
+item.subtotal   = item.unit_price × item.quantity
+orders.subtotal = Σ item.subtotal
+orders.discount_amount = Σ item.discount_amount
+orders.total    = orders.subtotal - orders.discount_amount + COALESCE(shipping_cost, 0)
+```
+
+Dua invarian yang **wajib** dijaga service dan wajib punya unit test:
+`Σ item.subtotal == orders.subtotal` dan
+`Σ item.discount_amount == orders.discount_amount`. Kalau salah satu meleset,
+angka rekap (§28.5) dan angka struk berbeda tanpa ada yang error — persis
+kelas kegagalan senyap yang dilarang §22.
+
+`orders.subtotal` dan `orders.discount_amount` **tetap** satu-satunya angka
+yang dibaca perhitungan uang (rekap, invoice, struk). Aturan §28.2 lapis 3
+tidak berubah: jangan menjumlahkan `order_items` di layar uang, baca kolom
+agregat di `orders`. Kolom `order_items.discount_amount` ada untuk
+**menjelaskan** angka itu per baris, bukan untuk menggantikannya.
+
+Ongkir tetap **per order**, tidak pernah per item.
+
+### 32.3. Diskon pada order multi-item — basis hitung & alokasi
+
+Keputusan pemilik proyek (31 Agustus 2026): diskon yang dibatasi ke produk
+tertentu (`applies_to='selected'`, §28.9) **hanya memotong subtotal item yang
+cocok** — bukan seluruh subtotal order. Alternatifnya (potong seluruh order
+asal ada satu item cocok) ditolak karena membuat promo satu produk bocor ke
+produk lain di keranjang yang sama; itu kerugian uang nyata, bukan soal rapi.
+
+**Basis hitung**
+
+```
+item eligible = applies_to='all'      → semua item
+                applies_to='selected' → item yang product_id-nya ada di discount_products
+eligible_subtotal = Σ subtotal item eligible
+```
+
+- `eligible_subtotal == 0` → tolak `ErrDiscountProductMismatch` (tidak ada
+  satu pun item yang cocok). Ini menggantikan pengecekan `product_id` tunggal
+  yang lama.
+- `min_subtotal` (§28.1) dibandingkan ke **`eligible_subtotal`**, bukan ke
+  subtotal order. Alasannya: kalau dibandingkan ke subtotal order, diskon
+  "minimal Rp200.000, 20% untuk flexi" akan lolos pada order berisi flexi
+  Rp10.000 + vinyl Rp500.000 — syarat minimumnya dipenuhi oleh barang yang
+  justru tidak didiskon.
+- `amount = computeAmount(d, eligible_subtotal)` — rumus §28.3 tidak berubah,
+  hanya basisnya. `max_discount_amount` dan penjepitan `min(..., basis)` tetap.
+- **Diskon manual** (§28.1) tidak punya cakupan produk: basisnya seluruh
+  `orders.subtotal`, dialokasikan ke semua item.
+
+**Alokasi ke baris item — metode sisa terbesar (largest remainder)**
+
+`amount` dibagi ke item eligible sebanding `item.subtotal`, dibulatkan ke
+bawah, lalu **sisa rupiahnya dibagikan satu per satu** ke item dengan sisa
+pecahan terbesar (seri diputus oleh `line_no` terkecil). Ini menjamin
+`Σ alokasi == amount` **persis**, tanpa selisih Rp1 yang akan merusak
+invarian §32.2.
+
+Pembagian rata biasa dengan pembulatan per baris **tidak** menjamin itu —
+jangan dipakai. Wajib ada unit test untuk kasus yang tidak habis dibagi
+(mis. Rp10.000 ke tiga item bernilai sama).
+
+**Kontrak `discountapi` yang berubah**: `ResolveInput` mengganti pasangan
+`Subtotal int64` + `ProductID uuid.UUID` menjadi daftar item
+(`LineNo`, `ProductID`, `Subtotal`); `Snapshot` bertambah daftar alokasi per
+`LineNo`. Endpoint `/applicable` (§28.9/§30.3) menerima `product_id`
+**berulang** — sebuah diskon muncul kalau minimal satu produk di keranjang
+kasir cocok, supaya kasir tidak melihat promo yang akan ditolak saat disimpan.
+
+### 32.4. Batas jumlah item
+
+Minimal 1, **maksimal 20 item per order**, ditolak eksplisit dengan
+`ErrTooManyItems` / `ErrNoItems` di service — bukan dibiarkan lewat lalu
+meledak di tempat lain. Formulir order publik bisa diisi siapa saja; tanpa
+batas ini satu request bisa memaksa ratusan `Quote` ke katalog dalam satu
+transaksi.
+
+### 32.5. Desain per item
+
+`design_files.order_item_id` (NOT NULL, backfill ke item satu-satunya milik
+order itu). Setiap file desain menempel ke **baris item**, bukan ke order —
+supaya staf tahu file mana untuk banner yang mana saat ukurannya mirip.
+
+`ErrDesignSourceMismatch` sekarang diperiksa terhadap
+`order_items.design_source`, **bukan** `orders.design_source`. Satu order
+boleh campur: banner A bawa desain sendiri, banner B minta dibuatkan.
+
+**Status desain tetap satu per order.** Tidak ada kolom status desain per
+item — staf menekan "desain diverifikasi" sekali untuk seluruh order setelah
+semua item beres. Ini konsekuensi sadar dari §32.6; melacaknya per item
+berarti menggandakan state machine §4.
+
+`design_approval_mode` (§11) tetap per order.
+
+### 32.6. Yang sengaja TIDAK berubah
+
+- **State machine §4 tetap satu status per order.** Semua item maju bersama;
+  order baru `siap_ambil` kalau seluruh item sudah tercetak. Melacak status
+  per item akan menggandakan riwayat status dan trigger notifikasi WA — itu
+  keputusan terpisah kalau nanti benar-benar dibutuhkan.
+- **Snapshot §28.2 utuh.** Diskon tetap disalin ke `orders` saat transaksi;
+  rekap tetap tidak pernah JOIN ke `discounts` untuk angka uang.
+- **Ongkir per order** (§8), bukan per item.
+- **Cakupan diskon per bahan** masih belum dibuat (catatan penutup §28.9).
+
+### 32.7. Dokumen: struk & invoice
+
+Struk thermal (§29) dan invoice PDF (§12) mencetak **satu baris per item**
+(nama produk, bahan, ukuran, qty, harga). Baris diskon tetap **satu baris
+agregat** di antara subtotal dan ongkir, persis format §28.7 — alokasi
+diskon per item adalah catatan internal untuk rekap, jangan dicetak ke
+pelanggan (menambah kolom angka di kertas 80mm hanya membuatnya sulit
+dibaca).
+
+Kalau `orders.discount_amount = 0`, barisnya tetap tidak dicetak sama sekali
+(§28.7 tidak berubah).
+
+### 32.8. Rekap Order (§28.5) menyesuaikan
+
+Kolom "produk" di tabel rekap dan CSV berisi nama produk item pertama
+diikuti `+N lainnya` kalau ordernya lebih dari satu item, plus kolom baru
+`jumlah_item`. Seluruh angka uang tetap dibaca dari kolom agregat `orders`
+(§32.2) — rekap **tidak** menjumlahkan `order_items`, jadi batas 366 hari dan
+ekspor mengalir per batch (§28.5) tidak perlu diubah.
+
+### 32.9. Koreksi pesanan oleh super admin (31 Agustus 2026)
+
+Sebelum §32, "Koreksi Data Pesanan" (`EditOrder`, admin_override.go) boleh
+menulis `orders.subtotal` langsung. Itu **tidak boleh lagi**: subtotal kini
+hasil penjumlahan `order_items` (§32.2), jadi menulisinya langsung membuat
+`Σ item.subtotal != orders.subtotal` — invarian yang jadi dasar seluruh angka
+rekap rusak tanpa ada yang error. Jalur itu ditolak dengan
+`ErrOrderSubtotalNotEditable`.
+
+Penggantinya (keputusan pemilik proyek): **super admin mengedit baris
+itemnya**, dan agregat dihitung ulang oleh service.
+
+- Boleh diubah per baris: `width_cm`, `height_cm`, `quantity`, `unit_price`,
+  `item_notes`. Boleh menambah & menghapus baris (tetap dibatasi 1–20, §32.4).
+- `product_id`/`material_id` beserta kolom snapshot namanya **tidak** boleh
+  diubah — mengganti produk sebuah baris sama dengan pesanan yang berbeda;
+  hapus barisnya lalu tambah baris baru.
+- Setelah setiap perubahan, service **menghitung ulang** `item.subtotal`,
+  `orders.subtotal`, lalu `orders.total = subtotal - discount_amount +
+  COALESCE(shipping_cost, 0)` — dalam satu transaksi bersama penulisan baris
+  audit. Dipisah berarti pesanan bisa berubah tanpa jejak alasannya, persis
+  jaminan yang jadi alasan audit log itu ada (pola sama §31.5).
+- `orders.design_source` ikut diturunkan ulang lewat `deriveDesignSource`
+  (§32.1) — menghapus satu-satunya baris `request` pada order campuran harus
+  mengubah `mixed` jadi `upload`, bukan meninggalkannya `mixed`.
+- **Alokasi diskon ikut dihitung ulang** dari snapshot yang sudah tersimpan
+  di order — `orders.discount_amount` **tidak** berubah nilainya (§28.2:
+  yang tercatat adalah potongan yang benar-benar terjadi saat transaksi),
+  hanya pembagiannya ke baris yang menyesuaikan komposisi item yang baru.
+  Kalau setelah edit `orders.discount_amount > orders.subtotal`, tolak
+  eksplisit — jangan diam-diam menjepit, karena itu berarti admin baru saja
+  membuat pesanan yang potongannya melebihi nilai barangnya.
+- Alasan wajib (min. 10 karakter) seperti aturan edit finansial yang sudah
+  ada, dan ringkasan **nilai lama → baru** per baris masuk audit log.
+
+Batasan status tidak berubah: order berstatus terminal (`selesai`,
+`dibatalkan`) tetap tidak bisa diedit (`ErrFieldNotEditable`).

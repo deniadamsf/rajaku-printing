@@ -37,6 +37,11 @@ type DesignSource string
 const (
 	DesignSourceUpload  DesignSource = "upload"
 	DesignSourceRequest DesignSource = "request"
+	// DesignSourceMixed — nilai TURUNAN untuk orders.DesignSource saat item
+	// di dalamnya campur upload & request (§32.1). TIDAK PERNAH valid untuk
+	// order_items.DesignSource (per item hanya upload|request, §32.5) —
+	// dipakai HANYA di level order, ditulis oleh deriveDesignSource.
+	DesignSourceMixed DesignSource = "mixed"
 )
 
 type DesignApprovalMode string
@@ -53,17 +58,13 @@ type Order struct {
 	Channel    Channel      `gorm:"size:20;not null;index"                         json:"channel"`
 	Status     state.Status `gorm:"size:50;not null;index"                         json:"status"`
 
-	// Product snapshot
-	ProductID            *uuid.UUID `gorm:"type:uuid"                             json:"product_id,omitempty"`
-	ProductNameSnapshot  string     `gorm:"size:255;not null;column:product_name_snapshot"     json:"product_name_snapshot"`
-	MaterialID           *uuid.UUID `gorm:"type:uuid"                             json:"material_id,omitempty"`
-	MaterialNameSnapshot string     `gorm:"size:255;not null;column:material_name_snapshot"    json:"material_name_snapshot"`
-	PricingTypeSnapshot  string     `gorm:"size:20;not null;column:pricing_type_snapshot"      json:"pricing_type_snapshot"`
-	WidthCm              int        `gorm:"not null"                              json:"width_cm"`
-	HeightCm             int        `gorm:"not null"                              json:"height_cm"`
-	Quantity             int        `gorm:"not null;default:1"                    json:"quantity"`
-	UnitPrice            int64      `gorm:"not null"                              json:"unit_price"`
-	Subtotal             int64      `gorm:"not null"                              json:"subtotal"`
+	// Items — daftar produk dalam order ini (§32), preload terurut
+	// `line_no ASC` oleh repository. Subtotal di bawah adalah Σ item.subtotal
+	// (§32.2) — SATU-SATUNYA angka yang dibaca perhitungan uang (rekap,
+	// invoice, struk); jangan pernah menjumlahkan Items ulang di layar uang.
+	Items []OrderItem `gorm:"foreignKey:OrderID" json:"items,omitempty"`
+
+	Subtotal int64 `gorm:"not null" json:"subtotal"`
 
 	// Fulfillment
 	MetodeAmbil            MetodeAmbil `gorm:"size:20;not null"                      json:"metode_ambil"`
@@ -77,10 +78,14 @@ type Order struct {
 	// Payment
 	MetodeBayar *MetodeBayar `gorm:"size:20"                              json:"metode_bayar,omitempty"`
 
-	// Design flow
+	// Design flow — DesignSource di sini adalah TURUNAN (§32.1): upload |
+	// request | mixed, dihitung oleh deriveDesignSource dari
+	// order_items.DesignSource setiap kali daftar item berubah. Hanya untuk
+	// ringkasan/pemilihan alur tampilan — JANGAN dipakai memvalidasi file
+	// desain, itu dibaca dari OrderItem.DesignSource milik baris masing-
+	// masing (§32.5). DesignBrief per item sekarang ada di OrderItem.
 	DesignSource       DesignSource        `gorm:"size:20;not null"              json:"design_source"`
 	DesignApprovalMode *DesignApprovalMode `gorm:"size:20"                       json:"design_approval_mode,omitempty"`
-	DesignBrief        *string             `                                     json:"design_brief,omitempty"`
 
 	// Discount snapshot (§28) — nilai diskon disalin ke order SAAT DIBUAT,
 	// bukan cuma foreign key, supaya rekap/invoice/struk tetap benar walau

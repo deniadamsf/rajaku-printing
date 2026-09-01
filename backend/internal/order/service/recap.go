@@ -60,12 +60,15 @@ type RecapSummary struct {
 	AverageOrderValue int64 `json:"average_order_value"`
 }
 
-// RecapRow — satu baris tabel/CSV (§28.5).
+// RecapRow — satu baris tabel/CSV (§28.5). ProductName sudah final untuk
+// tampilan (nama item line_no=1 + akhiran "+N lainnya" kalau ItemCount > 1,
+// §32.8) — konsumer (handler CSV) tinggal pakai apa adanya.
 type RecapRow struct {
 	CreatedAt      string `json:"created_at"`
 	Resi           string `json:"resi"`
 	CustomerName   string `json:"customer_name,omitempty"`
 	ProductName    string `json:"product_name"`
+	ItemCount      int64  `json:"jumlah_item"`
 	Channel        string `json:"channel"`
 	Status         string `json:"status"`
 	Subtotal       int64  `json:"subtotal"`
@@ -245,10 +248,15 @@ func toRecapRowViews(rows []repository.RecapRow) []RecapRow {
 }
 
 func toRecapRowView(r *repository.RecapRow) RecapRow {
+	productName := r.ProductName
+	if r.ItemCount > 1 {
+		productName = fmt.Sprintf("%s +%d lainnya", productName, r.ItemCount-1)
+	}
 	row := RecapRow{
 		CreatedAt:      r.CreatedAt.UTC().Format(time.RFC3339),
 		Resi:           r.Resi,
-		ProductName:    r.ProductName,
+		ProductName:    productName,
+		ItemCount:      r.ItemCount,
 		Channel:        r.Channel,
 		Status:         r.Status,
 		Subtotal:       r.Subtotal,

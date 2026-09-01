@@ -31,4 +31,13 @@ var (
 	// desainer sudah punya filenya di luar sistem.
 	ErrSkipUploadOnlyForPOS = errors.New("designapi: skip upload only valid for POS walk-in orders")
 	ErrSkipNoteRequired     = errors.New("designapi: note required when skipping design upload")
+
+	// ErrOrderItemMismatch — order_item_id yang dikirim caller tidak
+	// ditemukan pada daftar order_items milik order yang dituju (§32.5).
+	// Design service HANYA bisa melihat order.Items — proyeksi dari
+	// orderapi.OrderSummary yang sudah dibatasi ke SATU order (dari resi/ID
+	// yang diminta) — jadi "item tidak ada sama sekali" dan "item ada tapi
+	// milik order LAIN" tidak bisa dibedakan dari sisi sini, dan keduanya
+	// wajib ditolak sama tegasnya.
+	ErrOrderItemMismatch = errors.New("designapi: order_item_id tidak ditemukan pada order ini")
 )

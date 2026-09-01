@@ -7,6 +7,8 @@ export type DesignApprovalStatus = 'pending' | 'approved' | 'revision_requested'
 export interface DesignFile {
   id: string
   order_id: string
+  /** Baris order_items yang ditumpangi file ini (§32.5) — dipakai untuk mengelompokkan file per item. */
+  order_item_id: string
   role: DesignRole | string
   file_original_name: string
   file_size_bytes: number

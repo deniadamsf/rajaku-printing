@@ -61,3 +61,16 @@ Oauth*
 oauth*.txt
 *credentials*.json
 client_secret*.json
+
+# ==== Perkakas artikel & auto-post SEO ====
+# Naskah artikel (JSON), README, template, dan script .mjs SENGAJA ikut
+# dilacak git: ukurannya kecil, isinya teks, dan berguna untuk direview.
+# Yang dikecualikan hanya aset binernya. Alasannya satu arah: JPG sumber
+# rata-rata ~800 KB per file dan sekali ter-commit TIDAK BISA dihapus lagi
+# dari riwayat git tanpa membongkar seluruh riwayat. Gambar yang sudah
+# terbit tetap tersimpan di server dalam bentuk WebP; simpan cadangan
+# lokal aset mentahnya sendiri (mis. Google Drive), bukan di repo ini.
+articles/images/
+scripts/*.jpg
+scripts/*.png
+PANDUAN_POS_SUPER_ADMIN.pdf

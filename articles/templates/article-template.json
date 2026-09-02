@@ -1,0 +1,12 @@
+{
+  "title": "[Judul Menarik 40-60 Karakter Termasuk Focus Keyword]",
+  "slug": "[slug-url-termasuk-focus-keyword-huruf-kecil-strip]",
+  "meta_title": "[Meta Title 40-60 Karakter Termasuk Focus Keyword]",
+  "meta_description": "[Meta Description 120-160 Karakter Mengandung Focus Keyword di Awal/Tengah Kalimat]",
+  "focus_keyword": "[kata kunci utama]",
+  "secondary_keywords": "[keyword turunan 1, keyword turunan 2, keyword turunan 3]",
+  "cover_alt_text": "[Deskripsi gambar relevan, TANPA menyebut brand lain]",
+  "excerpt": "[Ringkasan 1-2 kalimat untuk kartu artikel]",
+  "image_path": "../images/[nama-file-gambar].jpg",
+  "content_md": "[Isi artikel format markdown minimal 600 kata, mengandung focus keyword di paragraf awal dan minimal 1 heading H2/H3, density 0.5-2.5%]"
+}

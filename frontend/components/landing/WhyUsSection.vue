@@ -33,6 +33,10 @@ const points = [
     desc: 'Upload desain siap cetak, atau serahkan ke tim desain kami untuk dikerjakan.',
   },
 ]
+
+const { resolve: resolveMedia, ready: siteMediaReady } = useSiteMedia()
+await siteMediaReady
+const whyUsImage = computed(() => resolveMedia('proses_8') || '/proses/proses-08.webp')
 </script>
 
 <template>
@@ -58,7 +62,7 @@ const points = [
         :transition="{ duration: prefersReduced ? 0 : 0.5, ease: [0.22, 1, 0.36, 1] }"
       >
         <img
-          src="/proses/proses-08.webp"
+          :src="whyUsImage"
           alt="Carriage print-head mesin cetak large-format Rajaku Printing bergerak di atas banner"
           width="1000"
           height="750"

@@ -388,7 +388,25 @@ const canCancelNow = computed(() =>
   canCancel.value && order.value !== null && preCetakStates.has(order.value.status),
 )
 const isMenungguOngkir = computed(() => order.value?.status === 'menunggu_ongkir')
+const isOrderMasuk = computed(() => order.value?.status === 'order_masuk')
 const isPickup = computed(() => order.value?.metode_ambil === 'pickup')
+
+/*
+ * Guard dua panel di kolom kanan HARUS sama persis dengan prasyarat backend —
+ * kalau lebih sempit, order mandek tanpa aksi apa pun di layar (bug 7 Sep 2026:
+ * keduanya digate `menunggu_ongkir` saja, padahal order baru selalu lahir di
+ * `order_masuk` dan pickup TIDAK PERNAH melewati `menunggu_ongkir`, jadi kedua
+ * tombolnya tidak pernah muncul).
+ *
+ *   SetShippingCost   — kirim  + (order_masuk | menunggu_ongkir)
+ *   ConfirmPickupTotal— pickup + order_masuk saja
+ */
+const canFillOngkirNow = computed(
+  () => (isOrderMasuk.value || isMenungguOngkir.value) && !isPickup.value && canSetOngkir.value,
+)
+const canConfirmPickupNow = computed(
+  () => isOrderMasuk.value && isPickup.value && canUpdateStatus.value,
+)
 
 // -------------------- set ongkir --------------------
 const ongkirValue = ref<number>(0)
@@ -1426,14 +1444,17 @@ function waLink(phone: string): string {
 
       <!-- ================================ RIGHT COLUMN ================================ -->
       <aside class="space-y-4 lg:sticky lg:top-6 lg:self-start">
-        <!-- Set ongkir (kirim + menunggu_ongkir + perm) -->
+        <!-- Set ongkir (kirim + order_masuk/menunggu_ongkir + perm) -->
         <div
-          v-if="isMenungguOngkir && !isPickup && canSetOngkir"
-          class="rounded-lg border border-hairline bg-canvas p-5"
+          v-if="canFillOngkirNow"
+          class="rounded-lg border border-brand-500/25 bg-brand-50 p-5"
         >
-          <h3 class="text-sm font-semibold text-ink-900">Set ongkir</h3>
+          <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Langkah berikutnya</p>
+          <h3 class="mt-1 text-sm font-semibold text-ink-900">Isi ongkir &amp; minta pembayaran</h3>
           <p class="mt-1 text-xs text-ink-500 leading-relaxed">
-            Setelah disimpan, customer dinotifikasi via WA dengan total final untuk dibayar.
+            Pesanan ini dikirim, jadi totalnya belum final. Setelah ongkir disimpan, status pindah ke
+            <strong class="font-medium text-ink-900">Menunggu pembayaran</strong> dan pelanggan langsung
+            dapat WA berisi total yang harus dibayar.
           </p>
           <div class="mt-4 space-y-3">
             <div>
@@ -1473,21 +1494,29 @@ function waLink(phone: string): string {
 
         <!-- Confirm pickup -->
         <div
-          v-if="isMenungguOngkir && isPickup && canUpdateStatus"
-          class="rounded-lg border border-hairline bg-canvas p-5"
+          v-if="canConfirmPickupNow"
+          class="rounded-lg border border-brand-500/25 bg-brand-50 p-5"
         >
-          <h3 class="text-sm font-semibold text-ink-900">Konfirmasi total (pickup)</h3>
+          <p class="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-500">Langkah berikutnya</p>
+          <h3 class="mt-1 text-sm font-semibold text-ink-900">Konfirmasi total &amp; minta pembayaran</h3>
           <p class="mt-1 text-xs text-ink-500 leading-relaxed">
-            Order pickup tidak butuh ongkir. Klik untuk lanjut ke menunggu pembayaran.
+            Pesanan ini diambil di tempat, jadi tidak ada ongkir — totalnya sudah final. Sekali klik:
+            status pindah ke <strong class="font-medium text-ink-900">Menunggu pembayaran</strong> dan
+            pelanggan langsung dapat WA berisi total yang harus dibayar.
           </p>
+          <div class="mt-4 flex items-baseline justify-between gap-3 rounded-md border border-hairline bg-canvas px-3 py-2">
+            <span class="text-xs text-ink-500">Total ditagihkan</span>
+            <span class="text-sm font-semibold text-ink-950">{{ fmtIDR(order.total) }}</span>
+          </div>
           <button
             type="button"
-            class="mt-4 w-full inline-flex items-center justify-center gap-2 rounded-md bg-ink-950 px-3 py-2 text-sm font-semibold text-canvas hover:bg-ink-900 transition-colors disabled:opacity-60"
+            class="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-md bg-brand-500 px-3 py-2 text-sm font-semibold text-canvas hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors disabled:opacity-60"
             :disabled="pickupBusy"
             @click="confirmPickup"
           >
             <Loader2 v-if="pickupBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-            Konfirmasi total pickup
+            <Wallet v-else class="h-4 w-4" :stroke-width="1.75" />
+            Minta pembayaran {{ fmtIDR(order.total) }}
           </button>
         </div>
 

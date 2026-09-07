@@ -812,12 +812,23 @@ func isStatusAllowed(current, from string, allowed []string) bool {
 
 func insertHistory(tx *gorm.DB, orderID uuid.UUID, from *string, to string, changedBy *uuid.UUID, note *string) error {
 	// Persist via raw map to avoid GORM zero-value pitfalls on nullable fields.
+	//
+	// changed_at diisi EKSPLISIT dengan clock_timestamp(), bukan dibiarkan
+	// jatuh ke DEFAULT now(). Di Postgres, now() adalah waktu MULAI TRANSAKSI —
+	// nilainya sama persis untuk semua baris di dalam satu transaksi. Ketika
+	// SetShippingCostAndAdvance menulis dua baris sekaligus (order_masuk →
+	// menunggu_ongkir → menunggu_pembayaran), keduanya jadi berstempel identik
+	// dan `ORDER BY changed_at ASC` di FindHistoryByOrderID kehilangan urutan
+	// — timeline di layar admin sempat menampilkan "menunggu pembayaran"
+	// SEBELUM "menunggu ongkir". clock_timestamp() maju di tiap statement,
+	// jadi urutan barisnya deterministik tanpa perlu kolom urutan baru.
 	row := map[string]any{
 		"order_id":    orderID,
 		"from_status": from,
 		"to_status":   to,
 		"changed_by":  changedBy,
 		"note":        note,
+		"changed_at":  gorm.Expr("clock_timestamp()"),
 	}
 	if err := tx.Table("order_state_history").Create(&row).Error; err != nil {
 		return fmt.Errorf("insert state_history: %w", err)

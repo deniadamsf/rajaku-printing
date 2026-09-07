@@ -35,8 +35,17 @@ func (h *Handler) CreateOnline(c *gin.Context) {
 	}
 
 	// Resolve caller — best-effort, no error if not authed (endpoint publik).
+	//
+	// HANYA identity bertipe customer yang boleh jadi pemilik order. Identity
+	// staff SENGAJA diabaikan di sini: form order publik bisa dibuka staff yang
+	// kebetulan masih login di browser yang sama, dan sebelumnya token itu
+	// menang atas guest_name/guest_phone yang diketik pengunjung — ordernya
+	// tertempel ke akun staff (mis. "Super Admin") sementara nama & nomor WA
+	// yang diisi hilang diam-diam (§22). Staff yang mau membuatkan pesanan
+	// pakai POS (§11), bukan endpoint ini; ListMine juga sudah menolak staff.
 	var customerID *uuid.UUID
-	if id, err := authapi.IdentityFromContext(c.Request.Context()); err == nil && id != nil {
+	id, idErr := authapi.IdentityFromContext(c.Request.Context())
+	if idErr == nil && id != nil && id.UserType == authapi.UserTypeCustomer {
 		uid := id.UserID
 		customerID = &uid
 	} else {

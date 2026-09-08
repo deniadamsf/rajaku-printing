@@ -28,7 +28,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import readline from 'node:readline'
 import { fileURLToPath } from 'node:url'
-import { autoPostArticle, analyzeSeo, loginAndGetToken, validateBrandSafety } from './auto_post_article.mjs'
+import { autoPostArticle, analyzeSeo, loginAndGetToken, validateBrandSafety, validateImageFile } from './auto_post_article.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -149,19 +149,38 @@ if (analysis.score !== 100) {
   process.exit(1)
 }
 
-// Check Brand Safety
-console.log('\n[2/4] 🔒 Memeriksa Aturan Brand Safety...')
+// Check Brand Safety & Image Sizes
+console.log('\n[2/4] 🔒 Memeriksa Aturan Brand Safety & Ukuran Gambar...')
 try {
   validateBrandSafety(article.cover_alt_text, 'Alt Text Cover')
   validateBrandSafety(article.title, 'Judul Artikel')
   console.log('✅ Lolos: Gambar dan teks TIDAK menyebutkan brand kompetitor / pihak ketiga.')
+
+  // Validasi ukuran cover image
+  const baseDir = path.dirname(filePath)
+  if (article.image_path) {
+    const coverPath = path.isAbsolute(article.image_path) ? article.image_path : path.resolve(baseDir, article.image_path)
+    validateImageFile(coverPath)
+  }
+
+  // Validasi ukuran gambar inline pada isi markdown
+  const inlineImageRegex = /!\[([^\]]*)\]\(([^)]+)\)/g
+  const matches = [...(article.content_md || '').matchAll(inlineImageRegex)]
+  for (const match of matches) {
+    const rawUrl = match[2]
+    if (!/^https?:\/\//i.test(rawUrl) && !rawUrl.includes('/api/v1/cms/images/')) {
+      const imgPath = path.isAbsolute(rawUrl) ? rawUrl : path.resolve(baseDir, rawUrl)
+      validateImageFile(imgPath)
+    }
+  }
+  console.log('✅ Lolos: Seluruh aset gambar memenuhi batas ukuran upload (< 950 KB, batas Nginx 1 MB).')
 } catch (err) {
   console.error(`\n❌ ${err.message}`)
   process.exit(1)
 }
 
 if (isDryRun) {
-  console.log('\n✨ Mode --dry-run aktif. Validasi SEO 100 & Brand Safety BERHASIL! (Tidak ada data yang dikirim ke server).')
+  console.log('\n✨ Mode --dry-run aktif. Validasi SEO 100, Brand Safety, & Ukuran Gambar BERHASIL! (Tidak ada data yang dikirim ke server).')
   process.exit(0)
 }
 

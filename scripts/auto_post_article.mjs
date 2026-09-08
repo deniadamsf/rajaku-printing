@@ -55,6 +55,18 @@ export function validateBrandSafety(text, fieldName = 'gambar/alt text') {
   }
 }
 
+export const MAX_IMAGE_SIZE_BYTES = 950 * 1024 // 950 KB (Batas Nginx client_max_body_size adalah 1 MB)
+
+export function validateImageFile(filePath) {
+  if (!fs.existsSync(filePath)) return
+  const stats = fs.statSync(filePath)
+  if (stats.size > MAX_IMAGE_SIZE_BYTES) {
+    const sizeKb = (stats.size / 1024).toFixed(0)
+    throw new Error(`[UKURAN GAMBAR MELEBIHI BATAS] File "${path.basename(filePath)}" berukuran ${sizeKb} KB (batas aman maksimal 950 KB / 1 MB Nginx). Gambar ini akan menyebabkan error 413 (Request Entity Too Large) saat diunggah. Harap kompresi file gambar terlebih dahulu.`)
+  }
+}
+
+
 /** Terima camelCase maupun snake_case, dan pastikan semuanya string. */
 function normalizeInput(input) {
   const pick = (a, b) => String(input[a] ?? input[b] ?? '')
@@ -129,6 +141,7 @@ async function uploadImageFile(apiBaseUrl, token, filePath, altText = '') {
   if (altText) {
     validateBrandSafety(altText, `Alt Text Gambar (${path.basename(filePath)})`)
   }
+  validateImageFile(filePath)
   const fileBuffer = fs.readFileSync(filePath)
   const ext = path.extname(filePath).toLowerCase()
   const mimeType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg'
@@ -149,6 +162,9 @@ async function uploadImageFile(apiBaseUrl, token, filePath, altText = '') {
 
   if (!imgRes.ok) {
     const errBody = await imgRes.text()
+    if (imgRes.status === 413) {
+      throw new Error(`Gagal upload gambar ${path.basename(filePath)}: 413 Request Entity Too Large. Ukuran file (${(fileBuffer.length / 1024).toFixed(0)} KB) melebihi batas body upload server (1 MB). Kompresi gambar hingga < 950 KB terlebih dahulu.`)
+    }
     throw new Error(`Gagal upload gambar ${path.basename(filePath)}: ${imgRes.status} ${errBody}`)
   }
 

@@ -50,6 +50,8 @@ rangkuman untuk dibaca manusia:
 2. **Gambar Tambahan (Inline Markdown)**: Disisipkan di dalam teks markdown dengan format `![Alt Text](../images/nama-file.jpg)`.
 3. **Konversi Otomatis saat Auto-Post**: Script `run_auto_post.mjs` secara otomatis memindai seluruh tag gambar markdown lokal, mengunggahnya ke server `/api/v1/admin/articles/images`, mengonversinya ke WebP, dan memperbarui link markdown lokal menjadi URL server publik (`/api/v1/cms/images/:id`).
 4. **Auto-Update**: Jika artikel dengan slug yang sama sudah terbit di server, script akan otomatis memperbarui (*update*) artikel beserta seluruh gambar terkait.
+5. **Batas Ukuran File Gambar (Wajib < 950 KB / Rekomendasi 150–500 KB)**: Server (Nginx) memiliki konfigurasi batas upload `client_max_body_size` 1 MB. Seluruh gambar (baik cover maupun inline) **wajib berukuran di bawah 950 KB**. Gambar berukuran 1 MB atau lebih akan ditolak server dengan error `413 Request Entity Too Large`. Selalu kompresi gambar JPG (kualitas ~80–85%) sebelum posting agar visual tetap tajam namun ukuran file tetap aman dan cepat dimuat.
+
 
 ---
 

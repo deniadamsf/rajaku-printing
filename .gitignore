@@ -58,6 +58,8 @@ logs/
 # Sempat ikut dilacak git sampai 22 Agustus 2026; jangan dikembalikan.
 .env.docker
 Oauth*
+login admin.md
+*credential*
 oauth*.txt
 *credentials*.json
 client_secret*.json

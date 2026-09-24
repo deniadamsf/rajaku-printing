@@ -1,29 +1,33 @@
 # Rajaku Printing
 
-Web app manajemen order percetakan banner (modular monolith). Company profile + katalog + order + admin panel.
-
-Source of Truth: [`CLAUDE.md`](CLAUDE.md) — jangan menyimpang dari dokumen ini.
+Web app manajemen order percetakan banner. Company profile + katalog + order + admin panel.
 
 ## Struktur
 
 ```
-.
-├── CLAUDE.md                  # Spec proyek (Source of Truth)
-├── docker-compose.yml         # Postgres lokal (dev)
-├── backend/                   # Go (Gin + GORM) — modular monolith
-├── frontend/                  # Nuxt 3 (SSR/SSG)
-└── services/
-    └── notification-worker/   # Node.js (Baileys) — WA gateway
+backend/                   # Go (Gin + GORM) — modular monolith
+frontend/                  # Nuxt 3 (SSR/SSG)
+services/
+  └── notification-worker/ # Node.js (Baileys) — WA gateway
+docker-compose.yml         # Postgres lokal (dev)
 ```
+
+## Tech Stack
+
+- **Backend:** Go (Gin + GORM), PostgreSQL, golang-migrate
+- **Frontend:** Nuxt 3 (SSR/SSG), TresJS (3D), motion-v
+- **Auth:** Google OAuth + guest checkout
+- **WA Gateway:** Baileys (self-hosted)
+- **PDF Invoice:** gofpdf / maroto
+- **Image:** Auto-convert ke WebP saat upload
 
 ## Prasyarat
 
 - Go >= 1.22
 - Node >= 20
 - Docker (untuk Postgres lokal)
-- Git
 
-## Quick Start (Dev Lokal)
+## Quick Start
 
 ```bash
 cp .env.example .env
@@ -31,7 +35,6 @@ docker compose up -d postgres
 ```
 
 Backend:
-
 ```bash
 cd backend
 cp .env.example .env
@@ -40,7 +43,6 @@ go run ./cmd/api
 ```
 
 Frontend:
-
 ```bash
 cd frontend
 cp .env.example .env
@@ -48,36 +50,25 @@ npm install
 npm run dev
 ```
 
-Notification worker (WhatsApp via Baileys — spec §13):
-
+WA Notification Worker:
 ```bash
 cd services/notification-worker
-cp .env.example .env    # sinkronkan INTERNAL_SECRET dgn backend NOTIFICATION_WORKER_SECRET
+cp .env.example .env
 npm install
-npm start               # scan QR di terminal atau di http://localhost:9090/qr
+npm start    # scan QR di terminal atau http://localhost:9090/qr
 ```
 
-Detail pairing + troubleshooting: [`services/notification-worker/README.md`](services/notification-worker/README.md).
-
-### Menjalankan semuanya lewat Docker
-
-`docker-compose.yml` membaca satu berkas `.env.docker` yang **tidak ikut
-di-commit** karena memuat nilai asli (kredensial Google OAuth, password DB).
-Salin dari templatnya lalu isi sendiri:
+### Docker (semua sekaligus)
 
 ```bash
 cp .env.docker.example .env.docker
+docker compose up -d
 ```
 
-Kalau menambah kunci env baru, tambahkan juga ke `.env.docker.example` — itu
-satu-satunya daftar kunci yang terlihat oleh orang lain dan oleh server
-produksi saat deploy.
+## Arsitektur Backend
 
-## Aturan Kunci (ringkas — detail di `CLAUDE.md`)
+Layer `handler → service → repository` dipisah tegas. Semua base URL dibaca dari env `APP_BASE_URL`. Error selalu di-wrap dengan konteks. Config divalidasi saat startup (fail-fast).
 
-- Backend Go: layer `handler → service → repository` wajib dipisah tegas.
-- Semua base URL dibaca dari env terpusat (`APP_BASE_URL`), tidak boleh hardcode.
-- Nomor WA distandarkan ke format `62xxxxxxxxxx` sejak input.
-- Setiap `err != nil` wajib ditangani; error dibungkus konteks (`fmt.Errorf("...: %w", err)`).
-- Config divalidasi saat startup (fail-fast).
-- Migrasi DB pakai `golang-migrate`, bukan `AutoMigrate` GORM di production.
+## Lisensi
+
+Proprietary — Rajaku Printing.

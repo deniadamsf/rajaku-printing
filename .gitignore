@@ -6,6 +6,20 @@ Thumbs.db
 *.swp
 *.swo
 
+# ==== AI Agent & Tool Configs ====
+.claude/
+.claude_*
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.cursorrules
+.cursor/
+.gemini/
+.copilot/
+.agents/
+.aider*
+rajaku-printing-project-spec.md
+
 # ==== Env & secrets ====
 .env
 .env.local

@@ -77,16 +77,26 @@ async function load() {
 
 onMounted(load)
 
-// -------------------- guest ownership verification (§ guest design upload) --------------------
-// Guest (order tanpa akun) buktikan kepemilikan pakai resi + nomor WA, dapat
-// token sesi terbatas (30 menit, sessionStorage only) untuk unggah desain —
-// lihat useGuestOrderSession. Endpoint aksi desain sama dgn customer login,
-// cuma header Authorization pakai token guest ini (lihat useDesign override).
+// -------------------- ownership verification (§ guest/customer design & proof upload) --------------------
+// Pembeli (guest maupun customer terdaftar) membuktikan kepemilikan pakai resi + nomor WA, dapat
+// token sesi terbatas (30 menit, sessionStorage only) untuk unggah desain & bukti pembayaran —
+// lihat useGuestOrderSession. Endpoint aksi desain & bukti transfer menggunakan token sesi ini
+// jika dibuka dari halaman lacak publik tanpa login.
+const auth = useAuthStore()
 const guestSession = useGuestOrderSession(() => resi.value)
 const guestDesignApi = useDesign({ token: () => guestSession.token.value })
 const guestPaymentApi = usePayment({ token: () => guestSession.token.value })
 
-const guestPhone = ref('')
+const guestPhone = ref(auth.user?.phone || '')
+
+watch(
+  () => auth.user?.phone,
+  (phone) => {
+    if (phone && !guestPhone.value) {
+      guestPhone.value = phone
+    }
+  },
+)
 
 async function submitGuestVerify() {
   const phone = guestPhone.value.trim()
@@ -709,9 +719,8 @@ v-if="data.metode_ambil === 'kirim' && (data.shipping_address || data.shipping_p
           <div class="flex-1">
             <h2 class="font-serif text-lg font-semibold text-ink-950">Ini pesanan saya</h2>
             <p class="mt-1 text-sm text-ink-700 leading-relaxed">
-              Kalau ini pesanan Anda, masukkan nomor WhatsApp yang dipakai saat order untuk
-              membuka akses upload file desain. Nomor ini juga jadi cara kami memverifikasi
-              kepemilikan tanpa perlu Anda mendaftar akun.
+              Jika ini pesanan Anda, masukkan nomor WhatsApp pemesan atau penerima untuk
+              membuka akses upload file desain dan bukti transfer tanpa harus login.
             </p>
 
             <form class="mt-4 flex flex-wrap items-end gap-3" @submit.prevent="submitGuestVerify">
@@ -739,17 +748,13 @@ v-if="data.metode_ambil === 'kirim' && (data.shipping_address || data.shipping_p
             </form>
 
             <AlertMessage v-if="guestSession.errorMsg.value" variant="error" :message="guestSession.errorMsg.value" class="mt-3" />
-            <!-- Petunjuk ini sengaja tampil pada SEMUA kegagalan, bukan hanya
-                 kasus akun terdaftar. Verifikasi di sini khusus pesanan tanpa
-                 akun; pemilik akun harus lewat login. Kalau pesannya dibedakan
-                 per penyebab, respons itu sendiri membocorkan resi mana yang
-                 dimiliki akun terdaftar — jadi bentuknya harus seragam. -->
             <p v-if="guestSession.errorMsg.value" class="mt-2 text-xs text-ink-500 leading-relaxed">
-              Punya akun Rajaku? Pesanan yang dibuat sambil login dikelola dari
+              Pastikan nomor WhatsApp yang dimasukkan sama dengan kontak pemesan atau penerima saat order dibuat (format: 08xxxxxxxxxx atau 628xxxxxxxxxx).
+              Jika Anda memesan lewat akun terdaftar, Anda juga bisa mengelola pesanan dari
               <NuxtLink
-                to="/login"
+                to="/akun/pesanan"
                 class="font-medium text-brand-500 underline rounded-sm hover:text-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas transition-colors"
-              >halaman akun</NuxtLink>, bukan dari sini.
+              >halaman pesanan saya</NuxtLink>.
             </p>
           </div>
         </div>

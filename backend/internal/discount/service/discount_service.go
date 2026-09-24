@@ -257,15 +257,15 @@ func (s *Service) Applicable(ctx context.Context, channel string, items []discou
 		// yang dipakai resolveMasterDiscount saat order disimpan — kalau
 		// basisnya beda di sini, kasir akan melihat promo yang nanti
 		// ditolak (§32.3's exact bug report).
-		_, eligibleSubtotal, allProductIDs := splitEligibleItems(items, d, scopedProducts)
+		_, eligibleSubtotal, eligibleAreaM2, allProductIDs := splitEligibleItems(items, d, scopedProducts)
 		if err := validateForUse(d, eligibleSubtotal, channel, u, now,
 			allProductIDs, scopedProducts,
-			customerID, isActiveMember, membershipEnabled, scopedCustomers); err != nil {
+			customerID, isActiveMember, membershipEnabled, scopedCustomers, eligibleAreaM2); err != nil {
 			continue
 		}
 		out = append(out, ApplicableView{
 			DiscountView:  toDiscountView(d, u, scopedProducts, scopedCustomers, now),
-			PreviewAmount: computeAmount(d, eligibleSubtotal),
+			PreviewAmount: computeAmount(d, eligibleSubtotal, eligibleAreaM2),
 		})
 	}
 	return out, nil
@@ -622,6 +622,13 @@ func setDiscountTypeValue(d *model.Discount, typ string, valuePercent *float64, 
 		d.Type = model.DiscountTypeNominal
 		d.ValueAmount = valueAmount
 		d.ValuePercent = nil
+	case model.DiscountTypeNominalPerM2:
+		if valueAmount == nil || *valueAmount <= 0 {
+			return discountapi.ErrDiscountValueAmountInvalid
+		}
+		d.Type = model.DiscountTypeNominalPerM2
+		d.ValueAmount = valueAmount
+		d.ValuePercent = nil
 	default:
 		return discountapi.ErrDiscountTypeInvalid
 	}
@@ -924,7 +931,7 @@ func applyTypeValueUpdate(d *model.Discount, in UpdateInput, fields map[string]a
 		fields["value_percent"] = *in.ValuePercent
 	}
 	if in.ValueAmount != nil {
-		if d.Type != model.DiscountTypeNominal {
+		if d.Type != model.DiscountTypeNominal && d.Type != model.DiscountTypeNominalPerM2 {
 			return discountapi.ErrDiscountValueAmountInvalid
 		}
 		if *in.ValueAmount <= 0 {

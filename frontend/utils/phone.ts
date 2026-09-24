@@ -6,7 +6,7 @@
  *
  * Terima: `08xxxxxxxxx`, `62xxxxxxxxx`, `+62xxxxxxxxx` (spasi/strip diabaikan).
  */
-const PHONE_PATTERN = /^(\+62|62|0)8\d{8,11}$/
+const PHONE_PATTERN = /^(\+62|62|0)?8\d{8,11}$/
 
 export function isValidIndonesianPhone(raw: string): boolean {
   const cleaned = raw.trim().replace(/[\s-]/g, '')

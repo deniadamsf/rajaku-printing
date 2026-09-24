@@ -45,7 +45,7 @@ var (
 
 	ErrDiscountCodeRequired         = errors.New("discountapi: code wajib diisi")
 	ErrDiscountNameRequired         = errors.New("discountapi: name wajib diisi")
-	ErrDiscountTypeInvalid          = errors.New("discountapi: type harus percent atau nominal")
+	ErrDiscountTypeInvalid          = errors.New("discountapi: type harus percent, nominal, atau nominal_per_m2")
 	ErrDiscountChannelScopeInvalid  = errors.New("discountapi: channel_scope harus all, online, atau pos")
 	ErrDiscountCodeConflict         = errors.New("discountapi: code sudah dipakai diskon lain yang masih aktif")
 	ErrDiscountDeleteReasonRequired = errors.New("discountapi: alasan hapus wajib diisi")
@@ -67,8 +67,8 @@ var (
 	ErrDiscountMaxAmountInvalid = errors.New("discountapi: max_discount_amount harus lebih dari 0 kalau diisi")
 	// ErrDiscountMaxAmountNotAllowed — max_discount_amount diisi untuk diskon
 	// type="nominal", padahal computeAmount mengabaikannya total untuk tipe
-	// ini (hanya relevan untuk type="percent") — §28 temuan #9(b).
-	ErrDiscountMaxAmountNotAllowed = errors.New("discountapi: max_discount_amount hanya berlaku untuk diskon type percent")
+	// ini (hanya relevan untuk type="percent" atau "nominal_per_m2") — §28 temuan #9(b).
+	ErrDiscountMaxAmountNotAllowed = errors.New("discountapi: max_discount_amount hanya berlaku untuk diskon type percent atau nominal_per_m2")
 	// ErrDiscountMinSubtotalInvalid — min_subtotal diisi TAPI negatif.
 	ErrDiscountMinSubtotalInvalid = errors.New("discountapi: min_subtotal tidak boleh negatif")
 	// ErrDiscountValuePercentInvalid — value_percent di luar rentang (0,100].
@@ -150,9 +150,29 @@ var (
 // hitungan: item begitu cukup dianggap "tidak eligible" untuk diskon
 // applies_to='selected').
 type ResolveItem struct {
-	LineNo    int
-	ProductID uuid.UUID
-	Subtotal  int64
+	LineNo       int
+	ProductID    uuid.UUID
+	Subtotal     int64
+	PricingType  string // "per_m2" | "paket"
+	WidthCm      int
+	HeightCm     int
+	Quantity     int
+	ChargeableM2 float64 // luas tertagih m2 untuk baris ini (sudah dikali qty jika ada)
+}
+
+// EffectiveAreaM2 mengembalikan luas tertagih dalam meter persegi untuk baris ini.
+func (it ResolveItem) EffectiveAreaM2() float64 {
+	if it.ChargeableM2 > 0 {
+		return it.ChargeableM2
+	}
+	if it.PricingType == "per_m2" || (it.PricingType == "" && it.WidthCm > 0 && it.HeightCm > 0) {
+		qty := it.Quantity
+		if qty <= 0 {
+			qty = 1
+		}
+		return (float64(it.WidthCm) / 100.0) * (float64(it.HeightCm) / 100.0) * float64(qty)
+	}
+	return 0
 }
 
 // ResolveInput — payload untuk menghitung potongan diskon sebuah order.

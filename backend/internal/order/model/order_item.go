@@ -41,6 +41,7 @@ type OrderItem struct {
 	Quantity             int        `gorm:"not null;default:1"                              json:"quantity"`
 	UnitPrice            int64      `gorm:"not null"                                        json:"unit_price"`
 	Subtotal             int64      `gorm:"not null"                                        json:"subtotal"`
+	ChargeableM2         float64    `gorm:"-"                                               json:"chargeable_m2,omitempty"`
 
 	// DiscountAmount — bagian dari orders.DiscountAmount yang jatuh ke baris
 	// ini (§32.3, metode sisa terbesar). Murni penjelas, bukan sumber

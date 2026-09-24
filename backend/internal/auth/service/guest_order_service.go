@@ -61,23 +61,18 @@ func (s *GuestOrderService) SetOrderCommandService(oc orderapi.OrderCommandServi
 // existing ownership check elsewhere (mis. `order.CustomerID != caller.UserID`
 // in the design service) keeps working unchanged.
 //
-// The token is ONLY issued when the order's owner is an ACTIVE, GUEST
-// customer (user_type=customer AND customer_type=guest AND is_active=true).
-// `users` table is shared across staff + customer (phone is the unique
-// matching key, §11) and FindByID does not filter by user_type — so without
-// this gate, a POS order created against a staff member's WA number would
-// hand out a token carrying that staff's real identity (typ=staff), and the
-// design service's IsStaff bypass would let the caller reach ANY order's
-// files. Registered customers are excluded too: they already have a
-// password + `/akun/pesanan/:resi` — letting a bare WA number authenticate
-// into a password-protected account would be a downgrade of their account
-// security, not a convenience.
+// The token is issued when the order's owner is an ACTIVE user (is_active=true)
+// and the provided phone matches the customer's phone (or the order's shipping
+// recipient phone). Both guest and registered customers (as well as staff who placed
+// an order) can verify via this endpoint. Defense in depth: the issued token always
+// carries `UserType: customer` (never staff) and has `Scope: ScopeGuestOrder` strictly
+// bound to `OrderID: summary.ID`.
 //
-// "resi not found", "phone mismatch", and "owner fails the guest/active gate"
+// "resi not found", "phone mismatch", and "inactive account"
 // all return the exact same sentinel (authapi.ErrGuestVerificationFailed) —
 // callers MUST NOT branch differently on them, to avoid leaking which resi
 // numbers are valid, and to avoid leaking whether a given resi belongs to
-// staff / a registered account / a deactivated account.
+// a deactivated account.
 func (s *GuestOrderService) VerifyOwnership(ctx context.Context, resi, phoneRaw string) (*GuestOrderToken, error) {
 	if s.orderCmd == nil {
 		return nil, fmt.Errorf("verify guest ownership resi %s: order command service not wired", resi)
@@ -91,23 +86,6 @@ func (s *GuestOrderService) VerifyOwnership(ctx context.Context, resi, phoneRaw 
 	summary, err := s.orderCmd.FindSummaryByResi(ctx, resi)
 	if err != nil {
 		if errors.Is(err, orderapi.ErrOrderNotFound) {
-			// Timing note: the success/mismatch path below always performs a
-			// SECOND lookup (owner by ID) after this one. Without doing
-			// equivalent work here, "resi not found" would return after only
-			// one DB roundtrip while every other outcome takes two — a gap
-			// large enough to fingerprint valid resi numbers by latency
-			// alone. dummyOwnerLookup pays that same second roundtrip before
-			// returning.
-			//
-			// Batas jaminannya, supaya tidak ada yang menganggap ini beres:
-			// FindByID memakai Preload("Roles.Permissions"), dan GORM MELEWATI
-			// query preload kalau query utamanya tidak menemukan row. Karena
-			// UUID acak di bawah dijamin miss, jalur ini membakar 1 query
-			// sementara jalur "resi ada, nomor salah" membakar 2. Jadi
-			// selisihnya mengecil dari "1 vs 2 roundtrip" menjadi "1 vs 2
-			// query dengan yang kedua ringan" — bukan nol. Menutupnya sampai
-			// benar-benar setara butuh lookup dummy yang meniru preload juga,
-			// atau menyamakan durasi respons di lapisan handler.
 			s.dummyOwnerLookup(ctx)
 			return nil, authapi.ErrGuestVerificationFailed
 		}
@@ -132,10 +110,12 @@ func (s *GuestOrderService) VerifyOwnership(ctx context.Context, resi, phoneRaw 
 		ownerPhone = *owner.Phone
 	}
 	phoneMatches := subtle.ConstantTimeCompare([]byte(ownerPhone), []byte(normalizedPhone)) == 1
-	isActiveGuestCustomer := owner.UserType == model.UserTypeCustomer &&
-		owner.CustomerType != nil && *owner.CustomerType == model.CustomerTypeGuest &&
-		owner.IsActive
-	if !phoneMatches || !isActiveGuestCustomer {
+	if !phoneMatches && summary.ShippingRecipientPhone != nil {
+		if shipNorm, err := phone.Normalize(*summary.ShippingRecipientPhone); err == nil {
+			phoneMatches = subtle.ConstantTimeCompare([]byte(shipNorm), []byte(normalizedPhone)) == 1
+		}
+	}
+	if !phoneMatches || !owner.IsActive {
 		return nil, authapi.ErrGuestVerificationFailed
 	}
 

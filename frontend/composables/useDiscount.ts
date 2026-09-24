@@ -20,6 +20,11 @@ import type {
 export interface ApplicableCartItem {
   product_id: string
   subtotal: number
+  pricing_type?: string
+  chargeable_m2?: number
+  width_cm?: number
+  height_cm?: number
+  quantity?: number
 }
 
 export interface DiscountListParams {
@@ -83,6 +88,11 @@ export function useDiscount() {
     const query: [string, string][] = [['channel', params.channel]]
     for (const it of params.items) {
       query.push(['product_id', it.product_id], ['item_subtotal', String(it.subtotal)])
+      query.push(['item_pricing_type', it.pricing_type ?? ''])
+      query.push(['item_chargeable_m2', it.chargeable_m2 != null ? String(it.chargeable_m2) : ''])
+      query.push(['item_width_cm', it.width_cm != null ? String(it.width_cm) : ''])
+      query.push(['item_height_cm', it.height_cm != null ? String(it.height_cm) : ''])
+      query.push(['item_quantity', it.quantity != null ? String(it.quantity) : ''])
     }
     if (params.customer_id) query.push(['customer_id', params.customer_id])
     const res = await api.get<{ items: ApplicableDiscount[] }>(

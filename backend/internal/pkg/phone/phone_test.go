@@ -12,6 +12,7 @@ func TestNormalize_HappyPath(t *testing.T) {
 		want string
 	}{
 		{"leading zero", "081234567890", "6281234567890"},
+		{"leading 8 without zero", "81234567890", "6281234567890"},
 		{"already canonical", "6281234567890", "6281234567890"},
 		{"with plus prefix", "+6281234567890", "6281234567890"},
 		{"with dashes", "0812-3456-7890", "6281234567890"},

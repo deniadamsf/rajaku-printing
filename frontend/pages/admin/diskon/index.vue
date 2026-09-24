@@ -298,6 +298,8 @@ function onTypeChange(t: DiscountType) {
   form.type = t
   if (t === 'percent') {
     form.value_amount = null
+  } else if (t === 'nominal_per_m2') {
+    form.value_percent = null
   } else {
     form.value_percent = null
     form.max_discount_amount = null
@@ -312,6 +314,14 @@ async function saveDiscount() {
   if (form.applies_to === 'selected' && form.product_ids.length === 0) {
     modalError.value = 'Pilih minimal satu produk, atau ubah cakupan ke "Semua produk".'
     return
+  }
+  // Validasi produk untuk nominal per m²: harus ada minimal satu produk bertarif m²
+  if (form.applies_to === 'selected' && form.type === 'nominal_per_m2') {
+    const hasPerM2 = form.product_ids.some((id) => products.value.find((p) => p.id === id)?.pricing_type === 'per_m2')
+    if (!hasPerM2 && products.value.length > 0) {
+      modalError.value = 'Diskon nominal per m² membutuhkan minimal satu produk dengan tarif per m² (banner).'
+      return
+    }
   }
   // Validasi wajib di UI (§30.3 brief): "Member" tanpa sub-pilihan, atau
   // "Member tertentu" tanpa satu pun member tercentang, HARUS ditolak sebelum
@@ -337,8 +347,8 @@ async function saveDiscount() {
       // empat field lain justru punya dukungan clear-via-null. `undefined` di
       // sini membuat key-nya tidak ikut ter-serialize di body JSON.
       value_percent: form.type === 'percent' ? (form.value_percent ?? undefined) : undefined,
-      value_amount: form.type === 'nominal' ? (form.value_amount ?? undefined) : undefined,
-      max_discount_amount: form.type === 'percent' ? (form.max_discount_amount || null) : null,
+      value_amount: (form.type === 'nominal' || form.type === 'nominal_per_m2') ? (form.value_amount ?? undefined) : undefined,
+      max_discount_amount: (form.type === 'percent' || form.type === 'nominal_per_m2') ? (form.max_discount_amount || null) : null,
       min_subtotal: form.min_subtotal || 0,
       starts_at: localInputToIso(startsAtLocal.value),
       ends_at: localInputToIso(endsAtLocal.value),
@@ -421,6 +431,10 @@ function fmtDate(s: string | null): string {
 function valueLabel(d: Discount): string {
   if (d.type === 'percent') {
     const base = `${d.value_percent ?? 0}%`
+    return d.max_discount_amount ? `${base} (maks ${fmtIDR(d.max_discount_amount)})` : base
+  }
+  if (d.type === 'nominal_per_m2') {
+    const base = `${fmtIDR(d.value_amount)}/m²`
     return d.max_discount_amount ? `${base} (maks ${fmtIDR(d.max_discount_amount)})` : base
   }
   return fmtIDR(d.value_amount)
@@ -633,7 +647,7 @@ function statusTone(s: DiscountStatus | string): 'green' | 'amber' | 'ink' | 'ro
 
                 <div class="sm:col-span-2">
                   <label class="block text-sm font-medium text-ink-900">Tipe <span class="text-brand-500">*</span></label>
-                  <div class="mt-1 flex gap-2">
+                  <div class="mt-1 flex flex-col sm:flex-row gap-2">
                     <label
                       :class="[
                         'flex-1 flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors',
@@ -651,6 +665,15 @@ function statusTone(s: DiscountStatus | string): 'green' | 'amber' | 'ink' | 'ro
                     >
                       <input type="radio" value="nominal" :checked="form.type === 'nominal'" class="accent-brand-500" @change="onTypeChange('nominal')">
                       <span class="font-semibold">Nominal (Rp)</span>
+                    </label>
+                    <label
+                      :class="[
+                        'flex-1 flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors',
+                        form.type === 'nominal_per_m2' ? 'border-brand-500 bg-brand-50/50 text-ink-950' : 'border-hairline bg-canvas text-ink-700 hover:border-ink-300',
+                      ]"
+                    >
+                      <input type="radio" value="nominal_per_m2" :checked="form.type === 'nominal_per_m2'" class="accent-brand-500" @change="onTypeChange('nominal_per_m2')">
+                      <span class="font-semibold">Nominal per m² (Rp/m²)</span>
                     </label>
                   </div>
                 </div>
@@ -674,6 +697,32 @@ function statusTone(s: DiscountStatus | string): 'green' | 'amber' | 'ink' | 'ro
                     <label for="disc-max" class="block text-sm font-medium text-ink-900">Maks. potongan (Rp)</label>
                     <input
                       id="disc-max"
+                      v-model.number="form.max_discount_amount"
+                      type="number"
+                      min="0"
+                      placeholder="Kosongkan = tidak dibatasi"
+                      class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm placeholder-ink-400 text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                    >
+                  </div>
+                </template>
+                <template v-else-if="form.type === 'nominal_per_m2'">
+                  <div>
+                    <label for="disc-amount-m2" class="block text-sm font-medium text-ink-900">Potongan per m² (Rp) <span class="text-brand-500">*</span></label>
+                    <input
+                      id="disc-amount-m2"
+                      v-model.number="form.value_amount"
+                      type="number"
+                      min="1"
+                      required
+                      placeholder="5000"
+                      class="mt-1 block w-full rounded-md border border-hairline bg-canvas px-3 py-2 text-sm text-ink-900 focus:border-brand-500 focus:ring-brand-500/20 focus:ring-2 focus:outline-none transition-colors"
+                    >
+                    <p class="mt-1 text-xs text-ink-500">Dikalikan luas m² banner pada order.</p>
+                  </div>
+                  <div>
+                    <label for="disc-max-m2" class="block text-sm font-medium text-ink-900">Maks. potongan (Rp)</label>
+                    <input
+                      id="disc-max-m2"
                       v-model.number="form.max_discount_amount"
                       type="number"
                       min="0"
@@ -790,7 +839,10 @@ function statusTone(s: DiscountStatus | string): 'green' | 'amber' | 'ink' | 'ro
                       :products="products"
                       :loading="productsLoading"
                     />
-                    <p class="mt-1 text-xs text-ink-500">
+                    <p v-if="form.type === 'nominal_per_m2'" class="mt-1 text-xs text-brand-600 font-medium">
+                      Diskon nominal per m² hanya memotong harga produk dengan tarif per m² (ditandai badge m²).
+                    </p>
+                    <p v-else class="mt-1 text-xs text-ink-500">
                       Diskon ini hanya bisa dipakai kalau order-nya untuk salah satu produk tercentang. Kosongkan
                       pilihan bukan cara untuk "berlaku semua" — daftar kosong membuat diskon tidak bisa dipakai
                       sama sekali.

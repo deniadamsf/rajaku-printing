@@ -226,8 +226,9 @@ type OrderSummary struct {
 	// (order module) dari discount_name_snapshot / "Diskon" untuk manual —
 	// konsumer (POS struk, invoice) tinggal pakai, tidak perlu duplikasi
 	// logic "label apa untuk diskon manual" (§28.7).
-	DiscountAmount int64
-	DiscountLabel  string
+	DiscountAmount         int64
+	DiscountLabel          string
+	ShippingRecipientPhone *string
 }
 
 // POSOrderItemInput — satu baris produk untuk POSCreateOrderInput (§32).

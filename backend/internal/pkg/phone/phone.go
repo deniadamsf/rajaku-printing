@@ -45,6 +45,8 @@ func Normalize(raw string) (string, error) {
 		// already canonical prefix
 	case strings.HasPrefix(cleaned, "0"):
 		cleaned = "62" + cleaned[1:]
+	case strings.HasPrefix(cleaned, "8"):
+		cleaned = "62" + cleaned
 	default:
 		return "", ErrInvalidPrefix
 	}

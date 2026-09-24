@@ -159,16 +159,47 @@ func parseApplicableItems(c *gin.Context) ([]discountapi.ResolveItem, error) {
 		return nil, fmt.Errorf("item_subtotal harus dikirim sejumlah product_id (satu subtotal per baris keranjang), dapat %d product_id dan %d item_subtotal",
 			len(productIDs), len(rawSubtotals))
 	}
+	pricingTypes := c.QueryArray("item_pricing_type")
+	chargeableM2s := c.QueryArray("item_chargeable_m2")
+	widthCms := c.QueryArray("item_width_cm")
+	heightCms := c.QueryArray("item_height_cm")
+	quantities := c.QueryArray("item_quantity")
+
 	items := make([]discountapi.ResolveItem, 0, len(productIDs))
 	for i, raw := range rawSubtotals {
 		subtotal, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || subtotal < 0 {
 			return nil, fmt.Errorf("item_subtotal baris %d wajib angka >= 0", i+1)
 		}
+		var pType string
+		if i < len(pricingTypes) {
+			pType = pricingTypes[i]
+		}
+		var cM2 float64
+		if i < len(chargeableM2s) && chargeableM2s[i] != "" {
+			cM2, _ = strconv.ParseFloat(chargeableM2s[i], 64)
+		}
+		var wCm int
+		if i < len(widthCms) && widthCms[i] != "" {
+			wCm, _ = strconv.Atoi(widthCms[i])
+		}
+		var hCm int
+		if i < len(heightCms) && heightCms[i] != "" {
+			hCm, _ = strconv.Atoi(heightCms[i])
+		}
+		var qty int
+		if i < len(quantities) && quantities[i] != "" {
+			qty, _ = strconv.Atoi(quantities[i])
+		}
 		items = append(items, discountapi.ResolveItem{
-			LineNo:    i + 1,
-			ProductID: productIDs[i],
-			Subtotal:  subtotal,
+			LineNo:       i + 1,
+			ProductID:    productIDs[i],
+			Subtotal:     subtotal,
+			PricingType:  pType,
+			WidthCm:      wCm,
+			HeightCm:     hCm,
+			Quantity:     qty,
+			ChargeableM2: cM2,
 		})
 	}
 	return items, nil

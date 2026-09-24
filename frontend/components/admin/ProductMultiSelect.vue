@@ -15,6 +15,7 @@ interface PickableProduct {
   id: string
   name: string
   category?: string
+  pricing_type?: string
   is_active?: boolean
 }
 
@@ -91,6 +92,7 @@ function toggle(id: string) {
             @change="toggle(p.id)"
           >
           <span class="text-ink-900">{{ p.name }}</span>
+          <span v-if="p.pricing_type === 'per_m2'" class="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700">m²</span>
           <span v-if="p.category" class="text-xs text-ink-500">· {{ p.category }}</span>
         </span>
         <span v-if="p.is_active === false" class="shrink-0 text-[10px] font-medium uppercase tracking-wide text-ink-400">Nonaktif</span>

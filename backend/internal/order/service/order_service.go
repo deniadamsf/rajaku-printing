@@ -240,6 +240,7 @@ func (s *Service) quoteOnlineItems(ctx context.Context, in []CreateOnlineOrderIt
 			UnitPrice:            quote.TotalPrice,
 			Subtotal:             lineSubtotal,
 			DesignSource:         it.DesignSource,
+			ChargeableM2:         quote.ChargeableM2 * float64(qty),
 		}
 		if it.DesignBrief != "" {
 			item.DesignBrief = strPtr(it.DesignBrief)
@@ -712,21 +713,22 @@ func discountLabel(o *model.Order) string {
 
 func orderToSummary(o *model.Order) *orderapi.OrderSummary {
 	sum := &orderapi.OrderSummary{
-		ID:             o.ID,
-		Resi:           o.Resi,
-		CustomerID:     o.CustomerID,
-		Status:         string(o.Status),
-		Total:          o.Total,
-		MetodeAmbil:    string(o.MetodeAmbil),
-		Channel:        string(o.Channel),
-		DesignSource:   string(o.DesignSource),
-		CreatedBy:      o.CreatedBy,
-		CreatedAt:      o.CreatedAt,
-		Items:          itemsToView(o.Items),
-		Subtotal:       o.Subtotal,
-		DiscountAmount: o.DiscountAmount,
-		DiscountLabel:  discountLabel(o),
-		ShippingCost:   o.ShippingCost,
+		ID:                     o.ID,
+		Resi:                   o.Resi,
+		CustomerID:             o.CustomerID,
+		Status:                 string(o.Status),
+		Total:                  o.Total,
+		MetodeAmbil:            string(o.MetodeAmbil),
+		Channel:                string(o.Channel),
+		DesignSource:           string(o.DesignSource),
+		CreatedBy:              o.CreatedBy,
+		CreatedAt:              o.CreatedAt,
+		Items:                  itemsToView(o.Items),
+		Subtotal:               o.Subtotal,
+		DiscountAmount:         o.DiscountAmount,
+		DiscountLabel:          discountLabel(o),
+		ShippingCost:           o.ShippingCost,
+		ShippingRecipientPhone: o.ShippingRecipientPhone,
 	}
 	if o.MetodeBayar != nil {
 		sum.MetodeBayar = string(*o.MetodeBayar)
@@ -1188,6 +1190,7 @@ func (s *Service) quotePOSItems(ctx context.Context, in []orderapi.POSOrderItemI
 			UnitPrice:            quote.TotalPrice,
 			Subtotal:             lineSubtotal,
 			DesignSource:         designSource,
+			ChargeableM2:         quote.ChargeableM2 * float64(qty),
 		}
 		if it.DesignBrief != "" {
 			item.DesignBrief = strPtr(it.DesignBrief)
@@ -1210,10 +1213,25 @@ func resolveItemsFrom(items []model.OrderItem) []discountapi.ResolveItem {
 		if items[i].ProductID != nil {
 			pid = *items[i].ProductID
 		}
+		chargeableM2 := items[i].ChargeableM2
+		if chargeableM2 <= 0 && items[i].PricingTypeSnapshot == "per_m2" && items[i].WidthCm > 0 && items[i].HeightCm > 0 {
+			wM := float64(items[i].WidthCm) / 100.0
+			hM := float64(items[i].HeightCm) / 100.0
+			qty := items[i].Quantity
+			if qty <= 0 {
+				qty = 1
+			}
+			chargeableM2 = wM * hM * float64(qty)
+		}
 		out[i] = discountapi.ResolveItem{
-			LineNo:    items[i].LineNo,
-			ProductID: pid,
-			Subtotal:  items[i].Subtotal,
+			LineNo:       items[i].LineNo,
+			ProductID:    pid,
+			Subtotal:     items[i].Subtotal,
+			PricingType:  items[i].PricingTypeSnapshot,
+			WidthCm:      items[i].WidthCm,
+			HeightCm:     items[i].HeightCm,
+			Quantity:     items[i].Quantity,
+			ChargeableM2: chargeableM2,
 		}
 	}
 	return out

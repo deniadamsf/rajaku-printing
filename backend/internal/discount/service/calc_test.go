@@ -392,3 +392,79 @@ func TestComputeStatus_Precedence(t *testing.T) {
 		t.Fatalf("computeStatus() = %q, want aktif", got)
 	}
 }
+
+func TestComputeAmount_NominalPerM2_HappyPath(t *testing.T) {
+	d := &model.Discount{
+		Type:        model.DiscountTypeNominalPerM2,
+		ValueAmount: int64Ptr(2_000), // Rp 2.000 / m2
+	}
+	// 12.5 m2 @ Rp 2.000/m2 = Rp 25.000
+	got := computeAmount(d, 300_000, 12.5)
+	if got != 25_000 {
+		t.Fatalf("computeAmount() = %d, want 25000", got)
+	}
+}
+
+func TestComputeAmount_NominalPerM2_CappedByMax(t *testing.T) {
+	d := &model.Discount{
+		Type:              model.DiscountTypeNominalPerM2,
+		ValueAmount:       int64Ptr(5_000), // Rp 5.000 / m2
+		MaxDiscountAmount: int64Ptr(20_000),
+	}
+	// 10 m2 @ Rp 5.000/m2 = Rp 50.000, capped at Rp 20.000
+	got := computeAmount(d, 200_000, 10.0)
+	if got != 20_000 {
+		t.Fatalf("computeAmount() = %d, want 20000 (capped)", got)
+	}
+}
+
+func TestComputeAmount_NominalPerM2_ZeroArea(t *testing.T) {
+	d := &model.Discount{
+		Type:        model.DiscountTypeNominalPerM2,
+		ValueAmount: int64Ptr(2_000),
+	}
+	got := computeAmount(d, 100_000, 0.0)
+	if got != 0 {
+		t.Fatalf("computeAmount() = %d, want 0", got)
+	}
+}
+
+func TestValidateForUse_NominalPerM2_ZeroArea_Rejected(t *testing.T) {
+	d := baseDiscount(time.Now())
+	d.Type = model.DiscountTypeNominalPerM2
+	d.ValueAmount = int64Ptr(2_000)
+
+	// Zero eligible area -> ErrDiscountProductMismatch
+	err := validateForUse(d, 100_000, "pos", 0, time.Now(), nil, nil, uuid.Nil, false, false, nil, 0.0)
+	if err != discountapi.ErrDiscountProductMismatch {
+		t.Fatalf("validateForUse() = %v, want ErrDiscountProductMismatch", err)
+	}
+
+	// Positive eligible area -> OK
+	err = validateForUse(d, 100_000, "pos", 0, time.Now(), nil, nil, uuid.Nil, false, false, nil, 5.0)
+	if err != nil {
+		t.Fatalf("validateForUse() = %v, want nil", err)
+	}
+}
+
+func TestAllocate_NominalPerM2_ProportionalToArea(t *testing.T) {
+	items := []discountapi.ResolveItem{
+		{LineNo: 1, ProductID: uuid.New(), Subtotal: 250_000, PricingType: "per_m2", ChargeableM2: 10.0},
+		{LineNo: 2, ProductID: uuid.New(), Subtotal: 100_000, PricingType: "per_m2", ChargeableM2: 2.0},
+		{LineNo: 3, ProductID: uuid.New(), Subtotal: 80_000, PricingType: "paket", ChargeableM2: 0.0},
+	}
+	// Rp 2.000 / m2 on 12 m2 = Rp 24.000
+	got := allocate(24_000, items, model.DiscountTypeNominalPerM2)
+	if len(got) != 3 {
+		t.Fatalf("allocate() returned %d entries, want 3", len(got))
+	}
+	if got[0].Amount != 20_000 {
+		t.Fatalf("item 1 amount = %d, want 20000 (10m2 * 2000)", got[0].Amount)
+	}
+	if got[1].Amount != 4_000 {
+		t.Fatalf("item 2 amount = %d, want 4000 (2m2 * 2000)", got[1].Amount)
+	}
+	if got[2].Amount != 0 {
+		t.Fatalf("item 3 amount = %d, want 0 (paket item)", got[2].Amount)
+	}
+}

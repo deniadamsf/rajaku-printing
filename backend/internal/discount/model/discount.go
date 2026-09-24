@@ -11,8 +11,9 @@ import (
 type DiscountType string
 
 const (
-	DiscountTypePercent DiscountType = "percent"
-	DiscountTypeNominal DiscountType = "nominal"
+	DiscountTypePercent      DiscountType = "percent"
+	DiscountTypeNominal      DiscountType = "nominal"
+	DiscountTypeNominalPerM2 DiscountType = "nominal_per_m2"
 	// DiscountTypeManual — dipakai HANYA di kolom snapshot orders
 	// (discount_type_snapshot), tidak pernah tersimpan sebagai baris
 	// discounts.type (diskon manual tidak punya master row, discount_id nil).

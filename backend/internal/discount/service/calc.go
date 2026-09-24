@@ -71,7 +71,8 @@ func computeStatus(d *model.Discount, usageCount int64, now time.Time) string {
 // §28.4/§30.3 (channel/period/quota/product scope first, member scope last).
 func validateForUse(d *model.Discount, subtotal int64, channel string, usageCount int64, now time.Time,
 	productIDs []uuid.UUID, scopedProductIDs []uuid.UUID,
-	customerID uuid.UUID, isActiveMember bool, membershipEnabled bool, scopedCustomerIDs []uuid.UUID) error {
+	customerID uuid.UUID, isActiveMember bool, membershipEnabled bool, scopedCustomerIDs []uuid.UUID,
+	areaM2 ...float64) error {
 	if !d.IsActive {
 		return discountapi.ErrDiscountInactive
 	}
@@ -109,6 +110,13 @@ func validateForUse(d *model.Discount, subtotal int64, channel string, usageCoun
 	// supaya diskon begini tidak lolos dengan potongan Rp0 sambil tetap
 	// memakan satu slot kuota (§28.4 menghitung kuota dari orders.discount_id).
 	if subtotal <= 0 {
+		return discountapi.ErrDiscountProductMismatch
+	}
+	var eligibleArea float64
+	if len(areaM2) > 0 {
+		eligibleArea = areaM2[0]
+	}
+	if d.Type == model.DiscountTypeNominalPerM2 && eligibleArea <= 0 {
 		return discountapi.ErrDiscountProductMismatch
 	}
 	if subtotal < d.MinSubtotal {
@@ -169,17 +177,19 @@ func containsAnyUUID(ids []uuid.UUID, candidates []uuid.UUID) bool {
 	return false
 }
 
-// computeAmount implements the §28.3 formula for a MASTER discount (percent
-// or nominal) against a subtotal:
+// computeAmount implements the §28.3 formula for a MASTER discount (percent,
+// nominal, or nominal_per_m2) against a subtotal:
 //
-//	percent: hitungan = round(subtotal × value_percent / 100), HALF-UP,
-//	         lalu dipotong max_discount_amount kalau ada
-//	nominal: hitungan = value_amount
-//	amount  = min(hitungan, subtotal)  -- tidak boleh > subtotal
+//	percent:        hitungan = round(subtotal × value_percent / 100), HALF-UP,
+//	                lalu dipotong max_discount_amount kalau ada
+//	nominal:        hitungan = value_amount
+//	nominal_per_m2: hitungan = round(eligibleAreaM2 × value_amount), HALF-UP,
+//	                lalu dipotong max_discount_amount kalau ada
+//	amount        = min(hitungan, subtotal)  -- tidak boleh > subtotal
 //
 // Rounding HALF-UP via math.Round — konsisten dengan calcPerM2 di
 // catalog/service/pricing.go.
-func computeAmount(d *model.Discount, subtotal int64) int64 {
+func computeAmount(d *model.Discount, subtotal int64, areaM2 ...float64) int64 {
 	var raw int64
 	switch d.Type {
 	case model.DiscountTypePercent:
@@ -195,6 +205,21 @@ func computeAmount(d *model.Discount, subtotal int64) int64 {
 			return 0
 		}
 		raw = *d.ValueAmount
+	case model.DiscountTypeNominalPerM2:
+		if d.ValueAmount == nil {
+			return 0
+		}
+		var eligibleArea float64
+		if len(areaM2) > 0 {
+			eligibleArea = areaM2[0]
+		}
+		if eligibleArea <= 0 {
+			return 0
+		}
+		raw = int64(math.Round(eligibleArea * float64(*d.ValueAmount)))
+		if d.MaxDiscountAmount != nil && raw > *d.MaxDiscountAmount {
+			raw = *d.MaxDiscountAmount
+		}
 	default:
 		return 0
 	}
@@ -215,15 +240,10 @@ func clampAmount(raw, subtotal int64) int64 {
 
 // allocate implements §32.3's "metode sisa terbesar" (largest remainder
 // method): `amount` is split across `items` proportionally to each item's
-// Subtotal, floored, then the leftover rupiah is handed out ONE AT A TIME to
-// the items with the largest fractional remainder — ties broken by the
-// smallest LineNo. This GUARANTEES Σ result == amount exactly, which plain
-// per-row rounding does NOT (§32.2's invariant depends on this holding).
-//
-// Every item in `items` gets an entry in the result, including ones that end
-// up with Amount 0 (an item list that's empty of remainder-winners, or
-// `amount<=0`) — callers must never have to guess which lines were skipped.
-func allocate(amount int64, items []discountapi.ResolveItem) []discountapi.ItemAllocation {
+// Subtotal (or AreaM2 if typ is nominal_per_m2), floored, then the leftover
+// rupiah is handed out ONE AT A TIME to the items with the largest fractional
+// remainder — ties broken by the smallest LineNo.
+func allocate(amount int64, items []discountapi.ResolveItem, typ ...model.DiscountType) []discountapi.ItemAllocation {
 	out := make([]discountapi.ItemAllocation, len(items))
 	for i := range items {
 		out[i] = discountapi.ItemAllocation{LineNo: items[i].LineNo, Amount: 0}
@@ -231,6 +251,43 @@ func allocate(amount int64, items []discountapi.ResolveItem) []discountapi.ItemA
 	if amount <= 0 || len(items) == 0 {
 		return out
 	}
+
+	if len(typ) > 0 && typ[0] == model.DiscountTypeNominalPerM2 {
+		var totalArea float64
+		for i := range items {
+			totalArea += items[i].EffectiveAreaM2()
+		}
+		if totalArea > 0 {
+			type remainder struct {
+				idx  int
+				frac float64
+				line int
+			}
+			remainders := make([]remainder, len(items))
+			var allocated int64
+			for i := range items {
+				itemArea := items[i].EffectiveAreaM2()
+				exact := float64(amount) * itemArea / totalArea
+				floor := int64(math.Floor(exact))
+				out[i].Amount = floor
+				allocated += floor
+				remainders[i] = remainder{idx: i, frac: exact - float64(floor), line: items[i].LineNo}
+			}
+
+			leftover := amount - allocated
+			sort.SliceStable(remainders, func(a, b int) bool {
+				if remainders[a].frac != remainders[b].frac {
+					return remainders[a].frac > remainders[b].frac
+				}
+				return remainders[a].line < remainders[b].line
+			})
+			for i := int64(0); i < leftover && int(i) < len(remainders); i++ {
+				out[remainders[i].idx].Amount++
+			}
+			return out
+		}
+	}
+
 	var basis int64
 	for i := range items {
 		basis += items[i].Subtotal

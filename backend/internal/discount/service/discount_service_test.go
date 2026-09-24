@@ -998,3 +998,70 @@ func TestApplicable_Member_CustomerIDGiven_NotActiveMember_FilteredOut(t *testin
 		t.Fatalf("Applicable() = %+v, want empty (not an active member)", views)
 	}
 }
+
+func TestCreate_NominalPerM2_HappyPath(t *testing.T) {
+	store := &fakeDiscountStore{}
+	svc := New(store)
+	view, err := svc.Create(context.Background(), CreateInput{
+		Code:              "BANNER2K",
+		Name:              "Diskon Banner 2rb/m2",
+		Type:              "nominal_per_m2",
+		ValueAmount:       int64Ptr(2000),
+		MaxDiscountAmount: int64Ptr(50000),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+	if store.created.Type != model.DiscountTypeNominalPerM2 {
+		t.Fatalf("stored discount type = %q, want nominal_per_m2", store.created.Type)
+	}
+	if view.Type != "nominal_per_m2" {
+		t.Fatalf("view type = %q, want nominal_per_m2", view.Type)
+	}
+	if view.ValueAmount == nil || *view.ValueAmount != 2000 {
+		t.Fatalf("view value_amount = %v, want 2000", view.ValueAmount)
+	}
+}
+
+func TestApplicable_NominalPerM2_CalculatesByArea(t *testing.T) {
+	id := uuid.New()
+	bannerPID := uuid.New()
+	store := &fakeDiscountStore{
+		activeResult: []model.Discount{{
+			ID:            id,
+			Code:          "BANNER2K",
+			Name:          "Diskon Banner 2k",
+			Type:          model.DiscountTypeNominalPerM2,
+			ValueAmount:   int64Ptr(2000),
+			IsActive:      true,
+			ChannelScope:  model.ChannelScopeAll,
+			AudienceScope: model.AudienceScopeAll,
+			AppliesTo:     model.AppliesToAll,
+		}},
+	}
+	svc := New(store)
+
+	items := []discountapi.ResolveItem{
+		{
+			LineNo:       1,
+			ProductID:    bannerPID,
+			Subtotal:     150_000,
+			PricingType:  "per_m2",
+			WidthCm:      200,
+			HeightCm:     300,
+			Quantity:     1,
+			ChargeableM2: 6.0,
+		},
+	}
+	views, err := svc.Applicable(context.Background(), "pos", items, uuid.Nil)
+	if err != nil {
+		t.Fatalf("Applicable() error = %v, want nil", err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("Applicable() len = %d, want 1", len(views))
+	}
+	// 6 m2 * 2000 = 12000
+	if views[0].PreviewAmount != 12000 {
+		t.Fatalf("PreviewAmount = %d, want 12000", views[0].PreviewAmount)
+	}
+}

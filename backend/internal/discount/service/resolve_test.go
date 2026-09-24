@@ -679,3 +679,88 @@ func TestResolveForOrder_MasterDiscount_AudienceAll_NoMembershipQuery(t *testing
 		t.Fatalf("ResolveForOrder() amount = %d, want 10000", snap.Amount)
 	}
 }
+
+func TestResolveForOrder_MasterDiscount_NominalPerM2_MemberBanner(t *testing.T) {
+	discountID := uuid.New()
+	customerID := uuid.New()
+	bannerPID := uuid.New()
+	xBannerPID := uuid.New()
+
+	store := &fakeDiscountStore{
+		findResult: &model.Discount{
+			ID:            discountID,
+			Code:          "MEMBERBANNER",
+			Name:          "Diskon Member Banner",
+			Type:          model.DiscountTypeNominalPerM2,
+			ValueAmount:   int64Ptr(2_000), // Rp 2.000/m2
+			IsActive:      true,
+			ChannelScope:  model.ChannelScopeAll,
+			AppliesTo:     model.AppliesToSelected,
+			AudienceScope: model.AudienceScopeMember,
+			MemberScope:   memberScopePtr(model.MemberScopeAllMembers),
+		},
+		productIDsResult: map[uuid.UUID][]uuid.UUID{
+			discountID: {bannerPID},
+		},
+	}
+
+	svc := New(store)
+	svc.SetSettingsReader(&fakeSettingsReader{boolValue: true})
+	svc.SetMembershipChecker(&fakeMembershipChecker{isActive: true})
+
+	// Order items: Item 1 is Banner (per_m2, 12m2 total, subtotal 300k), Item 2 is X-Banner (paket, subtotal 85k)
+	items := []discountapi.ResolveItem{
+		{
+			LineNo:       1,
+			ProductID:    bannerPID,
+			Subtotal:     300_000,
+			PricingType:  "per_m2",
+			WidthCm:      200,
+			HeightCm:     300,
+			Quantity:     2,
+			ChargeableM2: 12.0,
+		},
+		{
+			LineNo:       2,
+			ProductID:    xBannerPID,
+			Subtotal:     85_000,
+			PricingType:  "paket",
+			WidthCm:      60,
+			HeightCm:     160,
+			Quantity:     1,
+			ChargeableM2: 0,
+		},
+	}
+
+	snap, err := svc.ResolveForOrder(context.Background(), discountapi.ResolveInput{
+		DiscountID: &discountID,
+		Items:      items,
+		Channel:    "pos",
+		CustomerID: customerID,
+	})
+	if err != nil {
+		t.Fatalf("ResolveForOrder() error = %v, want nil", err)
+	}
+
+	// 12 m2 * Rp 2.000/m2 = Rp 24.000
+	if snap.Amount != 24_000 {
+		t.Fatalf("ResolveForOrder() amount = %d, want 24000", snap.Amount)
+	}
+	if snap.Type != "nominal_per_m2" {
+		t.Fatalf("ResolveForOrder() type = %q, want nominal_per_m2", snap.Type)
+	}
+	if snap.Value != 2000 {
+		t.Fatalf("ResolveForOrder() value = %v, want 2000", snap.Value)
+	}
+
+	// Check allocations: item 1 gets 24000, item 2 gets 0
+	if len(snap.Allocations) != 2 {
+		t.Fatalf("allocations len = %d, want 2", len(snap.Allocations))
+	}
+	if snap.Allocations[0].LineNo != 1 || snap.Allocations[0].Amount != 24_000 {
+		t.Errorf("item 1 allocation = %+v, want line 1 amount 24000", snap.Allocations[0])
+	}
+	if snap.Allocations[1].LineNo != 2 || snap.Allocations[1].Amount != 0 {
+		t.Errorf("item 2 allocation = %+v, want line 2 amount 0", snap.Allocations[1])
+	}
+}

@@ -174,31 +174,48 @@ func TestGuestOrderService_VerifyOwnership_ResiNotFound_SameSentinelAsMismatch(t
 	}
 }
 
-func TestGuestOrderService_VerifyOwnership_StaffOwner_RejectedSameSentinel(t *testing.T) {
-	// §1 review finding: FindByID does not filter by user_type, so a POS
-	// order created against a staff member's WA number must NOT hand out a
-	// token carrying typ=staff.
+func TestGuestOrderService_VerifyOwnership_StaffOwner_AllowedAsCustomerScoped(t *testing.T) {
+	// A staff member who placed a walk-in/online order can verify via their WA
+	// number to upload design files, but the token MUST carry typ=customer (never staff).
 	staffID := uuid.New()
+	orderID := uuid.New()
 	owner := &model.User{
 		ID: staffID, Phone: strp("6281234567890"), UserType: model.UserTypeStaff, IsActive: true,
 	}
 	users := &fakeUserLookup{byID: map[uuid.UUID]*model.User{staffID: owner}}
 	cmd := &fakeGuestOrderCmd{summary: &orderapi.OrderSummary{
-		ID: uuid.New(), Resi: "RJK-STAFF01", CustomerID: staffID, Status: "dibayar",
+		ID: orderID, Resi: "RJK-STAFF01", CustomerID: staffID, Status: "dibayar",
 	}}
 	svc := newTestGuestOrderService(t, users, cmd)
 
-	_, err := svc.VerifyOwnership(context.Background(), "RJK-STAFF01", "081234567890")
-	if !errors.Is(err, authapi.ErrGuestVerificationFailed) {
-		t.Fatalf("expected ErrGuestVerificationFailed (identical to phone-mismatch case) for staff owner, got %v", err)
+	out, err := svc.VerifyOwnership(context.Background(), "RJK-STAFF01", "081234567890")
+	if err != nil {
+		t.Fatalf("unexpected error for staff owner: %v", err)
+	}
+	if out.AccessToken == "" {
+		t.Fatal("expected non-empty access token")
+	}
+
+	claims, err := svc.issuer.Verify(out.AccessToken)
+	if err != nil {
+		t.Fatalf("parse token: %v", err)
+	}
+	if claims.UserType != string(model.UserTypeCustomer) {
+		t.Fatalf("expected UserType customer in token (never staff), got %q", claims.UserType)
+	}
+	if claims.Scope != authapi.ScopeGuestOrder {
+		t.Fatalf("expected Scope %q, got %q", authapi.ScopeGuestOrder, claims.Scope)
+	}
+	if claims.OrderID != orderID.String() {
+		t.Fatalf("expected OrderID %s, got %s", orderID, claims.OrderID)
 	}
 }
 
-func TestGuestOrderService_VerifyOwnership_RegisteredCustomerOwner_RejectedSameSentinel(t *testing.T) {
-	// Registered customers already have a password + /akun/pesanan/:resi;
-	// letting a bare WA number authenticate into their account would
-	// downgrade account security, so guest verification must reject them too.
+func TestGuestOrderService_VerifyOwnership_RegisteredCustomerOwner_AllowedWithScopedToken(t *testing.T) {
+	// Registered customers who open /lacak/:resi (e.g. from WhatsApp link)
+	// can verify via their WA number to upload design/proof for that order.
 	custID := uuid.New()
+	orderID := uuid.New()
 	registered := model.CustomerTypeRegistered
 	owner := &model.User{
 		ID: custID, Phone: strp("6281234567890"), UserType: model.UserTypeCustomer,
@@ -206,13 +223,52 @@ func TestGuestOrderService_VerifyOwnership_RegisteredCustomerOwner_RejectedSameS
 	}
 	users := &fakeUserLookup{byID: map[uuid.UUID]*model.User{custID: owner}}
 	cmd := &fakeGuestOrderCmd{summary: &orderapi.OrderSummary{
-		ID: uuid.New(), Resi: "RJK-REG01", CustomerID: custID, Status: "dibayar",
+		ID: orderID, Resi: "RJK-REG01", CustomerID: custID, Status: "dibayar",
 	}}
 	svc := newTestGuestOrderService(t, users, cmd)
 
-	_, err := svc.VerifyOwnership(context.Background(), "RJK-REG01", "081234567890")
-	if !errors.Is(err, authapi.ErrGuestVerificationFailed) {
-		t.Fatalf("expected ErrGuestVerificationFailed (identical to phone-mismatch case) for registered owner, got %v", err)
+	out, err := svc.VerifyOwnership(context.Background(), "RJK-REG01", "081234567890")
+	if err != nil {
+		t.Fatalf("unexpected error for registered customer owner: %v", err)
+	}
+	if out.AccessToken == "" {
+		t.Fatal("expected non-empty access token")
+	}
+
+	claims, err := svc.issuer.Verify(out.AccessToken)
+	if err != nil {
+		t.Fatalf("parse token: %v", err)
+	}
+	if claims.Scope != authapi.ScopeGuestOrder {
+		t.Fatalf("expected Scope %q, got %q", authapi.ScopeGuestOrder, claims.Scope)
+	}
+	if claims.OrderID != orderID.String() {
+		t.Fatalf("expected OrderID %s, got %s", orderID, claims.OrderID)
+	}
+}
+
+func TestGuestOrderService_VerifyOwnership_ShippingRecipientPhone_FallbackMatch(t *testing.T) {
+	custID := uuid.New()
+	orderID := uuid.New()
+	guest := model.CustomerTypeGuest
+	owner := &model.User{
+		ID: custID, Phone: strp("6281111111111"), UserType: model.UserTypeCustomer,
+		CustomerType: &guest, IsActive: true,
+	}
+	users := &fakeUserLookup{byID: map[uuid.UUID]*model.User{custID: owner}}
+	shipPhone := "082222222222"
+	cmd := &fakeGuestOrderCmd{summary: &orderapi.OrderSummary{
+		ID: orderID, Resi: "RJK-SHIP01", CustomerID: custID, Status: "dibayar",
+		ShippingRecipientPhone: &shipPhone,
+	}}
+	svc := newTestGuestOrderService(t, users, cmd)
+
+	out, err := svc.VerifyOwnership(context.Background(), "RJK-SHIP01", "082222222222")
+	if err != nil {
+		t.Fatalf("unexpected error matching shipping recipient phone: %v", err)
+	}
+	if out.AccessToken == "" {
+		t.Fatal("expected non-empty access token")
 	}
 }
 

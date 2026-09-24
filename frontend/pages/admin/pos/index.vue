@@ -374,7 +374,15 @@ const shippingCost = computed(() => (isKirim.value ? form.shippingCost : 0))
 const cartDiscountItems = computed<ApplicableCartItem[]>(() =>
   cart.value
     .filter((r) => r.productId && rowSubtotal(r) > 0)
-    .map((r) => ({ product_id: r.productId, subtotal: rowSubtotal(r) })),
+    .map((r) => ({
+      product_id: r.productId,
+      subtotal: rowSubtotal(r),
+      pricing_type: r.productDetail?.pricing_type,
+      chargeable_m2: (r.quote?.chargeable_m2 ?? 0) * r.quantity,
+      width_cm: r.widthCm,
+      height_cm: r.heightCm,
+      quantity: r.quantity,
+    })),
 )
 
 const selectedDiscount = computed(() =>
@@ -1267,7 +1275,9 @@ async function printStruk() {
                 <input v-model="selectedDiscountId" type="radio" :value="d.id" class="mt-0.5 accent-brand-500">
                 <span>
                   <span class="block font-semibold">{{ d.name }}</span>
-                  <span class="mt-0.5 block font-mono text-xs text-ink-500">{{ d.code }}</span>
+                  <span class="mt-0.5 block font-mono text-xs text-ink-500">
+                    {{ d.code }} · {{ d.type === 'percent' ? `${d.value_percent}%` : d.type === 'nominal_per_m2' ? `${fmtIDR(d.value_amount)}/m²` : fmtIDR(d.value_amount) }}
+                  </span>
                 </span>
               </span>
               <span class="shrink-0 font-medium text-brand-600">-{{ fmtIDR(d.preview_amount) }}</span>

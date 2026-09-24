@@ -1,7 +1,7 @@
 // Shape response backend modul discount (CLAUDE.md §28). Sinkronkan kalau
 // backend berubah.
 
-export type DiscountType = 'percent' | 'nominal'
+export type DiscountType = 'percent' | 'nominal' | 'nominal_per_m2'
 export type DiscountChannelScope = 'all' | 'online' | 'pos'
 export type DiscountStatus = 'aktif' | 'terjadwal' | 'kadaluarsa' | 'nonaktif' | 'kuota_habis'
 /** Cakupan produk (CLAUDE.md §28.9). `selected` TANPA `product_ids` bukan "berlaku semua" — itu diskon yang tidak bisa dipakai sama sekali. */

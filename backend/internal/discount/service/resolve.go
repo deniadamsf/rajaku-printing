@@ -129,15 +129,15 @@ func (s *Service) resolveMasterDiscount(ctx context.Context, in discountapi.Reso
 	// scopedProductIDs. Dihitung SEBELUM validateForUse supaya min_subtotal
 	// dibandingkan ke basis yang benar (eligible_subtotal), bukan subtotal
 	// seluruh order.
-	eligibleItems, eligibleSubtotal, allItemProductIDs := splitEligibleItems(in.Items, d, scopedProductIDs)
+	eligibleItems, eligibleSubtotal, eligibleAreaM2, allItemProductIDs := splitEligibleItems(in.Items, d, scopedProductIDs)
 
 	if err := validateForUse(d, eligibleSubtotal, in.Channel, usage, time.Now(),
 		allItemProductIDs, scopedProductIDs,
-		in.CustomerID, isActiveMember, membershipEnabled, scopedCustomerIDs); err != nil {
+		in.CustomerID, isActiveMember, membershipEnabled, scopedCustomerIDs, eligibleAreaM2); err != nil {
 		return nil, err
 	}
 
-	amount := computeAmount(d, eligibleSubtotal)
+	amount := computeAmount(d, eligibleSubtotal, eligibleAreaM2)
 	snap := &discountapi.Snapshot{
 		DiscountID:  &d.ID,
 		Code:        d.Code,
@@ -145,7 +145,7 @@ func (s *Service) resolveMasterDiscount(ctx context.Context, in discountapi.Reso
 		Type:        string(d.Type),
 		Amount:      amount,
 		Note:        strings.TrimSpace(in.Note),
-		Allocations: allocate(amount, eligibleItems),
+		Allocations: allocate(amount, eligibleItems, d.Type),
 	}
 	// allocate() only produced entries for eligibleItems — merge in the
 	// non-eligible ones at Amount 0 so callers see one entry per LineNo in
@@ -156,7 +156,7 @@ func (s *Service) resolveMasterDiscount(ctx context.Context, in discountapi.Reso
 		if d.ValuePercent != nil {
 			snap.Value = *d.ValuePercent
 		}
-	case model.DiscountTypeNominal:
+	case model.DiscountTypeNominal, model.DiscountTypeNominalPerM2:
 		if d.ValueAmount != nil {
 			snap.Value = float64(*d.ValueAmount)
 		}
@@ -171,7 +171,7 @@ func (s *Service) resolveMasterDiscount(ctx context.Context, in discountapi.Reso
 // check (which needs to know "did ANY of the order's items match", not just
 // the eligible subset — an order with zero matching items must fail with
 // ErrDiscountProductMismatch, not silently compute a 0 eligible_subtotal).
-func splitEligibleItems(items []discountapi.ResolveItem, d *model.Discount, scopedProductIDs []uuid.UUID) (eligible []discountapi.ResolveItem, eligibleSubtotal int64, allProductIDs []uuid.UUID) {
+func splitEligibleItems(items []discountapi.ResolveItem, d *model.Discount, scopedProductIDs []uuid.UUID) (eligible []discountapi.ResolveItem, eligibleSubtotal int64, eligibleAreaM2 float64, allProductIDs []uuid.UUID) {
 	allProductIDs = make([]uuid.UUID, 0, len(items))
 	for i := range items {
 		allProductIDs = append(allProductIDs, items[i].ProductID)
@@ -179,16 +179,20 @@ func splitEligibleItems(items []discountapi.ResolveItem, d *model.Discount, scop
 	if d.AppliesTo != model.AppliesToSelected {
 		eligible = items
 		eligibleSubtotal = totalSubtotal(items)
-		return eligible, eligibleSubtotal, allProductIDs
+		for i := range items {
+			eligibleAreaM2 += items[i].EffectiveAreaM2()
+		}
+		return eligible, eligibleSubtotal, eligibleAreaM2, allProductIDs
 	}
 	eligible = make([]discountapi.ResolveItem, 0, len(items))
 	for i := range items {
 		if containsUUID(scopedProductIDs, items[i].ProductID) {
 			eligible = append(eligible, items[i])
 			eligibleSubtotal += items[i].Subtotal
+			eligibleAreaM2 += items[i].EffectiveAreaM2()
 		}
 	}
-	return eligible, eligibleSubtotal, allProductIDs
+	return eligible, eligibleSubtotal, eligibleAreaM2, allProductIDs
 }
 
 // fillZeroAllocations merges `computed` (allocations for eligible items

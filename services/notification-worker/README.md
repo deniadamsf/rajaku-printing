@@ -71,10 +71,6 @@ Umur sesi di-anchor ke nomor yang ter-pairing: kalau nomornya berganti, warmup o
 
 Status runtime bisa dilihat di `GET /healthz` (`quota`, `circuit`, `pacing`) — kalau worker diam, cek dulu di sini apakah karena cap harian atau circuit terbuka.
 
-## Deploy
-
-Butuh Node.js 20+ (pakai `fetch` bawaan). Jalankan sebagai systemd service atau `pm2` di VPS. Session dir (`./session/`) harus **persistent** — kalau hilang, harus scan QR ulang. Begitu juga `wa-state.json` (`WA_STATE_FILE`) — kalau hilang, cap harian & warmup ter-reset.
-
 ## Troubleshooting
 
 - `WA belum siap` di log dispatcher → belum scan QR / koneksi putus. Cek `/qr` atau terminal.

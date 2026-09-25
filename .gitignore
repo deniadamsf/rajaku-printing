@@ -26,6 +26,11 @@ rajaku-printing-project-spec.md
 .env.*.local
 *.pem
 *.key
+DEPLOY.md
+deploy*.md
+deploy*.ps1
+deploy*.bat
+deploy*.sh
 
 # ==== Go (backend) ====
 backend/bin/

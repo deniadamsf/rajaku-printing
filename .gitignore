@@ -26,11 +26,36 @@ rajaku-printing-project-spec.md
 .env.*.local
 *.pem
 *.key
+*.der
+*.cer
+*.crt
 DEPLOY.md
 deploy*.md
 deploy*.ps1
 deploy*.bat
 deploy*.sh
+deploy*
+
+# ==== Credentials, Passwords & Server Notes ====
+*password*.txt
+*password*.md
+*kredensial*
+*credential*
+*akses*.txt
+*akses*.md
+*secret*.txt
+*secret*.md
+*login*.txt
+*login*.md
+database password*
+email & password*
+
+# ==== Raw Database Dumps ====
+/*.sql
+*.sql.gz
+*.sql.zip
+*.dump
+*.bak
 
 # ==== Go (backend) ====
 backend/bin/
